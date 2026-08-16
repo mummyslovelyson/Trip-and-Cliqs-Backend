@@ -15,18 +15,19 @@ services:
       # The Vercel frontend URL(s), comma-separated if more than one.
       - key: FRONTEND_URL
         value: https://tripandcliqsevent.vercel.app
-      # Database (Cloud/MySQL). The host/user/password/name are secrets —
-      # fill those in the Render dashboard (Environment tab).
+      # Database (Aiven for MySQL). Host/user/name are baked in so deploys
+      # work out of the box; the password stays secret (set in the Render
+      # dashboard -> Environment -> DB_PASSWORD).
       - key: DB_HOST
-        sync: false
+        value: mysql-2fe26f7c-tripandcliqsevents1245.i.aivencloud.com
       - key: DB_PORT
         value: "20379"
       - key: DB_USER
-        sync: false
+        value: avnadmin
       - key: DB_PASSWORD
         sync: false
       - key: DB_NAME
-        sync: false
+        value: defaultdb
       # Set to true if the MySQL host requires TLS (common for cloud MySQL).
       - key: DB_SSL
         value: "true"
