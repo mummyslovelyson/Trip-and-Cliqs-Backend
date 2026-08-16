@@ -1,0 +1,72 @@
+# Render blueprint for the Tribes & Cliqs backend API.
+# Deploy via the Render Dashboard: New > Blueprint > select this repo,
+# or the Render CLI: render blueprint launch
+services:
+  - type: web
+    name: tribes-cliqs-backend
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node src/server.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # The Vercel frontend URL(s), comma-separated if more than one.
+      # Set to your actual deployment URL after creating the service.
+      - key: FRONTEND_URL
+        value: https://your-app.vercel.app
+      # Database (Cloud/MySQL). Fill these in the Render dashboard.
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        value: "3306"
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_NAME
+        sync: false
+      # Set to true if the MySQL host requires TLS (common for cloud MySQL).
+      - key: DB_SSL
+        value: "false"
+      # Auth secrets
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_REFRESH_SECRET
+        sync: false
+      - key: JWT_EXPIRES_IN
+        value: 1d
+      - key: JWT_REFRESH_EXPIRES_IN
+        value: 30d
+      # Admin seed account
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      # Payments (Paystack)
+      - key: PAYSTACK_SECRET_KEY
+        sync: false
+      - key: PAYSTACK_PUBLIC_KEY
+        sync: false
+      # Email (SMTP)
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_SECURE
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: FROM_EMAIL
+        sync: false
+      # Email via Resend (alternative to SMTP) - optional
+      - key: RESEND_API_KEY
+        sync: false
+      # SMS (smsonlinegh.com) - optional
+      - key: SMSONLINEGH_API_KEY
+        sync: false
+      - key: SMSONLINEGH_SENDER_ID
+        sync: false
