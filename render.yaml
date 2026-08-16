@@ -13,9 +13,8 @@ services:
       - key: NODE_ENV
         value: production
       # The Vercel frontend URL(s), comma-separated if more than one.
-      # Set to your actual deployment URL after creating the service.
       - key: FRONTEND_URL
-        value: https://your-app.vercel.app
+        value: https://tripandcliqsevent.vercel.app
       # Database (Cloud/MySQL). Fill these in the Render dashboard.
       - key: DB_HOST
         sync: false
