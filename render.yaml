@@ -15,11 +15,12 @@ services:
       # The Vercel frontend URL(s), comma-separated if more than one.
       - key: FRONTEND_URL
         value: https://tripandcliqsevent.vercel.app
-      # Database (Cloud/MySQL). Fill these in the Render dashboard.
+      # Database (Cloud/MySQL). The host/user/password/name are secrets —
+      # fill those in the Render dashboard (Environment tab).
       - key: DB_HOST
         sync: false
       - key: DB_PORT
-        value: "3306"
+        value: "20379"
       - key: DB_USER
         sync: false
       - key: DB_PASSWORD
@@ -28,7 +29,7 @@ services:
         sync: false
       # Set to true if the MySQL host requires TLS (common for cloud MySQL).
       - key: DB_SSL
-        value: "false"
+        value: "true"
       # Auth secrets
       - key: JWT_SECRET
         sync: false
