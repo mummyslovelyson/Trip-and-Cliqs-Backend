@@ -26,6 +26,13 @@ async function initDb() {
       user,
       password,
       multipleStatements: true,
+      // Encrypt the connection when DB_SSL=true (required by most cloud
+      // MySQL hosts, e.g. Aiven). Set DB_SSL_CA to pin a CA certificate.
+      ...(process.env.DB_SSL === 'true' && {
+        ssl: process.env.DB_SSL_CA
+          ? { ca: process.env.DB_SSL_CA.replace(/\\n/g, '\n') }
+          : { rejectUnauthorized: false },
+      }),
     });
 
     console.log(`Creating database '${dbName}' if not exists...`);

@@ -18,7 +18,7 @@ const pool = mysql.createPool({
   ...(process.env.DB_SSL === 'true' && {
     ssl: process.env.DB_SSL_CA
       ? { ca: process.env.DB_SSL_CA.replace(/\\n/g, '\n') }
-      : {},
+      : { rejectUnauthorized: false },
   }),
 });
 
