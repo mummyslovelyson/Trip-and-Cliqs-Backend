@@ -15,11 +15,12 @@ services:
       # The Vercel frontend URL(s), comma-separated if more than one.
       - key: FRONTEND_URL
         value: https://tripandcliqsevent.vercel.app
-      # Database (Aiven for MySQL). Host/user/name are baked in so deploys
-      # work out of the box; the password stays secret (set in the Render
-      # dashboard -> Environment -> DB_PASSWORD).
+      # Database (Aiven for MySQL). Host is set to the node IP to bypass any
+      # stale DNS in Render's resolver (hostname resolves to 64.225.67.68).
+      # Host/user/name are baked in so deploys work out of the box; the
+      # password stays secret (set in Render dashboard -> Environment).
       - key: DB_HOST
-        value: mysql-2fe26f7c-tripandcliqsevents1245.i.aivencloud.com
+        value: 64.225.67.68
       - key: DB_PORT
         value: "20379"
       - key: DB_USER

@@ -12,6 +12,8 @@ const pool = mysql.createPool({
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
+  connectTimeout: 30000,
+  family: 4,
   // Encrypt the connection to the database server when DB_SSL=true
   // (recommended for any remote/cloud MySQL). Optionally set DB_SSL_CA to
   // the PEM certificate contents (newlines as \n) to pin the CA.
