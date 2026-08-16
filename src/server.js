@@ -16,6 +16,7 @@ import adminRoutes from './routes/admin.js';
 import meetupRoutes from './routes/meetups.js';
 import resaleRoutes from './routes/resale.js';
 import uploadRoutes from './routes/upload.js';
+import { getSetting } from './utils/settings.js';
 
 dotenv.config();
 
@@ -97,6 +98,22 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/meetups', meetupRoutes);
 app.use('/api/resale', resaleRoutes);
 app.use('/api/upload', uploadRoutes);
+
+// Public, unauthenticated platform settings (currency display config).
+app.get('/api/public/settings', async (_req, res) => {
+  try {
+    const [currency, usdRate] = await Promise.all([getSetting('currency'), getSetting('usd_rate')]);
+    res.json({
+      settings: {
+        currency: currency || 'GHS',
+        usdRate: Number(usdRate) > 0 ? Number(usdRate) : 15,
+      },
+    });
+  } catch (err) {
+    console.error('[publicSettings]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 
 /* ------------------------------------------------------------------ */
 /* 404 handler                                                         */
