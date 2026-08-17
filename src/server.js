@@ -16,7 +16,9 @@ import adminRoutes from './routes/admin.js';
 import meetupRoutes from './routes/meetups.js';
 import resaleRoutes from './routes/resale.js';
 import uploadRoutes from './routes/upload.js';
+import supportRoutes from './routes/support.js';
 import { getSetting } from './utils/settings.js';
+import { maintenanceMiddleware } from './middleware/maintenance.js';
 
 dotenv.config();
 
@@ -81,6 +83,11 @@ if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 app.use('/uploads', express.static(uploadDir));
 
 /* ------------------------------------------------------------------ */
+/* Maintenance mode middleware                                         */
+/* ------------------------------------------------------------------ */
+app.use(maintenanceMiddleware);
+
+/* ------------------------------------------------------------------ */
 /* Health check                                                        */
 /* ------------------------------------------------------------------ */
 app.get('/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
@@ -98,6 +105,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/meetups', meetupRoutes);
 app.use('/api/resale', resaleRoutes);
 app.use('/api/upload', uploadRoutes);
+app.use('/api/support', supportRoutes);
 
 // Public, unauthenticated platform settings (currency display config).
 app.get('/api/public/settings', async (_req, res) => {
@@ -112,6 +120,21 @@ app.get('/api/public/settings', async (_req, res) => {
   } catch (err) {
     console.error('[publicSettings]', err);
     res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Public maintenance status check (used by frontend to show maintenance page).
+app.get('/api/public/maintenance', async (_req, res) => {
+  try {
+    const maintenanceMode = await getSetting('maintenance_mode');
+    const maintenanceMessage = await getSetting('maintenance_message');
+    res.json({
+      maintenance: maintenanceMode === 'true' || maintenanceMode === true,
+      message: maintenanceMessage || 'We are currently performing scheduled maintenance. Please try again later.',
+    });
+  } catch (err) {
+    console.error('[publicMaintenance]', err);
+    res.json({ maintenance: false });
   }
 });
 
