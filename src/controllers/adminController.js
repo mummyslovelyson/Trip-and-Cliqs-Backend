@@ -879,7 +879,7 @@ export const getSupportTickets = async (req, res) => {
     );
 
     res.json({
-      tickets: rows,
+      tickets: rows.map((r) => ({ ...r, user: { name: r.user_name, email: r.user_email } })),
       pagination: { page: pageNum, limit: limitNum, total: countRows[0].total, totalPages: Math.ceil(countRows[0].total / limitNum) },
     });
   } catch (err) {
@@ -1090,9 +1090,25 @@ export const getAdminNotifications = async (req, res) => {
 export const getSupportTicket = async (req, res) => {
   try {
     const { id } = req.params;
-    const [rows] = await pool.execute('SELECT * FROM support_tickets WHERE id = ?', [id]);
+    const [rows] = await pool.execute(
+      `SELECT s.*, u.name AS user_name, u.email AS user_email
+       FROM support_tickets s
+       LEFT JOIN users u ON u.id = s.user_id
+       WHERE s.id = ?`,
+      [id],
+    );
     if (!rows.length) return res.status(404).json({ message: 'Ticket not found' });
-    res.json({ ticket: rows[0] });
+
+    const [replies] = await pool.execute(
+      `SELECT sr.*, u.name AS author_name, u.email AS author_email, u.role AS author_role
+       FROM support_replies sr
+       LEFT JOIN users u ON u.id = sr.user_id
+       WHERE sr.ticket_id = ?
+       ORDER BY sr.created_at ASC`,
+      [id],
+    );
+
+    res.json({ ticket: { ...rows[0], user: { name: rows[0].user_name, email: rows[0].user_email } }, replies });
   } catch (err) {
     console.error('[adminController.getSupportTicket]', err);
     res.status(500).json({ message: 'Server error' });
