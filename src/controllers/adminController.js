@@ -1583,7 +1583,7 @@ export const getUserStats = async (req, res) => {
       [id],
     );
     const [favorites] = await pool.execute(
-      'SELECT COUNT(*) AS count FROM user_favorites WHERE user_id = ?',
+      'SELECT COUNT(*) AS count FROM favorites WHERE user_id = ?',
       [id],
     );
     const [sessions] = await pool.execute(
