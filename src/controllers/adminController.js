@@ -1534,25 +1534,25 @@ export const bulkDeleteUsers = async (req, res) => {
 // User management stats — overview bar numbers
 export const getUserManagementStats = async (_req, res) => {
   try {
-    const [total] = await pool.execute('SELECT COUNT(*) AS count FROM users');
-    const [active] = await pool.execute("SELECT COUNT(*) AS count FROM users WHERE status = 'active'");
-    const [suspended] = await pool.execute("SELECT COUNT(*) AS count FROM users WHERE status = 'suspended'");
-    const [pending] = await pool.execute("SELECT COUNT(*) AS count FROM users WHERE role = 'organizer' AND is_approved = 0 AND status = 'active'");
-    const [organizers] = await pool.execute("SELECT COUNT(*) AS count FROM users WHERE role = 'organizer'");
-    const [attendees] = await pool.execute("SELECT COUNT(*) AS count FROM users WHERE role = 'attendee'");
-    const [verified] = await pool.execute("SELECT COUNT(*) AS count FROM users WHERE email_verified = 1");
-    const [recentWeek] = await pool.execute("SELECT COUNT(*) AS count FROM users WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)");
+    const [[total]] = await pool.query('SELECT COUNT(*) AS count FROM users');
+    const [[active]] = await pool.query("SELECT COUNT(*) AS count FROM users WHERE status = 'active'");
+    const [[suspended]] = await pool.query("SELECT COUNT(*) AS count FROM users WHERE status = 'suspended'");
+    const [[pending]] = await pool.query("SELECT COUNT(*) AS count FROM users WHERE role = 'organizer' AND is_approved = 0 AND status = 'active'");
+    const [[organizers]] = await pool.query("SELECT COUNT(*) AS count FROM users WHERE role = 'organizer'");
+    const [[attendees]] = await pool.query("SELECT COUNT(*) AS count FROM users WHERE role = 'attendee'");
+    const [[verified]] = await pool.query("SELECT COUNT(*) AS count FROM users WHERE email_verified = 1");
+    const [[recentWeek]] = await pool.query("SELECT COUNT(*) AS count FROM users WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)");
 
     res.json({
       stats: {
-        total: total[0].count,
-        active: active[0].count,
-        suspended: suspended[0].count,
-        pendingOrganizers: pending[0].count,
-        organizers: organizers[0].count,
-        attendees: attendees[0].count,
-        verified: verified[0].count,
-        joinedThisWeek: recentWeek[0].count,
+        total: total.count,
+        active: active.count,
+        suspended: suspended.count,
+        pendingOrganizers: pending.count,
+        organizers: organizers.count,
+        attendees: attendees.count,
+        verified: verified.count,
+        joinedThisWeek: recentWeek.count,
       },
     });
   } catch (err) {
@@ -1566,48 +1566,42 @@ export const getUserStats = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const [orders] = await pool.execute(
+    const safeQuery = async (sql, params = []) => {
+      try { const [rows] = await pool.execute(sql, params); return rows[0]; }
+      catch { return { count: 0, revenue: 0 }; }
+    };
+
+    const orders = await safeQuery(
       'SELECT COUNT(*) AS count, COALESCE(SUM(total_amount), 0) AS revenue FROM orders WHERE user_id = ?',
       [id],
     );
-    const [events] = await pool.execute(
-      'SELECT COUNT(*) AS count FROM events WHERE organizer_id = ?',
+    const events = await safeQuery('SELECT COUNT(*) AS count FROM events WHERE organizer_id = ?', [id]);
+    const tickets = await safeQuery('SELECT COUNT(*) AS count FROM tickets WHERE user_id = ?', [id]);
+    const reviews = await safeQuery('SELECT COUNT(*) AS count FROM reviews WHERE user_id = ?', [id]);
+    const favorites = await safeQuery('SELECT COUNT(*) AS count FROM favorites WHERE user_id = ?', [id]);
+    const sessions = await safeQuery(
+      `SELECT COUNT(*) AS count FROM refresh_tokens WHERE user_id = ? AND revoked = 0 AND used = 0 AND expires_at > NOW()`,
       [id],
     );
-    const [tickets] = await pool.execute(
-      'SELECT COUNT(*) AS count FROM tickets WHERE user_id = ?',
-      [id],
-    );
-    const [reviews] = await pool.execute(
-      'SELECT COUNT(*) AS count FROM reviews WHERE user_id = ?',
-      [id],
-    );
-    const [favorites] = await pool.execute(
-      'SELECT COUNT(*) AS count FROM favorites WHERE user_id = ?',
-      [id],
-    );
-    const [sessions] = await pool.execute(
-      `SELECT COUNT(*) AS count FROM refresh_tokens
-       WHERE user_id = ? AND revoked = 0 AND used = 0 AND expires_at > NOW()`,
-      [id],
-    );
-    const [loginHistory] = await pool.execute(
-      `SELECT action, created_at FROM audit_logs
-       WHERE user_id = ? AND action IN ('login', 'admin_login')
-       ORDER BY created_at DESC LIMIT 10`,
-      [id],
-    );
+    let recentLogins = [];
+    try {
+      const [logins] = await pool.execute(
+        `SELECT action, created_at FROM audit_logs WHERE user_id = ? AND action IN ('login', 'admin_login') ORDER BY created_at DESC LIMIT 10`,
+        [id],
+      );
+      recentLogins = logins;
+    } catch { /* audit_logs table may not exist */ }
 
     res.json({
       stats: {
-        orders: orders[0].count,
-        revenue: Number(orders[0].revenue) || 0,
-        events: events[0].count,
-        tickets: tickets[0].count,
-        reviews: reviews[0].count,
-        favorites: favorites[0].count,
-        activeSessions: sessions[0].count,
-        recentLogins: loginHistory,
+        orders: orders.count,
+        revenue: Number(orders.revenue) || 0,
+        events: events.count,
+        tickets: tickets.count,
+        reviews: reviews.count,
+        favorites: favorites.count,
+        activeSessions: sessions.count,
+        recentLogins,
       },
     });
   } catch (err) {
