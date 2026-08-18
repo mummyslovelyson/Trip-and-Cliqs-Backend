@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import {
   getDashboardStats, getUsers, getUser, updateUser, suspendUser, unsuspendUser, verifyUser, deleteUser, approveOrganizer, rejectOrganizer, resetUserPassword,
+  getUserManagementStats, getUserActivity, getUserSessions, forceLogoutUser, addAdminNote, getAdminNotes, deleteAdminNote,
+  exportUsers, bulkRoleChange, bulkDeleteUsers, getUserStats,
   getEvents, approveEvent, rejectEvent, featureEvent, suspendEvent, unsuspendEvent, adminDeleteEvent,
   getCategories, createCategory, updateCategory, deleteCategory,
   getPayments, getPayment, refundPayment, getWithdrawals, approveWithdrawal,
@@ -25,6 +27,8 @@ router.get('/dashboard', getDashboardStats);
 
 // Users
 router.get('/users', getUsers);
+router.get('/users/stats', getUserManagementStats);
+router.get('/users/export/csv', exportUsers);
 router.get('/users/:id', getUser);
 router.put('/users/:id', writeLimiter, updateUser);
 router.put('/users/:id/suspend', writeLimiter, suspendUser);
@@ -37,6 +41,18 @@ router.put('/organizers/:id/approve', writeLimiter, approveOrganizer);
 router.post('/organizers/:id/approve', writeLimiter, approveOrganizer);
 router.put('/organizers/:id/reject', writeLimiter, rejectOrganizer);
 router.post('/organizers/:id/reject', writeLimiter, rejectOrganizer);
+
+// User power features
+router.get('/users/:id/activity', getUserActivity);
+router.get('/users/:id/sessions', getUserSessions);
+router.get('/users/:id/stats', getUserStats);
+router.post('/users/:id/force-logout', writeLimiter, forceLogoutUser);
+router.post('/users/:id/notes', writeLimiter, addAdminNote);
+router.get('/users/:id/notes', getAdminNotes);
+router.delete('/users/notes/:noteId', writeLimiter, deleteAdminNote);
+router.get('/users/export/csv', exportUsers);
+router.post('/users/bulk/role', writeLimiter, bulkRoleChange);
+router.post('/users/bulk/delete', destructiveLimiter, bulkDeleteUsers);
 
 // Events
 router.get('/events', getEvents);

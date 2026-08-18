@@ -1301,8 +1301,324 @@ export const getGrowthReport = async (_req, res) => {
   res.json({ report: [] });
 };
 
+/* ------------------------------------------------------------------ */
+/* User Management Power Features                                       */
+/* ------------------------------------------------------------------ */
+
+// Get detailed activity log for a user
+export const getUserActivity = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { limit = 50, offset = 0 } = req.query;
+    const limitNum = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+
+    const [rows] = await pool.execute(
+      `SELECT * FROM user_activity_log WHERE user_id = ? ORDER BY created_at DESC LIMIT ${limitNum} OFFSET ${parseInt(offset, 10) || 0}`,
+      [id],
+    );
+    const [countRows] = await pool.execute(
+      'SELECT COUNT(*) AS total FROM user_activity_log WHERE user_id = ?',
+      [id],
+    );
+    res.json({ activities: rows, total: countRows[0].total });
+  } catch (err) {
+    console.error('[adminController.getUserActivity]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// Get active sessions for a user
+export const getUserSessions = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [rows] = await pool.execute(
+      `SELECT id, ip_address, user_agent, created_at, last_active
+       FROM refresh_tokens
+       WHERE user_id = ? AND revoked = 0 AND used = 0 AND expires_at > NOW()
+       ORDER BY last_active DESC`,
+      [id],
+    );
+    res.json({ sessions: rows });
+  } catch (err) {
+    console.error('[adminController.getUserSessions]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// Force logout — revoke all sessions for a user
+export const forceLogoutUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [rows] = await pool.execute('SELECT * FROM users WHERE id = ?', [id]);
+    if (!rows[0]) return res.status(404).json({ message: 'User not found' });
+
+    await pool.execute('UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?', [id]);
+    await sendNotification({
+      userId: Number(id),
+      title: 'Signed out by administrator',
+      message: 'An administrator has signed you out of all devices.',
+      type: 'account',
+    });
+    await logAudit({
+      userId: req.user.id, action: 'force_logout',
+      entityType: 'user', entityId: Number(id),
+    });
+    res.json({ message: 'All sessions revoked' });
+  } catch (err) {
+    console.error('[adminController.forceLogoutUser]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// Admin notes — add a note to a user
+export const addAdminNote = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { note } = req.body;
+    if (!note || !note.trim()) return res.status(400).json({ message: 'Note is required' });
+
+    const [result] = await pool.execute(
+      'INSERT INTO admin_user_notes (user_id, admin_id, note) VALUES (?, ?, ?)',
+      [id, req.user.id, note.trim()],
+    );
+    res.json({ message: 'Note added', noteId: result.insertId });
+  } catch (err) {
+    console.error('[adminController.addAdminNote]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// Admin notes — get all notes for a user
+export const getAdminNotes = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [rows] = await pool.execute(
+      `SELECT n.*, u.name AS admin_name, u.email AS admin_email
+       FROM admin_user_notes n
+       JOIN users u ON u.id = n.admin_id
+       WHERE n.user_id = ?
+       ORDER BY n.created_at DESC`,
+      [id],
+    );
+    res.json({ notes: rows });
+  } catch (err) {
+    console.error('[adminController.getAdminNotes]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// Admin notes — delete a note
+export const deleteAdminNote = async (req, res) => {
+  try {
+    const { noteId } = req.params;
+    await pool.execute('DELETE FROM admin_user_notes WHERE id = ?', [noteId]);
+    res.json({ message: 'Note deleted' });
+  } catch (err) {
+    console.error('[adminController.deleteAdminNote]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// Export users as CSV
+export const exportUsers = async (req, res) => {
+  try {
+    const { role, status, search } = req.query;
+    const conditions = [];
+    const params = [];
+
+    if (role && role !== 'all') conditions.push('u.role = ?') && params.push(role);
+    if (status && status !== 'all') {
+      if (status === 'pending') conditions.push('u.role = "organizer" AND u.is_approved = 0 AND u.status = "active"');
+      else if (status === 'active') conditions.push('u.status = "active"');
+      else if (status === 'suspended') conditions.push('u.status = "suspended"');
+    }
+    if (search) {
+      conditions.push('(u.name LIKE ? OR u.email LIKE ?)');
+      params.push(`%${search}%`, `%${search}%`);
+    }
+
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const [rows] = await pool.execute(
+      `SELECT u.id, u.name, u.email, u.role, u.phone, u.status, u.is_approved,
+              u.email_verified, u.created_at, u.last_login_at,
+              op.organization_name
+       FROM users u
+       LEFT JOIN organizer_profiles op ON op.user_id = u.id
+       ${where}
+       ORDER BY u.created_at DESC`,
+      params,
+    );
+
+    const csvHeader = 'ID,Name,Email,Role,Phone,Status,Approved,Email Verified,Organization,Created,Last Login\n';
+    const csvBody = rows.map((r) =>
+      [r.id, `"${(r.name || '').replace(/"/g, '""')}"`, r.email, r.role, r.phone || '',
+       r.status, r.is_approved ? 'Yes' : 'No', r.email_verified ? 'Yes' : 'No',
+       `"${(r.organization_name || '').replace(/"/g, '""')}"`,
+       r.created_at || '', r.last_login_at || ''].join(',')
+    ).join('\n');
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="users-export.csv"');
+    res.send(csvHeader + csvBody);
+  } catch (err) {
+    console.error('[adminController.exportUsers]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// Bulk role change
+export const bulkRoleChange = async (req, res) => {
+  try {
+    const { ids, role } = req.body;
+    if (!ids?.length || !role) return res.status(400).json({ message: 'ids and role are required' });
+    if (!['attendee', 'organizer'].includes(role)) return res.status(400).json({ message: 'Invalid role' });
+
+    const placeholders = ids.map(() => '?').join(',');
+    // Don't touch admin accounts
+    await pool.execute(
+      `UPDATE users SET role = ? WHERE id IN (${placeholders}) AND role != 'admin'`,
+      [role, ...ids],
+    );
+
+    // Ensure organizer profiles exist for promoted users
+    if (role === 'organizer') {
+      for (const uid of ids) {
+        const [existing] = await pool.execute('SELECT id FROM organizer_profiles WHERE user_id = ?', [uid]);
+        if (!existing.length) {
+          const [u] = await pool.execute('SELECT name FROM users WHERE id = ?', [uid]);
+          await pool.execute(
+            'INSERT INTO organizer_profiles (user_id, organization_name) VALUES (?, ?)',
+            [uid, u[0]?.name || 'Unknown'],
+          );
+        }
+      }
+    }
+
+    await logAudit({
+      userId: req.user.id, action: 'bulk_role_change',
+      entityType: 'user', entityId: 0,
+      details: { ids, role },
+    });
+    res.json({ message: `${ids.length} users updated to ${role}` });
+  } catch (err) {
+    console.error('[adminController.bulkRoleChange]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// Bulk delete
+export const bulkDeleteUsers = async (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!ids?.length) return res.status(400).json({ message: 'ids array is required' });
+
+    const placeholders = ids.map(() => '?').join(',');
+    // Don't delete admin accounts
+    const [result] = await pool.execute(
+      `DELETE FROM users WHERE id IN (${placeholders}) AND role != 'admin'`,
+      [...ids],
+    );
+
+    await logAudit({
+      userId: req.user.id, action: 'bulk_delete_users',
+      entityType: 'user', entityId: 0,
+      details: { ids, deleted: result.affectedRows },
+    });
+    res.json({ message: `${result.affectedRows} users deleted` });
+  } catch (err) {
+    console.error('[adminController.bulkDeleteUsers]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// User management stats — overview bar numbers
+export const getUserManagementStats = async (_req, res) => {
+  try {
+    const [total] = await pool.execute('SELECT COUNT(*) AS count FROM users');
+    const [active] = await pool.execute("SELECT COUNT(*) AS count FROM users WHERE status = 'active'");
+    const [suspended] = await pool.execute("SELECT COUNT(*) AS count FROM users WHERE status = 'suspended'");
+    const [pending] = await pool.execute("SELECT COUNT(*) AS count FROM users WHERE role = 'organizer' AND is_approved = 0 AND status = 'active'");
+    const [organizers] = await pool.execute("SELECT COUNT(*) AS count FROM users WHERE role = 'organizer'");
+    const [attendees] = await pool.execute("SELECT COUNT(*) AS count FROM users WHERE role = 'attendee'");
+    const [verified] = await pool.execute("SELECT COUNT(*) AS count FROM users WHERE email_verified = 1");
+    const [recentWeek] = await pool.execute("SELECT COUNT(*) AS count FROM users WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)");
+
+    res.json({
+      stats: {
+        total: total[0].count,
+        active: active[0].count,
+        suspended: suspended[0].count,
+        pendingOrganizers: pending[0].count,
+        organizers: organizers[0].count,
+        attendees: attendees[0].count,
+        verified: verified[0].count,
+        joinedThisWeek: recentWeek[0].count,
+      },
+    });
+  } catch (err) {
+    console.error('[adminController.getUserManagementStats]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// User stats — detailed breakdown for the user detail panel
+export const getUserStats = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [orders] = await pool.execute(
+      'SELECT COUNT(*) AS count, COALESCE(SUM(total_amount), 0) AS revenue FROM orders WHERE user_id = ?',
+      [id],
+    );
+    const [events] = await pool.execute(
+      'SELECT COUNT(*) AS count FROM events WHERE organizer_id = ?',
+      [id],
+    );
+    const [tickets] = await pool.execute(
+      'SELECT COUNT(*) AS count FROM tickets WHERE user_id = ?',
+      [id],
+    );
+    const [reviews] = await pool.execute(
+      'SELECT COUNT(*) AS count FROM reviews WHERE user_id = ?',
+      [id],
+    );
+    const [favorites] = await pool.execute(
+      'SELECT COUNT(*) AS count FROM user_favorites WHERE user_id = ?',
+      [id],
+    );
+    const [sessions] = await pool.execute(
+      `SELECT COUNT(*) AS count FROM refresh_tokens
+       WHERE user_id = ? AND revoked = 0 AND used = 0 AND expires_at > NOW()`,
+      [id],
+    );
+    const [loginHistory] = await pool.execute(
+      `SELECT action, created_at FROM audit_logs
+       WHERE user_id = ? AND action IN ('login', 'admin_login')
+       ORDER BY created_at DESC LIMIT 10`,
+      [id],
+    );
+
+    res.json({
+      stats: {
+        orders: orders[0].count,
+        revenue: Number(orders[0].revenue) || 0,
+        events: events[0].count,
+        tickets: tickets[0].count,
+        reviews: reviews[0].count,
+        favorites: favorites[0].count,
+        activeSessions: sessions[0].count,
+        recentLogins: loginHistory,
+      },
+    });
+  } catch (err) {
+    console.error('[adminController.getUserStats]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 export default {
-  getDashboardStats, getUsers, getUser, updateUser, suspendUser, unsuspendUser, verifyUser, deleteUser, approveOrganizer, resetUserPassword,
+  getDashboardStats, getUsers, getUser, updateUser, suspendUser, unsuspendUser, verifyUser, deleteUser, approveOrganizer, rejectOrganizer, resetUserPassword,
+  getUserManagementStats, getUserActivity, getUserSessions, getUserStats, forceLogoutUser, addAdminNote, getAdminNotes, deleteAdminNote, exportUsers, bulkRoleChange, bulkDeleteUsers,
   getEvents, approveEvent, rejectEvent, featureEvent, suspendEvent, unsuspendEvent, adminDeleteEvent,
   getCategories, createCategory, updateCategory, deleteCategory,
   getPayments, getPayment, refundPayment, getWithdrawals, approveWithdrawal,
