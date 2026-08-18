@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import {
-  getProfile, updateProfile, changePassword,
+  getProfile, updateProfile,
   getNotifications, markNotificationRead, markAllNotificationsRead, deleteNotification,
   getFavorites, toggleFavorite,
   followOrganizer, unfollowOrganizer, getFollowing, getFollowingEvents,
@@ -16,7 +16,6 @@ router.use(authenticate);
 // Profile
 router.get('/profile', getProfile);
 router.put('/profile', updateProfile);
-router.post('/change-password', changePassword);
 
 // Avatar upload
 router.post('/avatar', uploadSingle('avatar'), updateProfile);

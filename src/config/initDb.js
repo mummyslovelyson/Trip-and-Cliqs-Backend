@@ -323,7 +323,7 @@ async function initDb() {
         if (!process.env.ADMIN_PASSWORD && process.env.NODE_ENV === 'production') {
           console.warn('⚠️ ADMIN_PASSWORD is not set — the seed admin account uses the default password. Set ADMIN_PASSWORD before deploying.');
         }
-        const adminHash = await bcrypt.hash(adminPass, 10);
+        const adminHash = await bcrypt.hash(adminPass, 12);
         await connection.query(
           `INSERT INTO users (name, email, password, role, status, is_approved, email_verified)
            VALUES ('System Administrator', ?, ?, 'admin', 'active', TRUE, TRUE);`,

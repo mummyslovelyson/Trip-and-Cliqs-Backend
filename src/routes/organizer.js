@@ -7,10 +7,13 @@ import {
   getWithdrawals, requestWithdrawal,
   getTeamMembers, addTeamMember, removeTeamMember,
   sendMarketingEmail, getReports, getReportSummary, getSalesReport, getAttendanceReport, getTopEvents, getRefundReport, exportReport,
-  getOrganizationSettings, updateOrganizationSettings, getPaymentAccount, updatePaymentAccount, changePassword, getActiveSessions, revokeSession, getBranding, updateBranding,
+  getOrganizationSettings, updateOrganizationSettings, getPaymentAccount, updatePaymentAccount, getActiveSessions, revokeSession, getBranding, updateBranding,
   getFlashSales, createFlashSale, deleteFlashSale,
   getMarketingCampaigns, createMarketingCampaign, getPendingInvites, inviteTeamMember, resendInvite, cancelInvite, getWalletBalance, getTransactions, getWalletEarnings,
 } from '../controllers/organizerController.js';
+import {
+  changePassword, getSessions, revokeOneSession,
+} from '../controllers/authController.js';
 import {
   getCategories, createCategory, updateCategory, deleteCategory,
 } from '../controllers/adminController.js';
@@ -49,8 +52,8 @@ router.get('/settings/payment', getPaymentAccount);
 router.put('/settings/payment', writeLimiter, updatePaymentAccount);
 router.post('/settings/password', writeLimiter, changePassword);
 router.post('/password', writeLimiter, changePassword);
-router.get('/settings/sessions', getActiveSessions);
-router.delete('/settings/sessions/:id', revokeSession);
+router.get('/settings/sessions', getSessions);
+router.delete('/settings/sessions/:id', revokeOneSession);
 router.get('/settings/branding', getBranding);
 router.put('/settings/branding', writeLimiter, updateBranding);
 

@@ -164,7 +164,7 @@ export const changePassword = async (req, res) => {
     const match = await bcrypt.compare(currentPassword, user.password);
     if (!match) return res.status(400).json({ message: 'Current password is incorrect' });
 
-    const hashed = await bcrypt.hash(newPassword, 10);
+    const hashed = await bcrypt.hash(newPassword, 12);
     await pool.execute('UPDATE users SET password = ? WHERE id = ?', [hashed, req.user.id]);
 
     await logAudit({ userId: req.user.id, action: 'change_password', entityType: 'user', entityId: req.user.id });

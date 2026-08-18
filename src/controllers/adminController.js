@@ -1226,11 +1226,14 @@ export const resetUserPassword = async (req, res) => {
       return res.status(400).json({ message: strength.message });
     }
 
-    const hashed = await bcrypt.hash(newPassword, 10);
+    const hashed = await bcrypt.hash(newPassword, 12);
     await pool.execute('UPDATE users SET password = ? WHERE id = ?', [hashed, id]);
 
     // Burn outstanding reset tokens so old emailed links stop working.
     await pool.execute('UPDATE password_reset_tokens SET used = 1 WHERE user_id = ?', [id]);
+
+    // Revoke all sessions — force re-login everywhere
+    await pool.execute('UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?', [id]);
 
     await sendNotification({
       userId: Number(id),
