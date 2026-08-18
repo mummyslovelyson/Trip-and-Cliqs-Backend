@@ -30,7 +30,6 @@ const createPool = () =>
     connectionLimit: parseInt(process.env.DB_POOL_MAX, 10) || 20,
     queueLimit: parseInt(process.env.DB_QUEUE_LIMIT, 10) || 50,
     connectTimeout: parseInt(process.env.DB_ACQUIRE_TIMEOUT, 10) || 10_000,
-    family: 4,
     ...(process.env.DB_SSL === 'true' && {
       ssl: process.env.DB_SSL_CA
         ? { ca: process.env.DB_SSL_CA.replace(/\\n/g, '\n') }

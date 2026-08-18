@@ -27,7 +27,6 @@ async function initDb() {
       password,
       multipleStatements: true,
       connectTimeout: 30000,
-      family: 4,
       // Encrypt the connection when DB_SSL=true (required by most cloud
       // MySQL hosts, e.g. Aiven). Set DB_SSL_CA to pin a CA certificate.
       ...(process.env.DB_SSL === 'true' && {
