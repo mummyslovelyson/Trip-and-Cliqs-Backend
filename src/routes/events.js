@@ -7,8 +7,12 @@ import {
 } from '../controllers/eventController.js';
 import { authenticate, authorize, optionalAuth } from '../middleware/auth.js';
 import { uploadSingle, uploadArray } from '../middleware/upload.js';
+import { rateLimit } from '../middleware/rateLimit.js';
 
 const router = Router();
+
+// Stricter rate limit on write operations (20 writes/min per IP).
+const writeLimiter = rateLimit({ windowMs: 60_000, max: 20, message: 'Too many event changes. Please slow down.' });
 
 // Public
 router.get('/', getEvents);
@@ -20,11 +24,11 @@ router.get('/featured-organizers', getFeaturedOrganizers);
 
 // Organizer-only (create / manage)
 router.get('/organizer/mine', authenticate, authorize('organizer', 'admin'), getOrganizerEvents);
-router.post('/', authenticate, authorize('organizer', 'admin'), uploadSingle('banner_image'), createEvent);
-router.put('/:id', authenticate, authorize('organizer', 'admin'), updateEvent);
-router.patch('/:id/publish', authenticate, authorize('organizer', 'admin'), publishEvent);
-router.patch('/:id/unpublish', authenticate, authorize('organizer', 'admin'), unpublishEvent);
-router.delete('/:id', authenticate, authorize('organizer', 'admin'), deleteEvent);
+router.post('/', authenticate, authorize('organizer', 'admin'), writeLimiter, uploadSingle('banner_image'), createEvent);
+router.put('/:id', authenticate, authorize('organizer', 'admin'), writeLimiter, updateEvent);
+router.patch('/:id/publish', authenticate, authorize('organizer', 'admin'), writeLimiter, publishEvent);
+router.patch('/:id/unpublish', authenticate, authorize('organizer', 'admin'), writeLimiter, unpublishEvent);
+router.delete('/:id', authenticate, authorize('organizer', 'admin'), writeLimiter, deleteEvent);
 router.get('/:id', optionalAuth, getEvent);
 
 export default router;

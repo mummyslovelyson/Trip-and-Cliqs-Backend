@@ -6,6 +6,7 @@ import { generateToken, generateRefreshToken, verifyRefreshToken } from '../util
 import { sendVerificationEmail, sendPasswordResetEmail, sendWelcomeEmail } from '../utils/email.js';
 import { logAudit } from '../utils/audit.js';
 import { validatePassword } from '../utils/password.js';
+import { recordAuthFailure, recordAuthSuccess } from '../middleware/abuse.js';
 
 const sanitize = (u) => {
   if (!u) return null;
@@ -117,10 +118,10 @@ export const login = async (req, res) => {
 
     const [rows] = await pool.execute('SELECT * FROM users WHERE email = ?', [email]);
     const user = rows[0];
-    if (!user) return res.status(401).json({ message: 'Invalid credentials' });
+    if (!user) { recordAuthFailure(req); return res.status(401).json({ message: 'Invalid credentials' }); }
 
     const match = await bcrypt.compare(password, user.password);
-    if (!match) return res.status(401).json({ message: 'Invalid credentials' });
+    if (!match) { recordAuthFailure(req); return res.status(401).json({ message: 'Invalid credentials' }); }
 
     if (user.status === 'suspended') {
       return res.status(403).json({ message: 'Your account has been suspended' });
@@ -136,6 +137,7 @@ export const login = async (req, res) => {
 
     await pool.execute('UPDATE users SET last_login_at = NOW() WHERE id = ?', [user.id]);
     await logAudit({ userId: user.id, action: 'login', entityType: 'user', entityId: user.id });
+    recordAuthSuccess(req);
 
     res.json({
       message: 'Login successful',
@@ -164,10 +166,10 @@ export const adminLogin = async (req, res) => {
       [email],
     );
     const user = rows[0];
-    if (!user) return res.status(401).json({ message: 'Invalid admin credentials' });
+    if (!user) { recordAuthFailure(req); return res.status(401).json({ message: 'Invalid admin credentials' }); }
 
     const match = await bcrypt.compare(password, user.password);
-    if (!match) return res.status(401).json({ message: 'Invalid admin credentials' });
+    if (!match) { recordAuthFailure(req); return res.status(401).json({ message: 'Invalid admin credentials' }); }
 
     const payload = { id: user.id, role: user.role, email: user.email };
     const accessToken = generateToken(payload);
@@ -175,6 +177,7 @@ export const adminLogin = async (req, res) => {
 
     await pool.execute('UPDATE users SET last_login_at = NOW() WHERE id = ?', [user.id]);
     await logAudit({ userId: user.id, action: 'admin_login', entityType: 'user', entityId: user.id });
+    recordAuthSuccess(req);
 
     res.json({
       message: 'Admin login successful',
