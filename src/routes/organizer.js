@@ -11,6 +11,9 @@ import {
   getFlashSales, createFlashSale, deleteFlashSale,
   getMarketingCampaigns, createMarketingCampaign, getPendingInvites, inviteTeamMember, resendInvite, cancelInvite, getWalletBalance, getTransactions, getWalletEarnings,
 } from '../controllers/organizerController.js';
+import {
+  getCategories, createCategory, updateCategory, deleteCategory,
+} from '../controllers/adminController.js';
 import { authenticate, authorize } from '../middleware/auth.js';
 import { uploadSingle } from '../middleware/upload.js';
 
@@ -85,5 +88,11 @@ router.delete('/team/invites/:id', cancelInvite);
 router.get('/marketing', getMarketingCampaigns);
 router.post('/marketing', createMarketingCampaign);
 router.post('/marketing/send', sendMarketingEmail);
+
+// Categories
+router.get('/categories', getCategories);
+router.post('/categories', createCategory);
+router.put('/categories/:id', updateCategory);
+router.delete('/categories/:id', deleteCategory);
 
 export default router;
