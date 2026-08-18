@@ -309,26 +309,27 @@ async function initDb() {
       `);
 
       // ── Auth hardening: server-side refresh tokens, lockout, password history ──
-      await connection.query(`
-        CREATE TABLE IF NOT EXISTS refresh_tokens (
-          id          BIGINT AUTO_INCREMENT PRIMARY KEY,
-          user_id     BIGINT NOT NULL,
-          token_hash  VARCHAR(64) NOT NULL UNIQUE,
-          family      VARCHAR(36) NOT NULL,
-          ip_address  VARCHAR(45),
-          user_agent  VARCHAR(300),
-          expires_at  DATETIME NOT NULL,
-          revoked     BOOLEAN NOT NULL DEFAULT FALSE,
-          used        BOOLEAN NOT NULL DEFAULT FALSE,
-          last_active DATETIME DEFAULT NULL,
-          created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          CONSTRAINT fk_rt_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-          INDEX idx_rt_user    (user_id),
-          INDEX idx_rt_hash    (token_hash),
-          INDEX idx_rt_family  (family),
-          INDEX idx_rt_expires (expires_at)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-      `);
+      try {
+        await connection.query(`
+          CREATE TABLE IF NOT EXISTS refresh_tokens (
+            id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+            user_id     BIGINT NOT NULL,
+            token_hash  VARCHAR(64) NOT NULL UNIQUE,
+            family      VARCHAR(36) NOT NULL,
+            ip_address  VARCHAR(45),
+            user_agent  VARCHAR(300),
+            expires_at  DATETIME NOT NULL,
+            revoked     BOOLEAN NOT NULL DEFAULT FALSE,
+            used        BOOLEAN NOT NULL DEFAULT FALSE,
+            last_active DATETIME DEFAULT NULL,
+            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_rt_user    (user_id),
+            INDEX idx_rt_hash    (token_hash),
+            INDEX idx_rt_family  (family),
+            INDEX idx_rt_expires (expires_at)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        `);
+      } catch (e) { console.warn('[migrate] refresh_tokens:', e.message); }
       const authCols = [
         `ALTER TABLE users ADD COLUMN failed_login_attempts INT NOT NULL DEFAULT 0;`,
         `ALTER TABLE users ADD COLUMN locked_until DATETIME NULL DEFAULT NULL;`,
@@ -336,48 +337,50 @@ async function initDb() {
       for (const colSql of authCols) {
         try { await connection.query(colSql); } catch (e) { /* existing column */ }
       }
-      await connection.query(`
-        CREATE TABLE IF NOT EXISTS password_history (
-          id             BIGINT AUTO_INCREMENT PRIMARY KEY,
-          user_id        BIGINT NOT NULL,
-          password_hash  VARCHAR(255) NOT NULL,
-          created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          CONSTRAINT fk_ph_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-          INDEX idx_ph_user (user_id)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-      `);
+      try {
+        await connection.query(`
+          CREATE TABLE IF NOT EXISTS password_history (
+            id             BIGINT AUTO_INCREMENT PRIMARY KEY,
+            user_id        BIGINT NOT NULL,
+            password_hash  VARCHAR(255) NOT NULL,
+            created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_ph_user (user_id)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        `);
+      } catch (e) { console.warn('[migrate] password_history:', e.message); }
 
       // ── Admin user management: internal notes, activity log ──
-      await connection.query(`
-        CREATE TABLE IF NOT EXISTS admin_user_notes (
-          id         BIGINT AUTO_INCREMENT PRIMARY KEY,
-          user_id    BIGINT NOT NULL,
-          admin_id   BIGINT NOT NULL,
-          note       TEXT NOT NULL,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-          CONSTRAINT fk_aun_user  FOREIGN KEY (user_id)  REFERENCES users(id) ON DELETE CASCADE,
-          CONSTRAINT fk_aun_admin FOREIGN KEY (admin_id) REFERENCES users(id) ON DELETE CASCADE,
-          INDEX idx_aun_user (user_id)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-      `);
-      await connection.query(`
-        CREATE TABLE IF NOT EXISTS user_activity_log (
-          id          BIGINT AUTO_INCREMENT PRIMARY KEY,
-          user_id     BIGINT NOT NULL,
-          action      VARCHAR(100) NOT NULL,
-          entity_type VARCHAR(50),
-          entity_id   BIGINT,
-          details     JSON,
-          ip_address  VARCHAR(45),
-          user_agent  VARCHAR(300),
-          created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          CONSTRAINT fk_ual_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-          INDEX idx_ual_user   (user_id),
-          INDEX idx_ual_action (action),
-          INDEX idx_ual_created (created_at)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-      `);
+      try {
+        await connection.query(`
+          CREATE TABLE IF NOT EXISTS admin_user_notes (
+            id         BIGINT AUTO_INCREMENT PRIMARY KEY,
+            user_id    BIGINT NOT NULL,
+            admin_id   BIGINT NOT NULL,
+            note       TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_aun_user (user_id)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        `);
+      } catch (e) { console.warn('[migrate] admin_user_notes:', e.message); }
+      try {
+        await connection.query(`
+          CREATE TABLE IF NOT EXISTS user_activity_log (
+            id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+            user_id     BIGINT NOT NULL,
+            action      VARCHAR(100) NOT NULL,
+            entity_type VARCHAR(50),
+            entity_id   BIGINT,
+            details     JSON,
+            ip_address  VARCHAR(45),
+            user_agent  VARCHAR(300),
+            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_ual_user   (user_id),
+            INDEX idx_ual_action (action),
+            INDEX idx_ual_created (created_at)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        `);
+      } catch (e) { console.warn('[migrate] user_activity_log:', e.message); }
 
       // Create the seed admin account ONLY on first run. The password is
       // never reset here — existing credentials are preserved across restarts.
