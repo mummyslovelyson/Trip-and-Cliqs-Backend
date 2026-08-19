@@ -1196,14 +1196,18 @@ export const verifyUser = approveOrganizer;
 // system generate a strong temporary one. The plaintext is never stored —
 // only the bcrypt hash. Outstanding reset tokens are burned so stale
 // links cannot override the fresh credential.
-const generateTemporaryPassword = (len = 12) => {
-  const chars = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const generateTemporaryPassword = (len = 14) => {
+  const lower = 'abcdefghijkmnopqrstuvwxyz';
+  const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const digits = '23456789';
+  const special = '!@#$%^&*';
+  const all = lower + upper + digits + special;
+  const pick = (s) => s[crypto.randomBytes(1)[0] % s.length];
+  const required = [pick(lower), pick(upper), pick(digits), pick(special)];
   const bytes = crypto.randomBytes(len);
-  let out = '';
-  for (let i = 0; i < len; i++) out += chars[bytes[i] % chars.length];
-  if (!/[a-zA-Z]/.test(out)) out = `${out.slice(0, -1)}a`;
-  if (!/\d/.test(out)) out = `${out.slice(0, -1)}7`;
-  return out;
+  const out = required.join('');
+  for (let i = out.length; i < len; i++) out += all[bytes[i] % all.length];
+  return out.split('').sort(() => crypto.randomBytes(1)[0] % 3 - 1).join('');
 };
 
 export const resetUserPassword = async (req, res) => {

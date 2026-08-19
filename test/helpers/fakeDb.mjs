@@ -184,11 +184,21 @@ export function createFakeDb() {
   function del(sql, params) {
     const t = sql.match(/DELETE FROM (\w+)/i)[1];
     const m = sql.match(/WHERE\s+([\s\S]*)$/i);
+    const rawConditions = m ? splitTop(m[1], 'AND') : [];
     const cursor = { i: 0 };
-    const conditions = m ? splitTop(m[1], 'AND') : [];
-    const conds = conditions.map((c) => resolveCond(parseCond(c), params, cursor));
+    const resolved = rawConditions.map((c) => ({
+      raw: c,
+      isSubquery: /\bIN\s*\(\s*SELECT\b/i.test(c),
+      cond: /\bIN\s*\(\s*SELECT\b/i.test(c) ? null : resolveCond(parseCond(c), params, cursor),
+    }));
     const before = tables[t].length;
-    tables[t] = tables[t].filter((row) => !conds.every((c) => matches(c, row)));
+    tables[t] = tables[t].filter((row) => {
+      for (const { isSubquery, cond } of resolved) {
+        if (isSubquery) return true;
+        if (!matches(cond, row)) return true;
+      }
+      return false;
+    });
     return [{ affectedRows: before - tables[t].length }, []];
   }
 
