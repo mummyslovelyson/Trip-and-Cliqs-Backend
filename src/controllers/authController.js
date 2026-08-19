@@ -140,8 +140,8 @@ export const register = async (req, res) => {
 
     const [result] = await pool.execute(
       `INSERT INTO users (name, email, password, role, phone, status, is_approved, email_verified)
-       VALUES (?, ?, ?, ?, ?, 'active', ?, 0)`,
-      [name, email, hashed, role, phone || null, isApproved],
+       VALUES (?, ?, ?, ?, ?, 'active', ?, FALSE)`,
+      [name, email, hashed, role, phone || null, isApproved === 1],
     );
 
     const userId = result.insertId;
@@ -160,7 +160,7 @@ export const register = async (req, res) => {
     // Persist hashed verification token
     await pool.execute(
       `INSERT INTO email_verifications (user_id, token_hash, expires_at, used)
-       VALUES (?, ?, NOW() + INTERVAL '24 hours', 0)`,
+       VALUES (?, ?, NOW() + INTERVAL '24 hours', FALSE)`,
       [userId, hashToken(verifyToken)],
     );
 
@@ -361,7 +361,7 @@ export const forgotPassword = async (req, res) => {
       const rawToken = uuidv4();
       await pool.execute(
         `INSERT INTO password_reset_tokens (user_id, token_hash, expires_at, used)
-         VALUES (?, ?, NOW() + INTERVAL '1 hour', 0)`,
+         VALUES (?, ?, NOW() + INTERVAL '1 hour', FALSE)`,
         [user.id, hashToken(rawToken)],
       );
       await pool.execute(
