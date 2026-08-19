@@ -76,7 +76,7 @@ export function createFakeDb() {
 
   function evalToken(token, params, cursor) {
     token = token.trim();
-    if (token === '?') return params[cursor.i++];
+    if (token === '?' || /^\$\d+$/.test(token)) return params[cursor.i++];
     if (/^'(?:[^']|'')*'$/.test(token)) return token.slice(1, -1).replace(/''/g, "'");
     if (/^"(?:[^"]|"")*"$/.test(token)) return token.slice(1, -1).replace(/""/g, '"');
     if (/^[+-]?\d+(\.\d+)?$/.test(token)) return Number(token);

@@ -725,13 +725,13 @@ BEGIN
     SELECT unnest(ARRAY[
       'users', 'organizer_profiles', 'categories', 'events', 'ticket_types',
       'orders', 'tickets', 'reviews', 'support_tickets', 'faqs', 'blog_posts',
-      'system_settings', 'flash_sales', 'marketing_campaigns', 'admin_user_notes',
-      'organizer_profiles'
+      'system_settings', 'flash_sales', 'marketing_campaigns', 'admin_user_notes'
     ])
   LOOP
     IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = tbl AND column_name = 'updated_at') THEN
+      EXECUTE format('DROP TRIGGER IF EXISTS trg_%s_updated_at ON %I;', tbl, tbl);
       EXECUTE format(
-        'CREATE TRIGGER trg_%s_updated_at BEFORE UPDATE ON %I FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()',
+        'CREATE TRIGGER trg_%s_updated_at BEFORE UPDATE ON %I FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();',
         tbl, tbl
       );
     END IF;

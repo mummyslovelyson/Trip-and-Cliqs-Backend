@@ -23,19 +23,38 @@ function convertParams(sql, params = []) {
  * Both query and execute accept MySQL-style ? placeholders and return
  * [rows, fields] to match the mysql2 API used throughout the codebase.
  */
-const pool = new pg.Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT, 10) || 5432,
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'tribes_cliqs',
-  max: parseInt(process.env.DB_POOL_MAX, 10) || 20,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: parseInt(process.env.DB_ACQUIRE_TIMEOUT, 10) || 10000,
-  ssl: process.env.DB_SSL === 'true'
-    ? { rejectUnauthorized: false }
-    : false,
-});
+const isRemoteHost = (host) => host && host !== 'localhost' && host !== '127.0.0.1';
+
+const getPoolConfig = () => {
+  if (process.env.DATABASE_URL) {
+    return {
+      connectionString: process.env.DATABASE_URL,
+      max: parseInt(process.env.DB_POOL_MAX, 10) || 20,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: parseInt(process.env.DB_ACQUIRE_TIMEOUT, 10) || 10000,
+      ssl: process.env.DB_SSL === 'false'
+        ? false
+        : { rejectUnauthorized: false },
+    };
+  }
+
+  const host = process.env.DB_HOST || '127.0.0.1';
+  const useSsl = process.env.DB_SSL === 'true' || isRemoteHost(host);
+
+  return {
+    host,
+    port: parseInt(process.env.DB_PORT, 10) || 5432,
+    user: process.env.DB_USER || 'postgres',
+    password: process.env.DB_PASSWORD || '',
+    database: process.env.DB_NAME || 'tribes_cliqs',
+    max: parseInt(process.env.DB_POOL_MAX, 10) || 20,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: parseInt(process.env.DB_ACQUIRE_TIMEOUT, 10) || 10000,
+    ssl: useSsl ? { rejectUnauthorized: false } : false,
+  };
+};
+
+const pool = new pg.Pool(getPoolConfig());
 
 pool.on('error', (err) => {
   console.error('[db] Unexpected pool error:', err.message);

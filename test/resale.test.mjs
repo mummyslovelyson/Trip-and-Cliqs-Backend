@@ -242,57 +242,59 @@ test('cannot buy your own listing or a sold listing', async () => {
 });
 
 test('seller can cancel an active listing', async () => {
-  // Alice lists her third ticket (id 4 was pushed earlier for the past-event
-  // test; use a fresh one).
+  const alice = await login('alice@test.com');
+  const bob = await login('bob@test.com');
+
+  const ticketId = db.seq.tickets++;
   db.tables.tickets.push({
-    id: 6, order_item_id: null, user_id: 1, event_id: 1, ticket_type_id: 2,
+    id: ticketId, order_item_id: null, user_id: 1, event_id: 1, ticket_type_id: 2,
     ticket_number: 'TC-CCC1', qr_code: 'qr-c', seat_number: null,
     status: 'active', created_at: new Date().toISOString(),
   });
-  db.seq.tickets = 7;
-  const create = await api('POST', '/api/resale', { token: aliceToken, body: { ticketId: 6, price: 30 } });
-  console.log('[debug] cancel-test create:', create.status, JSON.stringify(create.json));
+  const create = await api('POST', '/api/resale', { token: alice, body: { ticketId, price: 30 } });
+  assert.equal(create.status, 201);
   const listingId = create.json.listingId;
 
   // A non-owner cannot cancel it.
-  const forbidden = await api('DELETE', `/api/resale/${listingId}`, { token: bobToken });
+  const forbidden = await api('DELETE', `/api/resale/${listingId}`, { token: bob });
   assert.equal(forbidden.status, 403);
 
-  const r = await api('DELETE', `/api/resale/${listingId}`, { token: aliceToken });
+  const r = await api('DELETE', `/api/resale/${listingId}`, { token: alice });
   assert.equal(r.status, 200);
   const row = db.tables.resale_listings.find((l) => l.id === listingId);
   assert.equal(row.status, 'cancelled');
 });
 
 test('completeOrder path transfers the ticket when a resale order completes', async () => {
-  // Simulate the production path: order created pending with resale_listing_id,
-  // then completeOrder() finalizes it. Alice lists ticket 6 again (new one).
+  const alice = await login('alice@test.com');
+
+  const ticketId = db.seq.tickets++;
   db.tables.tickets.push({
-    id: 7, order_item_id: null, user_id: 1, event_id: 1, ticket_type_id: 2,
+    id: ticketId, order_item_id: null, user_id: 1, event_id: 1, ticket_type_id: 2,
     ticket_number: 'TC-DDD1', qr_code: 'qr-d', seat_number: null,
     status: 'active', created_at: new Date().toISOString(),
   });
-  db.seq.tickets = 8;
-  const create = await api('POST', '/api/resale', { token: aliceToken, body: { ticketId: 7, price: 55 } });
+  const create = await api('POST', '/api/resale', { token: alice, body: { ticketId, price: 55 } });
+  assert.equal(create.status, 201);
   const listingId = create.json.listingId;
 
   // Insert a pending order wired to the listing and mark it completed via the
   // order controller path (webhook equivalent: completeOrder -> transfer).
+  const orderId = db.seq.orders++;
   db.tables.orders.push({
-    id: 99, user_id: 3, event_id: 1, total_amount: 55, discount_amount: 0,
+    id: orderId, user_id: 3, event_id: 1, total_amount: 55, discount_amount: 0,
     payment_method: 'paystack', payment_status: 'pending',
     payment_reference: 'TC-DEV99', resale_listing_id: listingId,
     order_status: 'active', created_at: new Date().toISOString(),
   });
-  db.seq.orders = 100;
 
   const { completeResaleOrder } = await import('../src/controllers/resaleController.js');
-  await completeResaleOrder(99, 'TC-DEV99');
+  await completeResaleOrder(orderId, 'TC-DEV99');
 
   const listing = db.tables.resale_listings.find((l) => l.id === listingId);
   assert.equal(listing.status, 'sold');
   assert.equal(listing.sold_to, 3);
-  const original = db.tables.tickets.find((t) => t.id === 7);
+  const original = db.tables.tickets.find((t) => t.id === ticketId);
   assert.equal(original.status, 'transferred');
   const buyerTicket = db.tables.tickets.find((t) => t.user_id === 3 && t.status === 'active');
   assert.ok(buyerTicket, 'buyer received ticket via completeOrder');

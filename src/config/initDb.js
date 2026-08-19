@@ -19,21 +19,30 @@ async function initDb() {
   console.log(`[initDb] target=${host}:${port} user=${user} db=${dbName} ssl=${process.env.DB_SSL}`);
 
   let connection;
+  const isRemote = (h) => h && h !== 'localhost' && h !== '127.0.0.1';
   const MAX_RETRIES = 5;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      connection = new pg.Client({
-        host,
-        port,
-        user,
-        password,
-        database: dbName,
-        connectionTimeoutMillis: 30000,
-        ssl: process.env.DB_SSL === 'true'
-          ? { rejectUnauthorized: false }
-          : false,
-      });
+      if (process.env.DATABASE_URL) {
+        connection = new pg.Client({
+          connectionString: process.env.DATABASE_URL,
+          connectionTimeoutMillis: 30000,
+          ssl: process.env.DB_SSL === 'false' ? false : { rejectUnauthorized: false },
+        });
+      } else {
+        const useSsl = process.env.DB_SSL === 'true' || isRemote(host);
+        connection = new pg.Client({
+          host,
+          port,
+          user,
+          password,
+          database: dbName,
+          connectionTimeoutMillis: 30000,
+          ssl: useSsl ? { rejectUnauthorized: false } : false,
+        });
+      }
       await connection.connect();
+      console.log('✅ Connected to PostgreSQL database.');
       break;
     } catch (err) {
       console.error(`[initDb] connection attempt ${attempt}/${MAX_RETRIES} failed: ${err.code || err.message}`);
