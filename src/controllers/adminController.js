@@ -46,7 +46,7 @@ export const getDashboardStats = async (_req, res) => {
       `SELECT COUNT(*) AS total FROM tickets WHERE DATE(created_at) = CURRENT_DATE`,
     );
     const [[pendingOrgsRow]] = await pool.execute(
-      `SELECT COUNT(*) AS total FROM users WHERE role = 'organizer' AND is_approved = 0 AND status = 'active'`,
+      `SELECT COUNT(*) AS total FROM users WHERE role = 'organizer' AND is_approved = FALSE AND status = 'active'`,
     );
     const [[pendingWithdrawalsRow]] = await pool.execute(`SELECT COUNT(*) AS total FROM withdrawals WHERE status = 'pending'`);
     const [[pendingEventsRow]] = await pool.execute(`SELECT COUNT(*) AS total FROM events WHERE status = 'pending'`);
@@ -299,7 +299,7 @@ export const rejectOrganizer = async (req, res) => {
     if (!user) return res.status(404).json({ message: 'User not found' });
     if (user.role !== 'organizer') return res.status(400).json({ message: 'Only organizer accounts can be rejected' });
 
-    await pool.execute(`UPDATE users SET is_approved = 0, status = 'rejected' WHERE id = ?`, [id]);
+    await pool.execute(`UPDATE users SET is_approved = FALSE, status = 'rejected' WHERE id = ?`, [id]);
     await pool.execute(`UPDATE organizer_profiles SET is_verified = 0 WHERE user_id = ?`, [id]);
 
     await sendNotification({
@@ -415,7 +415,7 @@ export const suspendUser = async (req, res) => {
     await sendNotification({
       userId: Number(id),
       title: 'Account suspended',
-      message: `Your account has been suspended. Reason: ${suspendReason}`, // eslint-disable-line max-len
+      message: `Your account has been suspended. Reason: ${suspendReason}`,
       type: 'account',
     });
     await logAudit({ userId: req.user.id, action: 'suspend_user', entityType: 'user', entityId: Number(id), details: { reason: suspendReason } });
@@ -437,7 +437,7 @@ export const approveOrganizer = async (req, res) => {
     if (!user) return res.status(404).json({ message: 'Organizer not found' });
     if (user.role !== 'organizer') return res.status(400).json({ message: 'Only organizer accounts can be approved' });
 
-    await pool.execute(`UPDATE users SET is_approved = 1, status = 'active' WHERE id = ?`, [id]);
+    await pool.execute(`UPDATE users SET is_approved = TRUE, status = 'active' WHERE id = ?`, [id]);
     await pool.execute(`UPDATE organizer_profiles SET is_verified = 1, approved_at = NOW() WHERE user_id = ?`, [id]);
 
     try {
@@ -1237,10 +1237,10 @@ export const resetUserPassword = async (req, res) => {
     await pool.execute('UPDATE users SET password = ? WHERE id = ?', [hashed, id]);
 
     // Burn outstanding reset tokens so old emailed links stop working.
-    await pool.execute('UPDATE password_reset_tokens SET used = 1 WHERE user_id = ?', [id]);
+    await pool.execute('UPDATE password_reset_tokens SET used = TRUE WHERE user_id = ?', [id]);
 
     // Revoke all sessions — force re-login everywhere
-    await pool.execute('UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?', [id]);
+    await pool.execute('UPDATE refresh_tokens SET revoked = TRUE WHERE user_id = ?', [id]);
 
     await sendNotification({
       userId: Number(id),
@@ -1341,7 +1341,7 @@ export const getUserSessions = async (req, res) => {
     const [rows] = await pool.execute(
       `SELECT id, ip_address, user_agent, created_at, last_active
        FROM refresh_tokens
-       WHERE user_id = ? AND revoked = 0 AND used = 0 AND expires_at > NOW()
+       WHERE user_id = ? AND revoked = FALSE AND used = FALSE AND expires_at > NOW()
        ORDER BY last_active DESC`,
       [id],
     );
@@ -1359,7 +1359,7 @@ export const forceLogoutUser = async (req, res) => {
     const [rows] = await pool.execute('SELECT * FROM users WHERE id = ?', [id]);
     if (!rows[0]) return res.status(404).json({ message: 'User not found' });
 
-    await pool.execute('UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?', [id]);
+    await pool.execute('UPDATE refresh_tokens SET revoked = TRUE WHERE user_id = ?', [id]);
     await sendNotification({
       userId: Number(id),
       title: 'Signed out by administrator',
@@ -1435,8 +1435,8 @@ export const exportUsers = async (req, res) => {
 
     if (role && role !== 'all') conditions.push('u.role = ?') && params.push(role);
     if (status && status !== 'all') {
-      if (status === 'pending') conditions.push('u.role = "organizer" AND u.is_approved = 0 AND u.status = "active"');
-      else if (status === 'active') conditions.push('u.status = "active"');
+      if (status === 'pending') conditions.push("u.role = 'organizer' AND u.is_approved = FALSE AND u.status = 'active'");
+      else if (status === 'active') conditions.push("u.status = 'active'");
       else if (status === 'suspended') conditions.push('u.status = "suspended"');
     }
     if (search) {
@@ -1590,7 +1590,7 @@ export const getUserStats = async (req, res) => {
     const reviews = await safeQuery('SELECT COUNT(*) AS count FROM reviews WHERE user_id = ?', [id]);
     const favorites = await safeQuery('SELECT COUNT(*) AS count FROM favorites WHERE user_id = ?', [id]);
     const sessions = await safeQuery(
-      `SELECT COUNT(*) AS count FROM refresh_tokens WHERE user_id = ? AND (revoked = 0 OR revoked = FALSE) AND (used = 0 OR used = FALSE) AND expires_at > NOW()`,
+      `SELECT COUNT(*) AS count FROM refresh_tokens WHERE user_id = ? AND revoked = FALSE AND used = FALSE AND expires_at > NOW()`,
       [id],
     );
     let recentLogins = [];

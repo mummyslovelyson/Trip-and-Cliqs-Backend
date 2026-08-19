@@ -16,7 +16,7 @@ import textPdf from '../utils/pdf.js';
 const applyCoupon = async (eventId, code, subtotal) => {
   if (!code) return { valid: false, discount: 0 };
   const [rows] = await pool.execute(
-    `SELECT * FROM coupons WHERE event_id = ? AND code = ? AND is_active = 1`,
+    `SELECT * FROM coupons WHERE event_id = ? AND code = ? AND is_active = TRUE`,
     [eventId, code],
   );
   const coupon = rows[0];

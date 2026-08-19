@@ -623,7 +623,7 @@ export const getFeaturedOrganizers = async (req, res) => {
        FROM users u
        LEFT JOIN organizer_profiles op ON op.user_id = u.id
        LEFT JOIN events e ON e.organizer_id = u.id AND e.status = 'published'
-       WHERE u.role = 'organizer' AND u.is_approved = 1 AND u.status = 'active'
+       WHERE u.role = 'organizer' AND u.is_approved = TRUE AND u.status = 'active'
        GROUP BY u.id
        ORDER BY events_count DESC, u.name ASC
        LIMIT ${Math.min(parseInt(limit, 10) || 6, 20)}`,

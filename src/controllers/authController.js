@@ -365,8 +365,8 @@ export const forgotPassword = async (req, res) => {
         [user.id, hashToken(rawToken)],
       );
       await pool.execute(
-        `UPDATE password_reset_tokens SET used = 1
-         WHERE user_id = ? AND used = 0 AND token_hash <> ?`,
+        `UPDATE password_reset_tokens SET used = TRUE
+         WHERE user_id = ? AND used = FALSE AND token_hash <> ?`,
         [user.id, hashToken(rawToken)],
       );
       try {
@@ -403,7 +403,7 @@ export const resetPassword = async (req, res) => {
       `SELECT prt.*, u.email
        FROM password_reset_tokens prt
        JOIN users u ON u.id = prt.user_id
-       WHERE prt.token_hash = ? AND prt.used = 0 AND prt.expires_at > NOW()`,
+       WHERE prt.token_hash = ? AND prt.used = FALSE AND prt.expires_at > NOW()`,
       [tokenHash],
     );
     const resetRow = rows[0];
@@ -421,7 +421,7 @@ export const resetPassword = async (req, res) => {
     await storePasswordHistory(resetRow.user_id, hashed);
 
     // Burn all reset tokens + revoke all refresh tokens (force re-login everywhere)
-    await pool.execute('UPDATE password_reset_tokens SET used = 1 WHERE user_id = ?', [resetRow.user_id]);
+    await pool.execute('UPDATE password_reset_tokens SET used = TRUE WHERE user_id = ?', [resetRow.user_id]);
     await revokeAllUserTokens(resetRow.user_id);
 
     await logAudit({ userId: resetRow.user_id, action: 'reset_password', entityType: 'user', entityId: resetRow.user_id });
@@ -499,14 +499,14 @@ export const verifyEmail = async (req, res) => {
       `SELECT ev.*, u.email, u.name
        FROM email_verifications ev
        JOIN users u ON u.id = ev.user_id
-       WHERE ev.token_hash = ? AND ev.used = 0 AND ev.expires_at > NOW()`,
+       WHERE ev.token_hash = ? AND ev.used = FALSE AND ev.expires_at > NOW()`,
       [tokenHash],
     );
     const verification = rows[0];
     if (!verification) return res.status(400).json({ message: 'Invalid or expired verification token' });
 
-    await pool.execute('UPDATE email_verifications SET used = 1 WHERE id = ?', [verification.id]);
-    await pool.execute('UPDATE users SET email_verified = 1 WHERE id = ?', [verification.user_id]);
+    await pool.execute('UPDATE email_verifications SET used = TRUE WHERE id = ?', [verification.id]);
+    await pool.execute('UPDATE users SET email_verified = TRUE WHERE id = ?', [verification.user_id]);
 
     sendWelcomeEmail(verification.email, verification.name);
     await logAudit({ userId: verification.user_id, action: 'verify_email', entityType: 'user', entityId: verification.user_id });

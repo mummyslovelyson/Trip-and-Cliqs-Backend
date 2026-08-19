@@ -57,7 +57,7 @@ export const rotateRefreshToken = async (rawToken, meta = {}) => {
   if (!row) return { valid: false, error: 'Invalid refresh token' };
   if (row.used) {
     // TOKEN REUSE DETECTED — revoke entire family
-    await pool.execute('UPDATE refresh_tokens SET revoked = 1 WHERE family = ?', [row.family]);
+    await pool.execute('UPDATE refresh_tokens SET revoked = TRUE WHERE family = ?', [row.family]);
     return { valid: false, error: 'Token reuse detected — all sessions revoked', compromised: true, userId: row.user_id };
   }
   if (row.revoked) return { valid: false, error: 'Refresh token has been revoked' };
@@ -65,7 +65,7 @@ export const rotateRefreshToken = async (rawToken, meta = {}) => {
   if (row.status === 'suspended') return { valid: false, error: 'Account suspended' };
 
   // Mark old token as used (not revoked — "used" = legitimate rotation)
-  await pool.execute('UPDATE refresh_tokens SET used = 1 WHERE id = ?', [row.id]);
+  await pool.execute('UPDATE refresh_tokens SET used = TRUE WHERE id = ?', [row.id]);
 
   // Issue new token in same family
   const newRawToken = crypto.randomUUID();
@@ -92,7 +92,7 @@ export const rotateRefreshToken = async (rawToken, meta = {}) => {
  */
 export const revokeRefreshToken = async (rawToken) => {
   const tokenHash = hashToken(rawToken);
-  await pool.execute('UPDATE refresh_tokens SET revoked = 1 WHERE token_hash = ?', [tokenHash]);
+  await pool.execute('UPDATE refresh_tokens SET revoked = TRUE WHERE token_hash = ?', [tokenHash]);
 };
 
 /**
@@ -100,7 +100,7 @@ export const revokeRefreshToken = async (rawToken) => {
  * security事件, admin suspension).
  */
 export const revokeAllUserTokens = async (userId) => {
-  await pool.execute('UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?', [userId]);
+  await pool.execute('UPDATE refresh_tokens SET revoked = TRUE WHERE user_id = ?', [userId]);
 };
 
 /**
@@ -110,7 +110,7 @@ export const getUserSessions = async (userId) => {
   const [rows] = await pool.execute(
     `SELECT id, ip_address, user_agent, created_at, last_active
      FROM refresh_tokens
-     WHERE user_id = ? AND revoked = 0 AND used = 0 AND expires_at > NOW()
+     WHERE user_id = ? AND revoked = FALSE AND used = FALSE AND expires_at > NOW()
      ORDER BY last_active DESC`,
     [userId],
   );
@@ -122,7 +122,7 @@ export const getUserSessions = async (userId) => {
  */
 export const revokeSession = async (sessionId, userId) => {
   await pool.execute(
-    'UPDATE refresh_tokens SET revoked = 1 WHERE id = ? AND user_id = ?',
+    'UPDATE refresh_tokens SET revoked = TRUE WHERE id = ? AND user_id = ?',
     [sessionId, userId],
   );
 };

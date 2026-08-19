@@ -196,7 +196,7 @@ export const markNotificationRead = async (req, res) => {
   try {
     const { id } = req.params;
     await pool.execute(
-      `UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?`,
+      `UPDATE notifications SET is_read = TRUE WHERE id = ? AND user_id = ?`,
       [id, req.user.id],
     );
     res.json({ message: 'Notification marked as read' });
@@ -209,7 +209,7 @@ export const markNotificationRead = async (req, res) => {
 export const markAllNotificationsRead = async (req, res) => {
   try {
     await pool.execute(
-      `UPDATE notifications SET is_read = 1 WHERE user_id = ?`,
+      `UPDATE notifications SET is_read = TRUE WHERE user_id = ?`,
       [req.user.id],
     );
     res.json({ message: 'All notifications marked as read' });
