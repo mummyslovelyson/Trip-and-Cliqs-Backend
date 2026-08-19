@@ -1205,7 +1205,7 @@ const generateTemporaryPassword = (len = 14) => {
   const pick = (s) => s[crypto.randomBytes(1)[0] % s.length];
   const required = [pick(lower), pick(upper), pick(digits), pick(special)];
   const bytes = crypto.randomBytes(len);
-  const out = required.join('');
+  let out = required.join('');
   for (let i = out.length; i < len; i++) out += all[bytes[i] % all.length];
   return out.split('').sort(() => crypto.randomBytes(1)[0] % 3 - 1).join('');
 };
