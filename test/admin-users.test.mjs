@@ -290,7 +290,7 @@ test('promoting an attendee to organizer creates their organizer profile', async
 
 test('approve/reject organizer endpoints reject non-organizers', async () => {
   const reg = await api('POST', '/api/auth/register', {
-    body: { name: 'Plain Attendee', email: 'plain@test.com', password: 'password123' },
+    body: { name: 'Plain Attendee', email: 'plain@test.com', password: 'Plain@Pass123' },
   });
   assert.equal(reg.status, 201);
   const plainId = db.tables.users.find((u) => u.email === 'plain@test.com').id;
@@ -355,11 +355,11 @@ test('user detail exposes the stored password hash only as passwordHash', async 
 test('admin can reset a user password to a custom value', async () => {
   const r = await api('POST', '/api/admin/users/4/reset-password', {
     token: adminToken,
-    body: { password: 'FreshPass123' },
+    body: { password: 'FreshP@ss123' },
   });
   assert.equal(r.status, 200);
   assert.equal(r.json.temporaryPassword, undefined, 'no temp password when a custom one is supplied');
-  assert.equal(await bcrypt.compare('FreshPass123', userById(4).password), true, 'password was updated');
+  assert.equal(await bcrypt.compare('FreshP@ss123', userById(4).password), true, 'password was updated');
   const audit = db.tables.audit_logs.find((a) => a.action === 'admin_reset_password' && a.entity_id === 4);
   assert.ok(audit, 'reset is audited');
 });
@@ -368,7 +368,7 @@ test('admin can generate a temporary password when none is provided', async () =
   const r = await api('POST', '/api/admin/users/4/reset-password', { token: adminToken, body: {} });
   assert.equal(r.status, 200);
   assert.ok(r.json.temporaryPassword, 'temporary password returned once');
-  assert.ok(r.json.temporaryPassword.length >= 8, 'temp password meets length policy');
+  assert.ok(r.json.temporaryPassword.length >= 10, 'temp password meets length policy');
   assert.equal(await bcrypt.compare(r.json.temporaryPassword, userById(4).password), true, 'stored hash matches generated value');
 });
 
@@ -389,7 +389,7 @@ test('reset of a missing user returns 404', async () => {
 
 test('reset-password endpoint is admin-only', async () => {
   const reg = await api('POST', '/api/auth/register', {
-    body: { name: 'Eve', email: 'eve@test.com', password: 'password123' },
+    body: { name: 'Eve', email: 'eve@test.com', password: 'Eve@Pass1234' },
   });
   assert.equal(reg.status, 201);
   const userToken = reg.json.accessToken;
@@ -399,7 +399,7 @@ test('reset-password endpoint is admin-only', async () => {
 
 test('user-management endpoints are admin-only', async () => {
   const reg = await api('POST', '/api/auth/register', {
-    body: { name: 'Zoe', email: 'zoe@test.com', password: 'password123' },
+    body: { name: 'Zoe', email: 'zoe@test.com', password: 'Zoe@Pass1234' },
   });
   assert.equal(reg.status, 201);
   const userToken = reg.json.accessToken;

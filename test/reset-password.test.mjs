@@ -107,11 +107,11 @@ test('reset-password updates the password and burns every outstanding token', as
   const raw = 'aaaaaaaa-bbbb-cccc-dddd-eeeeffff0000';
   mintToken(1, raw);
 
-  const r = await api('POST', '/api/auth/reset-password', { token: raw, password: 'NewPass123' });
+  const r = await api('POST', '/api/auth/reset-password', { token: raw, password: 'NewP@ss1234' });
   assert.equal(r.status, 200, JSON.stringify(r.json));
 
   const user = db.tables.users.find((u) => u.id === 1);
-  assert.equal(await bcrypt.compare('NewPass123', user.password), true, 'password was updated');
+  assert.equal(await bcrypt.compare('NewP@ss1234', user.password), true, 'password was updated');
   assert.equal(
     db.tables.password_reset_tokens.filter((t) => t.user_id === 1 && t.used === 0).length,
     0,
@@ -121,12 +121,12 @@ test('reset-password updates the password and burns every outstanding token', as
 
 test('reusing a burned token returns 400, not a 500', async () => {
   const raw = 'aaaaaaaa-bbbb-cccc-dddd-eeeeffff0000'; // burned above
-  const r = await api('POST', '/api/auth/reset-password', { token: raw, password: 'NewPass123' });
+  const r = await api('POST', '/api/auth/reset-password', { token: raw, password: 'NewP@ss1234' });
   assert.equal(r.status, 400, JSON.stringify(r.json));
 });
 
 test('reset-password with an unknown token returns 400', async () => {
-  const r = await api('POST', '/api/auth/reset-password', { token: 'nope', password: 'NewPass123' });
+  const r = await api('POST', '/api/auth/reset-password', { token: 'nope', password: 'NewP@ss1234' });
   assert.equal(r.status, 400, JSON.stringify(r.json));
 });
 

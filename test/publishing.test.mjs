@@ -115,7 +115,7 @@ let rejectedEventId;
 
 test('public registration rejects admin/staff roles', async () => {
   const r = await api('POST', '/api/auth/register', {
-    body: { name: 'Hacker', email: 'hacker@test.com', password: 'password123', role: 'admin' },
+    body: { name: 'Hacker', email: 'hacker@test.com', password: 'Hacker@Pass123', role: 'admin' },
   });
   assert.equal(r.status, 400);
   assert.equal(
@@ -130,7 +130,7 @@ test('organizer registration creates a pending-approval organizer account', asyn
     body: {
       name: 'Accra Events Co',
       email: 'org@test.com',
-      password: 'password123',
+      password: 'Org@Pass1234',
       role: 'organizer',
       organizationName: 'Accra Events Co',
     },
