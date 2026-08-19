@@ -11,9 +11,41 @@ const MAX_RETRIES = parseInt(process.env.DB_RETRY_COUNT, 10) || 3;
  */
 function convertParams(sql, params = []) {
   let idx = 0;
-  const rewritten = sql.replace(/\?/g, () => `$${++idx}`);
+  let rewritten = sql.replace(/\?/g, () => `$${++idx}`);
   const flat = params.flat(Infinity);
+
+  const isInsert = /^\s*INSERT\s+INTO\s+/i.test(rewritten);
+  const hasReturning = /\bRETURNING\b/i.test(rewritten);
+  if (isInsert && !hasReturning) {
+    rewritten += ' RETURNING id';
+  }
+
   return { sql: rewritten, params: flat };
+}
+
+function formatResult(result) {
+  if (!result) return [[], []];
+
+  if (result.command === 'INSERT') {
+    const insertId = result.rows?.[0]?.id != null ? Number(result.rows[0].id) : 0;
+    const header = {
+      insertId,
+      affectedRows: result.rowCount || 0,
+      fieldCount: 0,
+    };
+    return [header, result.fields || []];
+  }
+
+  if (result.command === 'UPDATE' || result.command === 'DELETE') {
+    const header = {
+      affectedRows: result.rowCount || 0,
+      changedRows: result.rowCount || 0,
+      fieldCount: 0,
+    };
+    return [header, result.fields || []];
+  }
+
+  return [result.rows || [], result.fields || []];
 }
 
 /**
@@ -66,26 +98,27 @@ pool.on('connect', () => {
   }
 });
 
+const originalQuery = pool.query.bind(pool);
+
 /**
  * MySQL2-compatible wrapper: pool.execute(sql, params)
- * Returns [rows, fields] like mysql2.
+ * Returns [rows, fields] or [header, fields] like mysql2.
  */
 pool.execute = async (sql, params) => {
   const { sql: pgSql, params: pgParams } = convertParams(sql, params);
-  const result = await pool.query(pgSql, pgParams);
-  return [result.rows, result.fields];
+  const result = await originalQuery(pgSql, pgParams);
+  return formatResult(result);
 };
 
 /**
  * MySQL2-compatible wrapper: pool.query(sql, params)
- * Returns [rows, fields] like mysql2.
+ * Returns [rows, fields] or [header, fields] like mysql2.
  */
-const originalQuery = pool.query.bind(pool);
 pool.query = async (sql, params) => {
   if (typeof sql === 'string') {
     const { sql: pgSql, params: pgParams } = convertParams(sql, params);
     const result = await originalQuery(pgSql, pgParams);
-    return [result.rows, result.fields];
+    return formatResult(result);
   }
   return originalQuery(sql, params);
 };
@@ -100,12 +133,12 @@ pool.getConnection = async () => {
     execute: async (sql, params) => {
       const { sql: pgSql, params: pgParams } = convertParams(sql, params);
       const result = await client.query(pgSql, pgParams);
-      return [result.rows, result.fields];
+      return formatResult(result);
     },
     query: async (sql, params) => {
       const { sql: pgSql, params: pgParams } = convertParams(sql, params);
       const result = await client.query(pgSql, pgParams);
-      return [result.rows, result.fields];
+      return formatResult(result);
     },
     beginTransaction: async () => { await client.query('BEGIN'); },
     commit: async () => { await client.query('COMMIT'); },

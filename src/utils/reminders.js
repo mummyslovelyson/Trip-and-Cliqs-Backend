@@ -22,11 +22,12 @@ export async function runReminderJob() {
     const [holders] = await pool.execute(
       `SELECT DISTINCT user_id, event_id FROM tickets WHERE status = 'active'`,
     );
-    if (!holders.length) return { created: 0, skipped: 0 };
+    const holdersList = Array.isArray(holders) ? holders : [];
+    if (!holdersList.length) return { created: 0, skipped: 0 };
 
     // Group holders by event to avoid re-fetching event rows.
     const holdersByEvent = new Map();
-    for (const h of holders) {
+    for (const h of holdersList) {
       if (h.user_id == null) continue;
       if (!holdersByEvent.has(h.event_id)) holdersByEvent.set(h.event_id, []);
       holdersByEvent.get(h.event_id).push(h.user_id);

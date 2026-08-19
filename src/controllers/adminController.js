@@ -158,21 +158,22 @@ export const getUsers = async (req, res) => {
 
     if (status && status !== 'all') {
       if (status === 'pending') {
-        // Only organizer applicants awaiting review. Attendees never go
-        // through approval, so they must not appear as "pending".
-        conditions.push('u.role = "organizer" AND u.is_approved = 0 AND u.status = "active"');
+        conditions.push('u.role = ?', 'u.is_approved = ?', 'u.status = ?');
+        params.push('organizer', 0, 'active');
       } else if (status === 'active') {
-        conditions.push('u.status = "active"');
+        conditions.push('u.status = ?');
+        params.push('active');
       } else if (status === 'approved') {
-        // Only organizers that passed review. Admins never appear here.
-        conditions.push('u.role = "organizer" AND u.is_approved = 1 AND u.status = "active"');
+        conditions.push('u.role = ?', 'u.is_approved = ?', 'u.status = ?');
+        params.push('organizer', 1, 'active');
       } else if (status === 'suspended' || status === 'rejected') {
-        conditions.push(`u.status = "${status}"`);
+        conditions.push('u.status = ?');
+        params.push(status);
       }
     }
 
     if (search) {
-      conditions.push('(u.name LIKE ? OR u.email LIKE ? OR op.organization_name LIKE ?)');
+      conditions.push('(u.name ILIKE ? OR u.email ILIKE ? OR op.organization_name ILIKE ?)');
       const q = `%${search}%`;
       params.push(q, q, q);
     }
@@ -186,6 +187,8 @@ export const getUsers = async (req, res) => {
       `SELECT COUNT(*) AS total FROM users u LEFT JOIN organizer_profiles op ON op.user_id = u.id ${where}`,
       params,
     );
+    const totalCount = Number(countRows[0]?.total || 0);
+
     const [rows] = await pool.execute(
       `SELECT u.id, u.name, u.email, u.role, u.phone, u.status, u.is_approved, u.email_verified,
               u.suspend_reason, u.suspended_at,
@@ -229,7 +232,7 @@ export const getUsers = async (req, res) => {
 
     res.json({
       users: formattedUsers,
-      pagination: { page: pageNum, limit: limitNum, total: countRows[0].total, totalPages: Math.ceil(countRows[0].total / limitNum) },
+      pagination: { page: pageNum, limit: limitNum, total: totalCount, totalPages: Math.ceil(totalCount / limitNum) || 1 },
     });
   } catch (err) {
     console.error('[adminController.getUsers]', err);
@@ -1538,25 +1541,28 @@ export const bulkDeleteUsers = async (req, res) => {
 // User management stats — overview bar numbers
 export const getUserManagementStats = async (_req, res) => {
   try {
-    const [[total]] = await pool.query('SELECT COUNT(*) AS count FROM users');
-    const [[active]] = await pool.query("SELECT COUNT(*) AS count FROM users WHERE status = 'active'");
-    const [[suspended]] = await pool.query("SELECT COUNT(*) AS count FROM users WHERE status = 'suspended'");
-    const [[pending]] = await pool.query("SELECT COUNT(*) AS count FROM users WHERE role = 'organizer' AND is_approved = 0 AND status = 'active'");
-    const [[organizers]] = await pool.query("SELECT COUNT(*) AS count FROM users WHERE role = 'organizer'");
-    const [[attendees]] = await pool.query("SELECT COUNT(*) AS count FROM users WHERE role = 'attendee'");
-    const [[verified]] = await pool.query("SELECT COUNT(*) AS count FROM users WHERE email_verified = 1");
-    const [[recentWeek]] = await pool.query("SELECT COUNT(*) AS count FROM users WHERE created_at >= NOW() - INTERVAL '7 days'");
+    const [[total]] = await pool.execute('SELECT COUNT(*) AS count FROM users');
+    const [[active]] = await pool.execute("SELECT COUNT(*) AS count FROM users WHERE status = 'active'");
+    const [[suspended]] = await pool.execute("SELECT COUNT(*) AS count FROM users WHERE status = 'suspended'");
+    const [[pending]] = await pool.execute(
+      "SELECT COUNT(*) AS count FROM users WHERE role = 'organizer' AND is_approved = ? AND status = 'active'",
+      [0],
+    );
+    const [[organizers]] = await pool.execute("SELECT COUNT(*) AS count FROM users WHERE role = 'organizer'");
+    const [[attendees]] = await pool.execute("SELECT COUNT(*) AS count FROM users WHERE role = 'attendee'");
+    const [[verified]] = await pool.execute('SELECT COUNT(*) AS count FROM users WHERE email_verified = ?', [1]);
+    const [[recentWeek]] = await pool.execute("SELECT COUNT(*) AS count FROM users WHERE created_at >= NOW() - INTERVAL '7 days'");
 
     res.json({
       stats: {
-        total: total.count,
-        active: active.count,
-        suspended: suspended.count,
-        pendingOrganizers: pending.count,
-        organizers: organizers.count,
-        attendees: attendees.count,
-        verified: verified.count,
-        joinedThisWeek: recentWeek.count,
+        total: Number(total?.count || 0),
+        active: Number(active?.count || 0),
+        suspended: Number(suspended?.count || 0),
+        pendingOrganizers: Number(pending?.count || 0),
+        organizers: Number(organizers?.count || 0),
+        attendees: Number(attendees?.count || 0),
+        verified: Number(verified?.count || 0),
+        joinedThisWeek: Number(recentWeek?.count || 0),
       },
     });
   } catch (err) {
@@ -1571,7 +1577,7 @@ export const getUserStats = async (req, res) => {
     const { id } = req.params;
 
     const safeQuery = async (sql, params = []) => {
-      try { const [rows] = await pool.execute(sql, params); return rows[0]; }
+      try { const [rows] = await pool.execute(sql, params); return rows[0] || { count: 0, revenue: 0 }; }
       catch { return { count: 0, revenue: 0 }; }
     };
 
@@ -1584,7 +1590,7 @@ export const getUserStats = async (req, res) => {
     const reviews = await safeQuery('SELECT COUNT(*) AS count FROM reviews WHERE user_id = ?', [id]);
     const favorites = await safeQuery('SELECT COUNT(*) AS count FROM favorites WHERE user_id = ?', [id]);
     const sessions = await safeQuery(
-      `SELECT COUNT(*) AS count FROM refresh_tokens WHERE user_id = ? AND revoked = 0 AND used = 0 AND expires_at > NOW()`,
+      `SELECT COUNT(*) AS count FROM refresh_tokens WHERE user_id = ? AND (revoked = 0 OR revoked = FALSE) AND (used = 0 OR used = FALSE) AND expires_at > NOW()`,
       [id],
     );
     let recentLogins = [];
@@ -1593,18 +1599,18 @@ export const getUserStats = async (req, res) => {
         `SELECT action, created_at FROM audit_logs WHERE user_id = ? AND action IN ('login', 'admin_login') ORDER BY created_at DESC LIMIT 10`,
         [id],
       );
-      recentLogins = logins;
+      recentLogins = logins || [];
     } catch { /* audit_logs table may not exist */ }
 
     res.json({
       stats: {
-        orders: orders.count,
-        revenue: Number(orders.revenue) || 0,
-        events: events.count,
-        tickets: tickets.count,
-        reviews: reviews.count,
-        favorites: favorites.count,
-        activeSessions: sessions.count,
+        orders: Number(orders?.count || 0),
+        revenue: Number(orders?.revenue || 0),
+        events: Number(events?.count || 0),
+        tickets: Number(tickets?.count || 0),
+        reviews: Number(reviews?.count || 0),
+        favorites: Number(favorites?.count || 0),
+        activeSessions: Number(sessions?.count || 0),
         recentLogins,
       },
     });
