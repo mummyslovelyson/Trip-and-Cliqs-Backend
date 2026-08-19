@@ -11,30 +11,42 @@ dotenv.config({ path: path.join(__dirname, '../../.env') });
 
 async function initDb() {
   const host = process.env.DB_HOST || '127.0.0.1';
-  const port = process.env.DB_PORT || 3306;
+  const port = parseInt(process.env.DB_PORT, 10) || 3306;
   const user = process.env.DB_USER || 'root';
   const password = process.env.DB_PASSWORD || '';
   const dbName = process.env.DB_NAME || 'tribes_cliqs';
 
-  console.log(`Connecting to MySQL at ${host}:${port} as user '${user}'...`);
+  console.log(`[initDb] target=${host}:${port} user=${user} db=${dbName} ssl=${process.env.DB_SSL}`);
 
   let connection;
-  try {
-    connection = await mysql.createConnection({
-      host,
-      port,
-      user,
-      password,
-      multipleStatements: true,
-      connectTimeout: 30000,
-      // Encrypt the connection when DB_SSL=true (required by most cloud
-      // MySQL hosts, e.g. Aiven). Set DB_SSL_CA to pin a CA certificate.
-      ...(process.env.DB_SSL === 'true' && {
-        ssl: process.env.DB_SSL_CA
-          ? { ca: process.env.DB_SSL_CA.replace(/\\n/g, '\n') }
-          : { rejectUnauthorized: false },
-      }),
-    });
+  const MAX_RETRIES = 5;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      connection = await mysql.createConnection({
+        host,
+        port,
+        user,
+        password,
+        multipleStatements: true,
+        connectTimeout: 30000,
+        ...(process.env.DB_SSL === 'true' && {
+          ssl: process.env.DB_SSL_CA
+            ? { ca: process.env.DB_SSL_CA.replace(/\\n/g, '\n') }
+            : { rejectUnauthorized: false },
+        }),
+      });
+      break;
+    } catch (err) {
+      console.error(`[initDb] connection attempt ${attempt}/${MAX_RETRIES} failed: ${err.code || err.message}`);
+      if (attempt < MAX_RETRIES) {
+        const delay = attempt * 5000;
+        console.log(`[initDb] retrying in ${delay / 1000}s...`);
+        await new Promise((r) => setTimeout(r, delay));
+      } else {
+        throw err;
+      }
+    }
+  }
 
     console.log(`Creating database '${dbName}' if not exists...`);
     await connection.query(`CREATE DATABASE IF NOT EXISTS \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`);
