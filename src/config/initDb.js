@@ -48,6 +48,7 @@ async function initDb() {
     }
   }
 
+  try {
     console.log(`Creating database '${dbName}' if not exists...`);
     await connection.query(`CREATE DATABASE IF NOT EXISTS \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`);
     await connection.query(`USE \`${dbName}\`;`);
@@ -58,89 +59,60 @@ async function initDb() {
       const schemaSql = fs.readFileSync(schemaPath, 'utf8');
       await connection.query(schemaSql);
 
-      // Migrations for existing tables
       try {
         await connection.query(`ALTER TABLE categories ADD COLUMN description TEXT AFTER icon;`);
-      } catch (e) {
-        // Column may already exist
-      }
+      } catch (e) {}
 
       try {
         await connection.query(`ALTER TABLE users ADD COLUMN avatar VARCHAR(500) AFTER phone;`);
-      } catch (e) {
-        // Column may already exist
-      }
+      } catch (e) {}
 
-      // Profile fields edited from the attendee Personal Info tab (idempotent).
       const profileCols = [
         `ALTER TABLE users ADD COLUMN location VARCHAR(200) AFTER avatar_url;`,
         `ALTER TABLE users ADD COLUMN bio TEXT AFTER location;`,
         `ALTER TABLE users ADD COLUMN date_of_birth DATE AFTER bio;`,
       ];
       for (const colSql of profileCols) {
-        try { await connection.query(colSql); } catch (e) { /* existing column */ }
+        try { await connection.query(colSql); } catch (e) {}
       }
 
       try {
         await connection.query(`ALTER TABLE users MODIFY COLUMN status VARCHAR(50) NOT NULL DEFAULT 'active';`);
-      } catch (e) {
-        // Column update
-      }
+      } catch (e) {}
 
-      // Suspension tracking so admins can record why an account was suspended
-      // and when (idempotent — same column is a no-op).
       try {
         await connection.query(`ALTER TABLE users ADD COLUMN suspend_reason VARCHAR(500) AFTER status;`);
-      } catch (e) {
-        // Column may already exist
-      }
+      } catch (e) {}
       try {
         await connection.query(`ALTER TABLE users ADD COLUMN suspended_at DATETIME AFTER suspend_reason;`);
-      } catch (e) {
-        // Column may already exist
-      }
+      } catch (e) {}
 
       try {
         await connection.query(`ALTER TABLE password_reset_tokens CHANGE COLUMN token token_hash VARCHAR(64) NOT NULL;`);
-      } catch (e) {
-        // Column token_hash already exists or token column does not exist
-      }
+      } catch (e) {}
 
-      // Widen the notifications `type` enum so payment/refund/account/system
-      // notifications actually persist (idempotent — same enum is a no-op).
       try {
         await connection.query(
           `ALTER TABLE notifications MODIFY COLUMN type ENUM('ticket','reminder','update','price_change','announcement','system','marketing','payment','refund','info','account','withdrawal','support') NOT NULL DEFAULT 'system';`,
         );
-      } catch (e) {
-        // Column may already include the values
-      }
+      } catch (e) {}
 
-      // Add the 'suspended' event status (idempotent MODIFY — same enum is a no-op).
       try {
         await connection.query(
           `ALTER TABLE events MODIFY COLUMN status ENUM('draft','pending','published','cancelled','completed','rejected','suspended') NOT NULL DEFAULT 'draft';`,
         );
-      } catch (e) {
-        // Column may already include the value
-      }
+      } catch (e) {}
 
-      // Event wizard fields: visibility (public/private) and tags (JSON array).
-      // Idempotent — same column is a no-op on newer installs.
       try {
         await connection.query(
           `ALTER TABLE events ADD COLUMN visibility ENUM('public','private') NOT NULL DEFAULT 'public' AFTER is_featured;`,
         );
-      } catch (e) {
-        // Column may already exist
-      }
+      } catch (e) {}
       try {
         await connection.query(
           `ALTER TABLE events ADD COLUMN tags JSON AFTER images;`,
         );
-      } catch (e) {
-        // Column may already exist
-      }
+      } catch (e) {}
 
       const orgCols = [
         `ALTER TABLE organizer_profiles ADD COLUMN bank_name VARCHAR(150);`,
@@ -153,18 +125,14 @@ async function initDb() {
         `ALTER TABLE organizer_profiles ADD COLUMN about TEXT;`,
       ];
       for (const colSql of orgCols) {
-        try { await connection.query(colSql); } catch (e) { /* existing column */ }
+        try { await connection.query(colSql); } catch (e) {}
       }
 
-      // Older installs' system_settings table predates updated_by; bring it in
-      // line with schema.sql / ensureSettingsTable (idempotent).
       try {
         await connection.query(
           `ALTER TABLE system_settings ADD COLUMN updated_by BIGINT UNSIGNED DEFAULT NULL;`,
         );
-      } catch (e) {
-        // Column may already exist
-      }
+      } catch (e) {}
 
       await connection.query(`
         CREATE TABLE IF NOT EXISTS flash_sales (
@@ -199,8 +167,6 @@ async function initDb() {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
       `);
 
-      // Email verification tokens (one-time, hashed). Schema.sql also
-      // declares this table; the IF NOT EXISTS keeps older installs in sync.
       await connection.query(`
         CREATE TABLE IF NOT EXISTS email_verifications (
           id         BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -214,10 +180,6 @@ async function initDb() {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
       `);
 
-      // Password reset tokens (one-time, hashed) — same pattern as email
-      // verifications. Schema.sql also declares this table; the IF NOT EXISTS
-      // keeps older installs in sync so forgot/reset-password never 500 on a
-      // missing table.
       await connection.query(`
         CREATE TABLE IF NOT EXISTS password_reset_tokens (
           id         BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -231,7 +193,6 @@ async function initDb() {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
       `);
 
-      // Community: organizer follows + event meet-ups (idempotent).
       await connection.query(`
         CREATE TABLE IF NOT EXISTS organizer_follows (
           id            BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -274,15 +235,10 @@ async function initDb() {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
       `);
 
-      // Resale marketplace: orders can reference a resale listing so the
-      // ticket transfers to the buyer once payment completes.
       try {
         await connection.query(`ALTER TABLE orders ADD COLUMN resale_listing_id BIGINT AFTER paystack_ref;`);
-      } catch (e) {
-        // Column may already exist
-      }
+      } catch (e) {}
 
-      // Resale marketplace: attendees can list purchased tickets for sale.
       await connection.query(`
         CREATE TABLE IF NOT EXISTS resale_listings (
           id             BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -319,7 +275,7 @@ async function initDb() {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
       `);
 
-      // ── Auth hardening: server-side refresh tokens, lockout, password history ──
+      // ── Auth hardening ──
       try {
         await connection.query(`
           CREATE TABLE IF NOT EXISTS refresh_tokens (
@@ -346,7 +302,7 @@ async function initDb() {
         `ALTER TABLE users ADD COLUMN locked_until DATETIME NULL DEFAULT NULL;`,
       ];
       for (const colSql of authCols) {
-        try { await connection.query(colSql); } catch (e) { /* existing column */ }
+        try { await connection.query(colSql); } catch (e) {}
       }
       try {
         await connection.query(`
@@ -360,7 +316,7 @@ async function initDb() {
         `);
       } catch (e) { console.warn('[migrate] password_history:', e.message); }
 
-      // ── Admin user management: internal notes, activity log ──
+      // ── Admin user management ──
       try {
         await connection.query(`
           CREATE TABLE IF NOT EXISTS admin_user_notes (
@@ -393,10 +349,6 @@ async function initDb() {
         `);
       } catch (e) { console.warn('[migrate] user_activity_log:', e.message); }
 
-      // Create the seed admin account ONLY on first run. The password is
-      // never reset here — existing credentials are preserved across restarts.
-      // (Previously this upsert overwrote the admin password on every boot,
-      // which made the default password a permanent backdoor.)
       const bcrypt = (await import('bcryptjs')).default;
       const adminEmail = process.env.ADMIN_EMAIL || 'admin@tribesandcliqs.com';
       const [adminRows] = await connection.query(
