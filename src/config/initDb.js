@@ -419,4 +419,7 @@ async function initDb() {
   }
 }
 
-initDb().catch(() => process.exit(1));
+initDb().catch((err) => {
+  console.error('⚠️ Database initialization failed — server will start but DB-dependent routes may error until the database is reachable.');
+  console.error('   Error:', err.message);
+});
