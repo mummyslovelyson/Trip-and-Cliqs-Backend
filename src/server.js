@@ -59,12 +59,33 @@ if (process.env.NODE_ENV === 'production') {
   });
 }
 
-// CORS — allow the configured frontend origin(s).
-const allowedOrigins = FRONTEND_URL.split(',').map((o) => o.trim());
+// CORS — allow the configured frontend origin(s), localhost, and Vercel domains.
+const parseOrigins = () => {
+  const custom = (process.env.FRONTEND_URL || '').split(',').map((o) => o.trim()).filter(Boolean);
+  const defaults = [
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'http://localhost:5000',
+    'http://127.0.0.1:5173',
+    'https://tribesandcliqsevent.vercel.app',
+    
+  ];
+  return new Set([...defaults, ...custom]);
+};
+
+const allowedOrigins = parseOrigins();
+
+const isOriginAllowed = (origin) => {
+  if (!origin) return true;
+  if (allowedOrigins.has(origin)) return true;
+  if (/^https:\/\/.*\.vercel\.app$/.test(origin)) return true;
+  return false;
+};
+
 app.use(
   cors({
     origin(origin, cb) {
-      if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+      if (isOriginAllowed(origin)) return cb(null, true);
       return cb(new Error(`Origin ${origin} not allowed by CORS`));
     },
     credentials: true,

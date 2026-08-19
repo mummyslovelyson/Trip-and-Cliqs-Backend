@@ -300,7 +300,7 @@ export const rejectOrganizer = async (req, res) => {
     if (user.role !== 'organizer') return res.status(400).json({ message: 'Only organizer accounts can be rejected' });
 
     await pool.execute(`UPDATE users SET is_approved = FALSE, status = 'rejected' WHERE id = ?`, [id]);
-    await pool.execute(`UPDATE organizer_profiles SET is_verified = 0 WHERE user_id = ?`, [id]);
+    await pool.execute(`UPDATE organizer_profiles SET is_verified = FALSE WHERE user_id = ?`, [id]);
 
     await sendNotification({
       userId: Number(id),
@@ -438,7 +438,7 @@ export const approveOrganizer = async (req, res) => {
     if (user.role !== 'organizer') return res.status(400).json({ message: 'Only organizer accounts can be approved' });
 
     await pool.execute(`UPDATE users SET is_approved = TRUE, status = 'active' WHERE id = ?`, [id]);
-    await pool.execute(`UPDATE organizer_profiles SET is_verified = 1, approved_at = NOW() WHERE user_id = ?`, [id]);
+    await pool.execute(`UPDATE organizer_profiles SET is_verified = TRUE, approved_at = NOW() WHERE user_id = ?`, [id]);
 
     try {
       sendOrganizerApprovalEmail(user.email, user.name);
