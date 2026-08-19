@@ -17,6 +17,8 @@ export function createFakeDb() {
     notification_preferences: 1, favorites: 1, tickets: 1,
     organizer_follows: 1, event_meetups: 1, event_meetup_members: 1,
     resale_listings: 1, orders: 1, order_items: 1,
+    refresh_tokens: 1, password_history: 1,
+    admin_user_notes: 1, user_activity_log: 1,
   };
   const tables = {
     users: [], events: [], ticket_types: [], notifications: [],
@@ -25,6 +27,8 @@ export function createFakeDb() {
     notification_preferences: [], favorites: [], tickets: [],
     organizer_follows: [], event_meetups: [], event_meetup_members: [],
     resale_listings: [], orders: [], order_items: [],
+    refresh_tokens: [], password_history: [],
+    admin_user_notes: [], user_activity_log: [],
   };
 
   const nowIso = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
