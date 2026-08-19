@@ -483,7 +483,11 @@ export const getTrendingEvents = async (req, res) => {
   try {
     const { limit = 8 } = req.query;
     const [rows] = await pool.execute(
-      `SELECT e.*, u.name AS organizer_name,
+      `SELECT e.id, e.organizer_id, e.category_id, e.title, e.slug, e.description,
+              e.category, e.venue, e.address, e.city, e.country, e.start_date, e.end_date,
+              e.start_time, e.end_time, e.capacity, e.banner_image, e.status, e.is_featured,
+              e.visibility, e.created_at, e.updated_at,
+              u.name AS organizer_name,
               COUNT(t.id) AS tickets_sold,
               (SELECT MIN(price) FROM ticket_types WHERE event_id = e.id) AS min_price
        FROM events e
@@ -492,7 +496,10 @@ export const getTrendingEvents = async (req, res) => {
        LEFT JOIN tickets t ON t.ticket_type_id = tt.id AND t.status = 'active'
        WHERE e.status = 'published' AND e.start_date >= CURRENT_DATE
          AND e.visibility = 'public'
-       GROUP BY e.id
+       GROUP BY e.id, e.organizer_id, e.category_id, e.title, e.slug, e.description,
+                e.category, e.venue, e.address, e.city, e.country, e.start_date, e.end_date,
+                e.start_time, e.end_time, e.capacity, e.banner_image, e.status, e.is_featured,
+                e.visibility, e.created_at, e.updated_at, u.name
        ORDER BY tickets_sold DESC, e.created_at DESC
        LIMIT ${Math.min(parseInt(limit, 10) || 8, 20)}`,
     );
@@ -534,7 +541,6 @@ export const getRecommendedEvents = async (req, res) => {
       return res.json({ events: popular });
     }
 
-    // Favorite categories — the strongest preference signal.
     const [favRows] = await pool.execute(
       `SELECT event_id FROM favorites WHERE user_id = ?`,
       [userId],
@@ -624,7 +630,7 @@ export const getFeaturedOrganizers = async (req, res) => {
        LEFT JOIN organizer_profiles op ON op.user_id = u.id
        LEFT JOIN events e ON e.organizer_id = u.id AND e.status = 'published'
        WHERE u.role = 'organizer' AND u.is_approved = TRUE AND u.status = 'active'
-       GROUP BY u.id
+       GROUP BY u.id, u.name, u.avatar_url, u.avatar, op.organization_name
        ORDER BY events_count DESC, u.name ASC
        LIMIT ${Math.min(parseInt(limit, 10) || 6, 20)}`,
     );

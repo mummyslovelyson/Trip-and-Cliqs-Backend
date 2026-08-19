@@ -252,7 +252,7 @@ export const getRevenue = async (req, res) => {
        FROM events e
        LEFT JOIN orders o ON o.event_id = e.id AND o.payment_status = 'completed'
        WHERE e.organizer_id = ?
-       GROUP BY e.id
+       GROUP BY e.id, e.title
        ORDER BY revenue DESC`,
       [req.user.id],
     );
@@ -818,12 +818,11 @@ export const getReportSummary = async (req, res) => {
 
     res.json({
       summary: {
-        totalRevenue: Number(revRow.totalRevenue || 0),
-        netRevenue: Number(revRow.totalRevenue || 0) * 0.95,
-        totalTickets: Number(ticketRow.totalTickets || 0),
-        totalAttendees: Number(ticketRow.totalAttendees || 0),
-        totalEvents: Number(eventsRow.totalEvents || 0),
-        totalRefunds: 0,
+        totalRevenue: Number(revRow?.totalRevenue || 0),
+        totalOrders: Number(revRow?.totalOrders || 0),
+        totalTicketsSold,
+        totalCheckedIn,
+        checkInRate,
       },
     });
   } catch (err) {
@@ -832,7 +831,7 @@ export const getReportSummary = async (req, res) => {
   }
 };
 
-export const getSalesReport = async (req, res) => {
+export const getSalesByEvent = async (req, res) => {
   try {
     const organizerId = req.user.id;
     const { from, to } = req.query;
@@ -843,32 +842,38 @@ export const getSalesReport = async (req, res) => {
       params.push(`${from} 00:00:00`, `${to} 23:59:59`);
     }
 
-    const [rows] = await pool.execute(
+    const [dailySales] = await pool.execute(
       `SELECT DATE(o.created_at) AS date,
               COALESCE(SUM(o.total_amount - o.discount_amount), 0) AS revenue,
-              COUNT(DISTINCT o.id) AS sales,
-              COUNT(o.id) AS tickets
+              COUNT(o.id) AS orders
        FROM orders o
        JOIN events e ON e.id = o.event_id
-       WHERE e.organizer_id = ? AND o.payment_status = 'completed'${dateFilter}
+       WHERE e.organizer_id = ? AND o.payment_status = 'completed' ${dateFilter}
        GROUP BY DATE(o.created_at)
        ORDER BY date ASC`,
       params,
     );
 
-    const sales = rows.map((r) => ({
-      date: r.date ? new Date(r.date).toISOString().slice(0, 10) : '',
-      revenue: Number(r.revenue || 0),
-      sales: Number(r.sales || 0),
-      tickets: Number(r.tickets || 0),
-    }));
+    const [eventSales] = await pool.execute(
+      `SELECT e.id, e.title,
+              COALESCE(SUM(o.total_amount - o.discount_amount), 0) AS revenue,
+              COUNT(o.id) AS orders
+       FROM events e
+       LEFT JOIN orders o ON o.event_id = e.id AND o.payment_status = 'completed' ${dateFilter}
+       WHERE e.organizer_id = ?
+       GROUP BY e.id, e.title
+       ORDER BY revenue DESC`,
+      params,
+    );
 
-    res.json({ sales });
+    res.json({ dailySales, eventSales });
   } catch (err) {
-    console.error('[organizerController.getSalesReport]', err);
+    console.error('[organizerController.getSalesByEvent]', err);
     res.status(500).json({ message: 'Server error' });
   }
 };
+
+export const getSalesReport = getSalesByEvent;
 
 export const getAttendanceReport = async (req, res) => {
   try {
@@ -881,7 +886,7 @@ export const getAttendanceReport = async (req, res) => {
        FROM events e
        LEFT JOIN tickets t ON t.event_id = e.id
        WHERE e.organizer_id = ?
-       GROUP BY e.id`,
+       GROUP BY e.id, e.title`,
       [organizerId],
     );
 
@@ -931,7 +936,7 @@ export const getTopEvents = async (req, res) => {
        LEFT JOIN orders o ON o.event_id = e.id AND o.payment_status = 'completed'
        LEFT JOIN tickets t ON t.event_id = e.id
        WHERE e.organizer_id = ?
-       GROUP BY e.id
+       GROUP BY e.id, e.title, e.banner_image
        ORDER BY revenue DESC
        LIMIT 10`,
       [organizerId],
@@ -950,6 +955,28 @@ export const getTopEvents = async (req, res) => {
     res.json({ events });
   } catch (err) {
     console.error('[organizerController.getTopEvents]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const getTicketTypeSales = async (req, res) => {
+  try {
+    const organizerId = req.user.id;
+    const [rows] = await pool.execute(
+      `SELECT tt.id, tt.name, tt.price, e.title AS event_title,
+              COUNT(t.id) AS sold,
+              COALESCE(SUM(tt.price), 0) AS revenue
+       FROM ticket_types tt
+       JOIN events e ON e.id = tt.event_id
+       LEFT JOIN tickets t ON t.ticket_type_id = tt.id AND t.status = 'active'
+       WHERE e.organizer_id = ?
+       GROUP BY tt.id, tt.name, tt.price, e.title
+       ORDER BY revenue DESC`,
+      [organizerId],
+    );
+    res.json({ ticketTypes: rows });
+  } catch (err) {
+    console.error('[organizerController.getTicketTypeSales]', err);
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -989,7 +1016,7 @@ export const exportReport = async (req, res) => {
        FROM events e
        LEFT JOIN orders o ON o.event_id = e.id AND o.payment_status = 'completed'
        WHERE e.organizer_id = ?
-       GROUP BY e.id`,
+       GROUP BY e.id, e.title`,
       [organizerId],
     );
 

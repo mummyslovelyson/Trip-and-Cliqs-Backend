@@ -842,7 +842,7 @@ export const getReports = async (req, res) => {
        JOIN events e ON e.organizer_id = u.id
        LEFT JOIN orders o ON o.event_id = e.id AND o.payment_status = 'completed' ${dateFilter}
        WHERE u.role = 'organizer'
-       GROUP BY u.id
+       GROUP BY u.id, u.name
        ORDER BY revenue DESC
        LIMIT 10`,
       params,
