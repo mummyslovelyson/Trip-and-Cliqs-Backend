@@ -83,7 +83,7 @@ export function createFakeDb() {
     if (/^true$/i.test(token)) return 1;
     if (/^false$/i.test(token)) return 0;
     if (/^null$/i.test(token)) return null;
-    if (/^CURDATE\(\)$/.test(token)) return today();
+    if (/^CURDATE\(\)$/.test(token) || /^CURRENT_DATE\(\)$/.test(token) || /^CURRENT_DATE$/.test(token)) return today();
     if (/^NOW\(\)$/.test(token)) return nowIso();
     return undefined;
   }
@@ -124,7 +124,7 @@ export function createFakeDb() {
   }
 
   function insert(sql, params) {
-    const m = sql.match(/INSERT(?:\s+IGNORE)? INTO (\w+)\s*\(([^)]*)\)\s*VALUES\s*\(([\s\S]*?)\)\s*$/i);
+    const m = sql.match(/INSERT(?:\s+IGNORE)? INTO (\w+)\s*\(([^)]*)\)\s*VALUES\s*\(([\s\S]*?)\)\s*(?:ON CONFLICT(?:\s+\([^)]*\))?\s+DO NOTHING)?\s*$/i);
     if (!m) throw new Error(`Cannot parse INSERT: ${sql}`);
     const table = m[1];
     const cols = splitTop(m[2], ',').map((c) => c.trim().replace(/`/g, ''));
@@ -300,9 +300,9 @@ export function createFakeDb() {
     }
 
     if (limitIdx >= 0) {
-      const lm = sql.slice(limitIdx).match(/LIMIT\s+(\d+)(?:\s+OFFSET\s+(\d+))?/i);
-      const n = Number(lm[1]);
-      const off = Number(lm[2] || 0);
+      const lm = sql.slice(limitIdx).match(/LIMIT\s+(\?|\d+)(?:\s+OFFSET\s+(\?|\d+))?/i);
+      const n = Number(lm[1] === '?' ? params[cursor.i++] : lm[1]);
+      const off = lm[2] === '?' ? Number(params[cursor.i++]) : Number(lm[2] || 0);
       rows = rows.slice(off, off + n);
     }
 

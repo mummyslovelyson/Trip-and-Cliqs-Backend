@@ -47,13 +47,13 @@ export const getEvents = async (req, res) => {
 
     if (date) {
       if (date === 'today') {
-        conditions.push(`e.start_date = CURDATE()`);
+        conditions.push(`e.start_date = CURRENT_DATE`);
       } else if (date === 'tomorrow') {
-        conditions.push(`e.start_date = DATE_ADD(CURDATE(), INTERVAL 1 DAY)`);
+        conditions.push(`e.start_date = CURRENT_DATE + INTERVAL '1 day'`);
       } else if (date === 'this_week') {
-        conditions.push(`e.start_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 7 DAY)`);
+        conditions.push(`e.start_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'`);
       } else if (date === 'weekend') {
-        conditions.push(`WEEKDAY(e.start_date) IN (5,6) AND e.start_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 7 DAY)`);
+        conditions.push(`EXTRACT(DOW FROM e.start_date) IN (5,6) AND e.start_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'`);
       } else {
         conditions.push(`e.start_date >= ?`);
         params.push(date);
@@ -465,7 +465,7 @@ export const getFeaturedEvents = async (req, res) => {
        FROM events e
        LEFT JOIN users u ON u.id = e.organizer_id
        WHERE e.status = 'published' AND e.is_featured = 1
-         AND e.visibility = 'public' AND e.start_date >= CURDATE()
+         AND e.visibility = 'public' AND e.start_date >= CURRENT_DATE
        ORDER BY e.start_date ASC
        LIMIT ${Math.min(parseInt(limit, 10) || 6, 20)}`,
     );
@@ -490,7 +490,7 @@ export const getTrendingEvents = async (req, res) => {
        LEFT JOIN users u ON u.id = e.organizer_id
        LEFT JOIN ticket_types tt ON tt.event_id = e.id
        LEFT JOIN tickets t ON t.ticket_type_id = tt.id AND t.status = 'active'
-       WHERE e.status = 'published' AND e.start_date >= CURDATE()
+       WHERE e.status = 'published' AND e.start_date >= CURRENT_DATE
          AND e.visibility = 'public'
        GROUP BY e.id
        ORDER BY tickets_sold DESC, e.created_at DESC
@@ -521,7 +521,7 @@ export const getRecommendedEvents = async (req, res) => {
               (SELECT MIN(price) FROM ticket_types WHERE event_id = e.id) AS min_price
        FROM events e
        LEFT JOIN users u ON u.id = e.organizer_id
-       WHERE e.status = 'published' AND e.start_date >= CURDATE()
+       WHERE e.status = 'published' AND e.start_date >= CURRENT_DATE
          AND e.visibility = 'public'
        ORDER BY e.start_date ASC`,
     );

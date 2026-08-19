@@ -12,7 +12,7 @@ import textPdf from '../utils/pdf.js';
 export const getDashboardStats = async (req, res) => {
   try {
     const organizerId = req.user.id;
-    const monthStart = `DATE_FORMAT(CURDATE(), '%Y-%m-01')`;
+    const monthStart = `TO_CHAR(CURRENT_DATE, 'YYYY-MM-01')`;
 
     // Percentage change helper (month over month).
     const pct = (cur, prev) => (prev > 0 ? Math.round(((cur - prev) / prev) * 100) : cur > 0 ? 100 : 0);
@@ -34,7 +34,7 @@ export const getDashboardStats = async (req, res) => {
     const [[activeEventsCount]] = await pool.execute(
       `SELECT COUNT(*) AS total
        FROM events
-       WHERE organizer_id = ? AND status = 'published' AND start_date >= CURDATE()`,
+       WHERE organizer_id = ? AND status = 'published' AND start_date >= CURRENT_DATE()`,
       [organizerId],
     );
 
@@ -68,7 +68,7 @@ export const getDashboardStats = async (req, res) => {
       `SELECT
          COALESCE(SUM(CASE WHEN created_at >= ${monthStart} THEN 1 ELSE 0 END), 0) AS thisMonth,
          COALESCE(SUM(CASE WHEN created_at < ${monthStart}
-                           AND created_at >= DATE_SUB(${monthStart}, INTERVAL 1 MONTH) THEN 1 ELSE 0 END), 0) AS lastMonth
+                           AND created_at >= (${monthStart})::date - INTERVAL '1 month' THEN 1 ELSE 0 END), 0) AS lastMonth
        FROM events
        WHERE organizer_id = ?`,
       [organizerId],
@@ -76,7 +76,7 @@ export const getDashboardStats = async (req, res) => {
     const [[activeTrend]] = await pool.execute(
       `SELECT
          COALESCE(SUM(CASE WHEN status = 'published' AND start_date >= ${monthStart} THEN 1 ELSE 0 END), 0) AS thisMonth,
-         COALESCE(SUM(CASE WHEN status = 'published' AND start_date >= DATE_SUB(${monthStart}, INTERVAL 1 MONTH)
+         COALESCE(SUM(CASE WHEN status = 'published' AND start_date >= (${monthStart})::date - INTERVAL '1 month'
                            AND start_date < ${monthStart} THEN 1 ELSE 0 END), 0) AS lastMonth
        FROM events
        WHERE organizer_id = ?`,
@@ -86,7 +86,7 @@ export const getDashboardStats = async (req, res) => {
       `SELECT
          COALESCE(SUM(CASE WHEN t.created_at >= ${monthStart} THEN 1 ELSE 0 END), 0) AS thisMonth,
          COALESCE(SUM(CASE WHEN t.created_at < ${monthStart}
-                           AND t.created_at >= DATE_SUB(${monthStart}, INTERVAL 1 MONTH) THEN 1 ELSE 0 END), 0) AS lastMonth
+                           AND t.created_at >= (${monthStart})::date - INTERVAL '1 month' THEN 1 ELSE 0 END), 0) AS lastMonth
        FROM tickets t
        JOIN events e ON e.id = t.event_id
        WHERE e.organizer_id = ?`,
@@ -97,7 +97,7 @@ export const getDashboardStats = async (req, res) => {
          COALESCE(SUM(CASE WHEN o.payment_status = 'completed' AND o.created_at >= ${monthStart}
                            THEN o.total_amount - o.discount_amount ELSE 0 END), 0) AS revenueThisMonth,
          COALESCE(SUM(CASE WHEN o.payment_status = 'completed' AND o.created_at < ${monthStart}
-                           AND o.created_at >= DATE_SUB(${monthStart}, INTERVAL 1 MONTH)
+                           AND o.created_at >= (${monthStart})::date - INTERVAL '1 month'
                            THEN o.total_amount - o.discount_amount ELSE 0 END), 0) AS revenueLastMonth
        FROM orders o
        JOIN events e ON e.id = o.event_id
@@ -126,7 +126,7 @@ export const getDashboardStats = async (req, res) => {
       `SELECT e.id, e.title, e.start_date AS startDate, e.venue, e.city, e.capacity AS totalCapacity,
               (SELECT COUNT(*) FROM tickets t WHERE t.event_id = e.id AND t.status = 'active') AS ticketsSold
        FROM events e
-       WHERE e.organizer_id = ? AND e.status IN ('published', 'pending') AND e.start_date >= CURDATE()
+       WHERE e.organizer_id = ? AND e.status IN ('published', 'pending') AND e.start_date >= CURRENT_DATE()
        ORDER BY e.start_date ASC
        LIMIT 6`,
       [organizerId],
@@ -241,10 +241,10 @@ export const updateOrganizerProfile = async (req, res) => {
 export const getRevenue = async (req, res) => {
   try {
     const { range = '30d' } = req.query;
-    let interval = 'INTERVAL 30 DAY';
-    if (range === '7d') interval = 'INTERVAL 7 DAY';
-    else if (range === '90d') interval = 'INTERVAL 90 DAY';
-    else if (range === '1y') interval = 'INTERVAL 1 YEAR';
+    let interval = "'30 days'";
+    if (range === '7d') interval = "'7 days'";
+    else if (range === '90d') interval = "'90 days'";
+    else if (range === '1y') interval = "'1 year'";
 
     const [byEvent] = await pool.execute(
       `SELECT e.id, e.title, COALESCE(SUM(o.total_amount - o.discount_amount), 0) AS revenue,
@@ -263,7 +263,7 @@ export const getRevenue = async (req, res) => {
        FROM orders o
        JOIN events e ON e.id = o.event_id
        WHERE e.organizer_id = ? AND o.payment_status = 'completed'
-         AND o.created_at >= DATE_SUB(CURDATE(), ${interval})`,
+         AND o.created_at >= CURRENT_DATE - INTERVAL ${interval}`,
       [req.user.id],
     );
 
@@ -274,7 +274,7 @@ export const getRevenue = async (req, res) => {
        FROM orders o
        JOIN events e ON e.id = o.event_id
        WHERE e.organizer_id = ? AND o.payment_status = 'completed'
-         AND o.created_at >= DATE_SUB(CURDATE(), ${interval})
+         AND o.created_at >= CURRENT_DATE - INTERVAL ${interval}
        GROUP BY DATE(o.created_at)
        ORDER BY date ASC`,
       [req.user.id],
@@ -1477,13 +1477,13 @@ export const getWalletEarnings = async (req, res) => {
     const organizerId = req.user.id;
 
     const [rows] = await pool.execute(
-      `SELECT DATE_FORMAT(o.created_at, '%b %Y') AS period,
+      `SELECT TO_CHAR(o.created_at, 'Mon YYYY') AS period,
               COALESCE(SUM(o.total_amount - o.discount_amount), 0) AS amount
        FROM orders o
        JOIN events e ON e.id = o.event_id
        WHERE e.organizer_id = ? AND o.payment_status = 'completed'
-       GROUP BY DATE_FORMAT(o.created_at, '%Y-%m'), period
-       ORDER BY DATE_FORMAT(o.created_at, '%Y-%m') DESC`,
+       GROUP BY TO_CHAR(o.created_at, 'YYYY-MM'), TO_CHAR(o.created_at, 'Mon YYYY')
+       ORDER BY TO_CHAR(o.created_at, 'YYYY-MM') DESC`,
       [organizerId],
     );
 

@@ -1,88 +1,103 @@
-import mysql from 'mysql2/promise';
+import pg from 'pg';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
 const MAX_RETRIES = parseInt(process.env.DB_RETRY_COUNT, 10) || 3;
-const RETRY_DELAY_MS = 2000;
 
 /**
- * Create a MySQL connection pool with configurable limits, SSL, and
- * automatic retry on initial connection failure.
+ * Convert MySQL-style ? placeholders to PostgreSQL $1, $2, ... and return
+ * the rewritten SQL plus the flat params array (pg doesn't accept nested arrays).
+ */
+function convertParams(sql, params = []) {
+  let idx = 0;
+  const rewritten = sql.replace(/\?/g, () => `$${++idx}`);
+  const flat = params.flat(Infinity);
+  return { sql: rewritten, params: flat };
+}
+
+/**
+ * Create a pg Pool with MySQL2-compatible interface.
  *
- * Env vars:
- *   DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME  — connection details
- *   DB_SSL            — 'true' to enable SSL
- *   DB_SSL_CA         — PEM CA certificate (newlines as \n)
- *   DB_POOL_MIN       — minimum idle connections (default 2)
- *   DB_POOL_MAX       — maximum connections (default 20)
- *   DB_ACQUIRE_TIMEOUT — ms to wait for a connection (default 10 000)
- *   DB_RETRY_COUNT    — startup connection retries (default 3)
+ * Exposes: query(sql, params), execute(sql, params), getConnection()
+ * Both query and execute accept MySQL-style ? placeholders and return
+ * [rows, fields] to match the mysql2 API used throughout the codebase.
  */
-const createPool = () =>
-  mysql.createPool({
-    host: process.env.DB_HOST || '127.0.0.1',
-    port: parseInt(process.env.DB_PORT, 10) || 3306,
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'tribes_cliqs',
-    waitForConnections: true,
-    connectionLimit: parseInt(process.env.DB_POOL_MAX, 10) || 20,
-    queueLimit: parseInt(process.env.DB_QUEUE_LIMIT, 10) || 50,
-    connectTimeout: parseInt(process.env.DB_ACQUIRE_TIMEOUT, 10) || 10_000,
-    ...(process.env.DB_SSL === 'true' && {
-      ssl: process.env.DB_SSL_CA
-        ? { ca: process.env.DB_SSL_CA.replace(/\\n/g, '\n') }
-        : { rejectUnauthorized: false },
-    }),
-  });
+const pool = new pg.Pool({
+  host: process.env.DB_HOST || 'localhost',
+  port: parseInt(process.env.DB_PORT, 10) || 5432,
+  user: process.env.DB_USER || 'postgres',
+  password: process.env.DB_PASSWORD || '',
+  database: process.env.DB_NAME || 'tribes_cliqs',
+  max: parseInt(process.env.DB_POOL_MAX, 10) || 20,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: parseInt(process.env.DB_ACQUIRE_TIMEOUT, 10) || 10000,
+  ssl: process.env.DB_SSL === 'true'
+    ? { rejectUnauthorized: false }
+    : false,
+});
+
+pool.on('error', (err) => {
+  console.error('[db] Unexpected pool error:', err.message);
+});
+
+pool.on('connect', () => {
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[db] New connection acquired');
+  }
+});
 
 /**
- * Create pool with retry logic for environments where the DB might not be
- * immediately available (e.g. Render cold starts, Docker Compose).
+ * MySQL2-compatible wrapper: pool.execute(sql, params)
+ * Returns [rows, fields] like mysql2.
  */
-const createPoolWithRetry = () => {
-  let lastError;
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      const pool = createPool();
-      // Validate the pool can actually connect.
-      pool.getConnection().then((conn) => {
-        conn.release();
-        console.log('[db] Connection pool ready');
-      }).catch(() => { /* async — will retry on first real query if this fails */ });
-      return pool;
-    } catch (err) {
-      lastError = err;
-      console.warn(`[db] Pool creation attempt ${attempt}/${MAX_RETRIES} failed: ${err.message}`);
-      if (attempt < MAX_RETRIES) {
-        // Synchronous creation rarely fails; async connect handles the real retry.
-        break;
-      }
-    }
-  }
-  // Fallback — create pool anyway; the async connectTimeout + pool waitForConnections
-  // will handle retries naturally.
-  return createPool();
+pool.execute = async (sql, params) => {
+  const { sql: pgSql, params: pgParams } = convertParams(sql, params);
+  const result = await pool.query(pgSql, pgParams);
+  return [result.rows, result.fields];
 };
 
-const pool = createPoolWithRetry();
-
-// Log pool events for observability.
-pool.pool?.on?.('connection', (conn) => {
-  if (process.env.NODE_ENV !== 'production') {
-    console.log(`[db] Connection ${conn.threadId} acquired`);
+/**
+ * MySQL2-compatible wrapper: pool.query(sql, params)
+ * Returns [rows, fields] like mysql2.
+ */
+const originalQuery = pool.query.bind(pool);
+pool.query = async (sql, params) => {
+  if (typeof sql === 'string') {
+    const { sql: pgSql, params: pgParams } = convertParams(sql, params);
+    const result = await originalQuery(pgSql, pgParams);
+    return [result.rows, result.fields];
   }
-});
+  return originalQuery(sql, params);
+};
 
-pool.pool?.on?.('release', (conn) => {
-  if (process.env.NODE_ENV !== 'production') {
-    console.log(`[db] Connection ${conn.threadId} released`);
-  }
-});
+/**
+ * MySQL2-compatible connection getter for transactions.
+ * Returns an object with execute(), beginTransaction(), commit(), rollback(), release().
+ */
+pool.getConnection = async () => {
+  const client = await pool.connect();
+  return {
+    execute: async (sql, params) => {
+      const { sql: pgSql, params: pgParams } = convertParams(sql, params);
+      const result = await client.query(pgSql, pgParams);
+      return [result.rows, result.fields];
+    },
+    query: async (sql, params) => {
+      const { sql: pgSql, params: pgParams } = convertParams(sql, params);
+      const result = await client.query(pgSql, pgParams);
+      return [result.rows, result.fields];
+    },
+    beginTransaction: async () => { await client.query('BEGIN'); },
+    commit: async () => { await client.query('COMMIT'); },
+    rollback: async () => { await client.query('ROLLBACK'); },
+    release: () => { client.release(); },
+  };
+};
 
-pool.pool?.on?.('enqueue', () => {
-  console.warn('[db] Waiting for available connection slot');
-});
+// Validate pool can connect
+pool.connect()
+  .then((client) => { client.release(); console.log('[db] Connection pool ready (PostgreSQL)'); })
+  .catch((err) => { console.warn('[db] Initial connect failed (will retry on first query):', err.message); });
 
 export default pool;

@@ -296,7 +296,7 @@ export const followOrganizer = async (req, res) => {
     if (!orgRows[0]) return res.status(404).json({ message: 'Organizer not found' });
 
     await pool.execute(
-      'INSERT IGNORE INTO organizer_follows (follower_id, organizer_id) VALUES (?, ?)',
+      'INSERT INTO organizer_follows (follower_id, organizer_id) VALUES (?, ?) ON CONFLICT DO NOTHING',
       [req.user.id, organizerId],
     );
     res.json({ message: 'Now following this organizer', following: true });
@@ -376,7 +376,7 @@ export const getFollowingEvents = async (req, res) => {
                 (SELECT MIN(price) FROM ticket_types WHERE event_id = e.id) AS min_price
          FROM events e
          LEFT JOIN users u ON u.id = e.organizer_id
-         WHERE e.organizer_id = ? AND e.status = 'published' AND e.start_date >= CURDATE()
+         WHERE e.organizer_id = ? AND e.status = 'published' AND e.start_date >= CURRENT_DATE()
          ORDER BY e.start_date ASC
          LIMIT 8`,
         [orgId],

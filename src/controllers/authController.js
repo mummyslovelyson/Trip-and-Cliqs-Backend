@@ -160,7 +160,7 @@ export const register = async (req, res) => {
     // Persist hashed verification token
     await pool.execute(
       `INSERT INTO email_verifications (user_id, token_hash, expires_at, used)
-       VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 24 HOUR), 0)`,
+       VALUES (?, ?, NOW() + INTERVAL '24 hours', 0)`,
       [userId, hashToken(verifyToken)],
     );
 
@@ -361,7 +361,7 @@ export const forgotPassword = async (req, res) => {
       const rawToken = uuidv4();
       await pool.execute(
         `INSERT INTO password_reset_tokens (user_id, token_hash, expires_at, used)
-         VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 1 HOUR), 0)`,
+         VALUES (?, ?, NOW() + INTERVAL '1 hour', 0)`,
         [user.id, hashToken(rawToken)],
       );
       await pool.execute(

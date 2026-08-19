@@ -43,7 +43,7 @@ export const getDashboardStats = async (_req, res) => {
     );
     const [[ticketsRow]] = await pool.execute(`SELECT COUNT(*) AS total FROM tickets`);
     const [[ticketsTodayRow]] = await pool.execute(
-      `SELECT COUNT(*) AS total FROM tickets WHERE DATE(created_at) = CURDATE()`,
+      `SELECT COUNT(*) AS total FROM tickets WHERE DATE(created_at) = CURRENT_DATE`,
     );
     const [[pendingOrgsRow]] = await pool.execute(
       `SELECT COUNT(*) AS total FROM users WHERE role = 'organizer' AND is_approved = 0 AND status = 'active'`,
@@ -55,7 +55,7 @@ export const getDashboardStats = async (_req, res) => {
     const [dailyRevenue] = await pool.execute(
       `SELECT DATE(created_at) AS date, COALESCE(SUM(total_amount),0) AS revenue, COUNT(*) AS orders
        FROM orders WHERE payment_status = 'completed'
-         AND created_at >= DATE_SUB(CURDATE(), INTERVAL 29 DAY)
+         AND created_at >= CURRENT_DATE - INTERVAL '29 days'
        GROUP BY DATE(created_at) ORDER BY date ASC`,
     );
     const revenueSeries = fillDailySeries(dailyRevenue, 30, { revenue: true, orders: true });
@@ -65,7 +65,7 @@ export const getDashboardStats = async (_req, res) => {
       `SELECT DATE(created_at) AS date,
               SUM(CASE WHEN role = 'attendee' THEN 1 ELSE 0 END) AS attendees,
               SUM(CASE WHEN role = 'organizer' THEN 1 ELSE 0 END) AS organizers
-       FROM users WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 13 DAY)
+       FROM users WHERE created_at >= CURRENT_DATE - INTERVAL '13 days'
        GROUP BY DATE(created_at) ORDER BY date ASC`,
     );
     const growthSeries = fillDailySeries(dailySignups, 14, { attendees: true, organizers: true });
@@ -1019,7 +1019,7 @@ export const updateSystemSettings = async (req, res) => {
       await pool.execute(
         `INSERT INTO system_settings (setting_key, setting_value)
          VALUES (?, ?)
-         ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
+         ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value`,
         [key, String(value)],
       );
     }
@@ -1545,7 +1545,7 @@ export const getUserManagementStats = async (_req, res) => {
     const [[organizers]] = await pool.query("SELECT COUNT(*) AS count FROM users WHERE role = 'organizer'");
     const [[attendees]] = await pool.query("SELECT COUNT(*) AS count FROM users WHERE role = 'attendee'");
     const [[verified]] = await pool.query("SELECT COUNT(*) AS count FROM users WHERE email_verified = 1");
-    const [[recentWeek]] = await pool.query("SELECT COUNT(*) AS count FROM users WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)");
+    const [[recentWeek]] = await pool.query("SELECT COUNT(*) AS count FROM users WHERE created_at >= NOW() - INTERVAL '7 days'");
 
     res.json({
       stats: {
