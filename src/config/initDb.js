@@ -10,7 +10,7 @@ const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.join(__dirname, '../../.env') });
 
 async function initDb() {
-  const host = process.env.DB_HOST || 'localhost';
+  const host = process.env.DB_HOST || '127.0.0.1';
   const port = process.env.DB_PORT || 3306;
   const user = process.env.DB_USER || 'root';
   const password = process.env.DB_PASSWORD || '';
