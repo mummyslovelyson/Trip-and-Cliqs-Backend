@@ -198,8 +198,8 @@ app.use((req, res) => {
 /* ------------------------------------------------------------------ */
 /* Centralised error handler                                           */
 /* ------------------------------------------------------------------ */
-// eslint-disable-next-line no-unused-vars
 app.use((err, _req, res, _next) => {
+  if (res.headersSent) return;
   console.error('[error]', err.message);
 
   if (err.code === 'LIMIT_FILE_SIZE') {
