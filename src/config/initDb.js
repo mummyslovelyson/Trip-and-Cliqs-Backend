@@ -88,6 +88,33 @@ async function initDb() {
     } else {
       console.log('✅ Admin account already exists — skipping seed (password untouched).');
     }
+
+    // Seed default categories if none exist
+    const { rows: catRows } = await connection.query('SELECT COUNT(*) AS count FROM categories');
+    if (parseInt(catRows[0].count, 10) === 0) {
+      const defaultCategories = [
+        ['Music & Concerts', 'music-concerts', 'Music', 'Live concerts, festivals, DJ sets, and musical performances.'],
+        ['Nightlife & Parties', 'nightlife-parties', 'PartyPopper', 'Club nights, beach parties, pool parties, and late-night events.'],
+        ['Business & Networking', 'business-networking', 'Briefcase', 'Conferences, networking mixers, career fairs, and seminars.'],
+        ['Arts & Culture', 'arts-culture', 'Palette', 'Art exhibitions, theatrical plays, cultural festivals, and heritage celebrations.'],
+        ['Food & Drinks', 'food-drinks', 'Utensils', 'Food festivals, wine tastings, cooking workshops, and dining experiences.'],
+        ['Sports & Fitness', 'sports-fitness', 'Dumbbell', 'Marathons, fitness bootcamps, tournaments, and wellness retreats.'],
+        ['Tech & Innovation', 'tech-innovation', 'Cpu', 'Hackathons, developer meetups, startup pitches, and tech summits.'],
+        ['Workshops & Education', 'workshops-education', 'GraduationCap', 'Hands-on masterclasses, skill-building workshops, and training sessions.'],
+        ['Community & Causes', 'community-causes', 'Heart', 'Charity fundraisers, community outreach, and social impact gatherings.'],
+      ];
+
+      for (let i = 0; i < defaultCategories.length; i++) {
+        const [name, slug, icon, description] = defaultCategories[i];
+        await connection.query(
+          `INSERT INTO categories (name, slug, icon, description, sort_order, is_active)
+           VALUES ($1, $2, $3, $4, $5, TRUE)
+           ON CONFLICT (slug) DO NOTHING`,
+          [name, slug, icon, description, i + 1],
+        );
+      }
+      console.log('✅ Default categories seeded.');
+    }
   } catch (err) {
     console.error('❌ Database initialization error:', err.message);
   } finally {
