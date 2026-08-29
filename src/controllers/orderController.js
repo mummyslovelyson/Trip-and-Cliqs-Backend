@@ -95,9 +95,20 @@ export const createOrder = async (req, res) => {
         return res.status(400).json({ message: `Only ${available} tickets left for ${tt.name}` });
       }
 
-      const lineSubtotal = Number(tt.price) * quantity;
+      // Early-bird dynamic price calculation
+      let unitPrice = Number(tt.price);
+      if (
+        tt.early_bird_price &&
+        Number(tt.early_bird_price) < unitPrice &&
+        (!tt.early_bird_deadline || new Date(tt.early_bird_deadline) > new Date()) &&
+        (!tt.early_bird_max_qty || Number(tt.quantity_sold) < Number(tt.early_bird_max_qty))
+      ) {
+        unitPrice = Number(tt.early_bird_price);
+      }
+
+      const lineSubtotal = unitPrice * quantity;
       subtotal += lineSubtotal;
-      lineItems.push({ tt, quantity, unitPrice: Number(tt.price), lineSubtotal });
+      lineItems.push({ tt, quantity, unitPrice, lineSubtotal });
     }
 
     // Coupon
@@ -116,11 +127,12 @@ export const createOrder = async (req, res) => {
 
     const total = Math.max(subtotal - discount, 0);
     const reference = `TC-${uuidv4().split('-')[0].toUpperCase()}`;
+    const invoiceNumber = `INV-${new Date().getFullYear()}-${Date.now().toString().slice(-6)}`;
 
     const [orderResult] = await conn.execute(
-      `INSERT INTO orders (user_id, event_id, total_amount, payment_method, payment_status, payment_reference, coupon_code, discount_amount)
-       VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`,
-      [req.user.id, eventId, total, paymentMethod, reference, couponCode || null, discount],
+      `INSERT INTO orders (user_id, event_id, total_amount, payment_method, payment_status, payment_reference, coupon_code, discount_amount, invoice_number)
+       VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
+      [req.user.id, eventId, total, paymentMethod, reference, couponCode || null, discount, invoiceNumber],
     );
     const orderId = orderResult.insertId;
 
@@ -694,7 +706,40 @@ export const verifyPayment = async (req, res) => {
   }
 };
 
+/* ------------------------------------------------------------------ */
+/* Webhook Simulation Test Endpoint (Development & Admin Staging)       */
+/* ------------------------------------------------------------------ */
+export const testWebhook = async (req, res) => {
+  try {
+    const { reference, orderId } = req.body;
+    if (!reference && !orderId) {
+      return res.status(400).json({ message: 'reference or orderId is required' });
+    }
+
+    const [rows] = await pool.execute(
+      'SELECT * FROM orders WHERE payment_reference = ? OR id = ? LIMIT 1',
+      [reference || null, orderId || null],
+    );
+    const order = rows[0];
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found for simulation' });
+    }
+
+    await completeOrder(order.id, order.payment_reference);
+
+    res.json({
+      message: 'Test webhook executed successfully: Order fulfilled & tickets issued.',
+      orderId: order.id,
+      reference: order.payment_reference,
+      status: 'completed',
+    });
+  } catch (err) {
+    console.error('[orderController.testWebhook]', err);
+    res.status(500).json({ message: 'Test webhook error' });
+  }
+};
+
 export default {
   createOrder, getOrder, getUserOrders, getOrganizerOrders, cancelOrder, requestRefund, verifyPayment,
-  applyCouponHandler, initiateOrderPayment, getOrderInvoice,
+  applyCouponHandler, initiateOrderPayment, getOrderInvoice, testWebhook,
 };

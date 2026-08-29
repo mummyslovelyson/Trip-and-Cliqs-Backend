@@ -17,6 +17,7 @@ import { sendNotification } from '../utils/notify.js';
 import { logAudit } from '../utils/audit.js';
 import { validatePassword } from '../utils/password.js';
 import { recordAuthFailure, recordAuthSuccess } from '../middleware/abuse.js';
+import { verifyFirebaseToken } from '../utils/firebase.js';
 
 const BCRYPT_ROUNDS = 12;
 const MAX_FAILED_ATTEMPTS = 5;
@@ -257,6 +258,11 @@ export const login = async (req, res) => {
     if (!match) {
       recordAuthFailure(req);
       await recordFailedAttempt(user.id, email);
+      if (user.firebase_uid || user.google_id) {
+        return res.status(401).json({
+          message: 'This account was created with Google Sign-In. Please click "Continue with Google" below to sign in.',
+        });
+      }
       return res.status(401).json({ message: 'Invalid credentials' });
     }
 
@@ -980,13 +986,14 @@ export const revokeOneSession = async (req, res) => {
 };
 
 /* ------------------------------------------------------------------ */
-/* Google OAuth / Social Authentication                                */
+/* Firebase / Google OAuth Social Authentication                      */
 /* ------------------------------------------------------------------ */
-export const googleAuth = async (req, res) => {
+export const firebaseAuth = async (req, res) => {
   try {
     const {
       credential,
       idToken,
+      token: legacyToken,
       accessToken,
       role = 'attendee',
       organizationName,
@@ -995,72 +1002,53 @@ export const googleAuth = async (req, res) => {
       phone,
     } = req.body;
 
-    const token = credential || idToken;
-    let googleUser = null;
+    const rawToken = idToken || credential || legacyToken;
+    let authUser = null;
 
-    if (token) {
+    if (rawToken) {
       try {
-        const gRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(token)}`);
-        if (gRes.ok) {
-          const data = await gRes.json();
-          googleUser = {
-            id: data.sub,
-            email: data.email?.toLowerCase()?.trim(),
-            name: data.name || data.given_name || 'User',
-            picture: data.picture,
-            emailVerified: data.email_verified === 'true' || data.email_verified === true,
-          };
-        }
+        const verified = await verifyFirebaseToken(rawToken);
+        authUser = {
+          id: verified.uid,
+          email: verified.email,
+          name: verified.name,
+          picture: verified.picture,
+          emailVerified: verified.emailVerified,
+        };
       } catch (err) {
-        console.warn('[googleAuth] Google tokeninfo fetch failed:', err.message);
+        console.warn('[firebaseAuth] Token verification failed:', err.message);
       }
+    }
 
-      // Fallback decode if offline or simulated token
-      if (!googleUser) {
-        try {
-          const parts = token.split('.');
-          if (parts.length === 3) {
-            const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
-            if (payload.email) {
-              googleUser = {
-                id: payload.sub || `g_${Date.now()}`,
-                email: payload.email.toLowerCase().trim(),
-                name: payload.name || payload.given_name || 'User',
-                picture: payload.picture,
-                emailVerified: true,
-              };
-            }
-          }
-        } catch { /* ignore */ }
-      }
-    } else if (accessToken) {
+    // Direct access token lookup fallback
+    if (!authUser && accessToken) {
       try {
         const gRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
           headers: { Authorization: `Bearer ${accessToken}` },
         });
         if (gRes.ok) {
           const data = await gRes.json();
-          googleUser = {
+          authUser = {
             id: data.sub,
             email: data.email?.toLowerCase()?.trim(),
-            name: data.name || data.given_name || 'User',
+            name: data.name || data.given_name || (data.email?.split('@')[0]),
             picture: data.picture,
             emailVerified: data.email_verified === true,
           };
         }
       } catch (err) {
-        console.warn('[googleAuth] Google userinfo fetch failed:', err.message);
+        console.warn('[firebaseAuth] Google userinfo fallback failed:', err.message);
       }
     }
 
-    if (!googleUser || !googleUser.email) {
-      return res.status(400).json({ message: 'Invalid or missing Google authentication credentials' });
+    if (!authUser || !authUser.email) {
+      return res.status(400).json({ message: 'Invalid or expired Firebase/Google authentication token' });
     }
 
-    // Check if user exists
+    // Look up existing user by email, firebase_uid, or google_id
     const [existingRows] = await pool.execute(
-      'SELECT * FROM users WHERE email = ? OR google_id = ? LIMIT 1',
-      [googleUser.email, googleUser.id],
+      'SELECT * FROM users WHERE email = ? OR firebase_uid = ? OR google_id = ? LIMIT 1',
+      [authUser.email, authUser.id, authUser.id],
     );
     let user = existingRows[0];
 
@@ -1070,43 +1058,46 @@ export const googleAuth = async (req, res) => {
         return res.status(403).json({ message: 'Account is suspended. Please contact support.' });
       }
 
-      // Update google_id and avatar if missing
+      // Update firebase_uid, google_id, and avatar if missing
       await pool.execute(
         `UPDATE users SET
+           firebase_uid = COALESCE(firebase_uid, ?),
            google_id = COALESCE(google_id, ?),
            avatar = COALESCE(avatar, ?),
            avatar_url = COALESCE(avatar_url, ?),
            email_verified = TRUE,
            last_login_at = NOW()
          WHERE id = ?`,
-        [googleUser.id, googleUser.picture, googleUser.picture, user.id],
+        [authUser.id, authUser.id, authUser.picture, authUser.picture, user.id],
       );
 
-      user.google_id = user.google_id || googleUser.id;
-      user.avatar = user.avatar || googleUser.picture;
-      user.avatar_url = user.avatar_url || googleUser.picture;
+      user.firebase_uid = user.firebase_uid || authUser.id;
+      user.google_id = user.google_id || authUser.id;
+      user.avatar = user.avatar || authUser.picture;
+      user.avatar_url = user.avatar_url || authUser.picture;
       user.email_verified = true;
     } else {
-      // New user registration via Google
+      // New user registration via Firebase
       const assignedRole = role === 'organizer' ? 'organizer' : 'attendee';
       const status = assignedRole === 'organizer' ? 'pending' : 'active';
       const isApproved = assignedRole === 'organizer' ? false : true;
-      const randomPassword = `G_${uuidv4()}_${Date.now()}`;
+      const randomPassword = `FB_${uuidv4()}_${Date.now()}`;
       const passwordHash = await bcrypt.hash(randomPassword, BCRYPT_ROUNDS);
 
       const [insertResult] = await pool.execute(
-        `INSERT INTO users (name, email, password, role, status, is_approved, email_verified, google_id, avatar, avatar_url, phone)
-         VALUES (?, ?, ?, ?, ?, ?, TRUE, ?, ?, ?, ?)`,
+        `INSERT INTO users (name, email, password, role, status, is_approved, email_verified, firebase_uid, google_id, avatar, avatar_url, phone)
+         VALUES (?, ?, ?, ?, ?, ?, TRUE, ?, ?, ?, ?, ?)`,
         [
-          googleUser.name,
-          googleUser.email,
+          authUser.name,
+          authUser.email,
           passwordHash,
           assignedRole,
           status,
           isApproved,
-          googleUser.id,
-          googleUser.picture,
-          googleUser.picture,
+          authUser.id,
+          authUser.id,
+          authUser.picture,
+          authUser.picture,
           phone || null,
         ],
       );
@@ -1118,10 +1109,10 @@ export const googleAuth = async (req, res) => {
           `INSERT INTO organizer_profiles (user_id, organization_name, description, is_verified)
            VALUES (?, ?, ?, FALSE)
            ON CONFLICT (user_id) DO NOTHING`,
-          [newUserId, organizationName || googleUser.name, `Category: ${category || 'Events'}`],
+          [newUserId, organizationName || authUser.name, `Category: ${category || 'Events'}`],
         );
 
-        // Notify admins about new organizer
+        // Notify admins about new organizer registration
         try {
           const [adminRows] = await pool.execute(
             `SELECT id FROM users WHERE role IN ('admin', 'system_admin', 'superadmin')`,
@@ -1129,8 +1120,8 @@ export const googleAuth = async (req, res) => {
           for (const a of adminRows) {
             sendNotification({
               userId: a.id,
-              title: 'New Organizer Signed Up (Google)',
-              message: `${googleUser.name} (${googleUser.email}) registered as an organizer via Google and is awaiting approval.`,
+              title: 'New Organizer Signed Up (Firebase/Google)',
+              message: `${authUser.name} (${authUser.email}) registered as an organizer via Firebase OAuth and is awaiting approval.`,
               type: 'organizer_approval',
             }).catch(() => {});
           }
@@ -1142,7 +1133,7 @@ export const googleAuth = async (req, res) => {
 
       await logAudit({
         userId: user.id,
-        action: 'google_register',
+        action: 'firebase_register',
         entityType: 'user',
         entityId: user.id,
         details: { role: user.role, email: user.email },
@@ -1152,14 +1143,15 @@ export const googleAuth = async (req, res) => {
     // Check organizer pending approval
     const isPendingOrganizer = user.role === 'organizer' && (!user.is_approved || user.status === 'pending');
 
-    const meta = buildMeta(req, uuidv4());
+    const family = uuidv4();
+    const meta = buildMeta(req, family);
     const tokenPayload = { id: user.id, role: user.role, email: user.email };
     const jwtToken = generateToken(tokenPayload);
-    const refreshToken = await generateRefreshToken(user.id, meta);
+    const { rawToken: refreshToken } = await generateRefreshToken(tokenPayload, meta);
 
     await logAudit({
       userId: user.id,
-      action: 'google_login',
+      action: 'firebase_login',
       entityType: 'user',
       entityId: user.id,
     });
@@ -1175,13 +1167,15 @@ export const googleAuth = async (req, res) => {
       pendingApproval: isPendingOrganizer,
     });
   } catch (err) {
-    console.error('[authController.googleAuth]', err);
-    res.status(500).json({ message: 'Google authentication failed' });
+    console.error('[authController.firebaseAuth]', err);
+    res.status(500).json({ message: 'Firebase authentication failed' });
   }
 };
+
+export const googleAuth = firebaseAuth;
 
 export default {
   register, login, adminLogin, refreshToken, forgotPassword,
   resetPassword, changePassword, verifyEmail, logout, logoutAll,
-  getSessions, revokeOneSession, googleAuth,
+  getSessions, revokeOneSession, googleAuth, firebaseAuth,
 };

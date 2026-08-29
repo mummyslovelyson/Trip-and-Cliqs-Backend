@@ -27,7 +27,10 @@ export const getTicketTypes = async (req, res) => {
 export const createTicketType = async (req, res) => {
   try {
     const { eventId } = req.params;
-    const { name, price, quantity, sale_start, sale_end, description } = req.body;
+    const {
+      name, price, quantity, sale_start, sale_end, description,
+      early_bird_price, early_bird_deadline, early_bird_max_qty, section_type, perks,
+    } = req.body;
 
     if (!name || price === undefined || quantity === undefined) {
       return res.status(400).json({ message: 'Name, price and quantity are required' });
@@ -42,9 +45,19 @@ export const createTicketType = async (req, res) => {
     }
 
     const [result] = await pool.execute(
-      `INSERT INTO ticket_types (event_id, name, price, quantity, quantity_sold, sale_start, sale_end, description)
-       VALUES (?, ?, ?, ?, 0, ?, ?, ?)`,
-      [eventId, name, price, quantity, sale_start || null, sale_end || null, description || null],
+      `INSERT INTO ticket_types (
+        event_id, name, price, quantity, quantity_sold, sale_start, sale_end, description,
+        early_bird_price, early_bird_deadline, early_bird_max_qty, section_type, perks
+      ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        eventId, name, price, quantity,
+        sale_start || null, sale_end || null, description || null,
+        early_bird_price !== undefined ? early_bird_price : null,
+        early_bird_deadline || null,
+        early_bird_max_qty || null,
+        section_type || 'general',
+        perks ? JSON.stringify(perks) : null,
+      ],
     );
 
     await logAudit({ userId: req.user.id, action: 'create_ticket_type', entityType: 'ticket_type', entityId: result.insertId });
@@ -71,13 +84,16 @@ export const updateTicketType = async (req, res) => {
       return res.status(403).json({ message: 'Forbidden' });
     }
 
-    const allowed = ['name', 'price', 'quantity', 'sale_start', 'sale_end', 'description'];
+    const allowed = [
+      'name', 'price', 'quantity', 'sale_start', 'sale_end', 'description',
+      'early_bird_price', 'early_bird_deadline', 'early_bird_max_qty', 'section_type', 'perks',
+    ];
     const fields = [];
     const values = [];
     for (const key of allowed) {
       if (req.body[key] !== undefined) {
         fields.push(`${key} = ?`);
-        values.push(req.body[key]);
+        values.push(key === 'perks' && typeof req.body[key] === 'object' ? JSON.stringify(req.body[key]) : req.body[key]);
       }
     }
     if (!fields.length) return res.status(400).json({ message: 'No fields to update' });

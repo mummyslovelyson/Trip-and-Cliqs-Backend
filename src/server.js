@@ -24,6 +24,7 @@ import { globalRateLimit } from './middleware/globalRateLimit.js';
 import { requestTimeout } from './middleware/requestTimeout.js';
 import { blockBannedIps } from './middleware/abuse.js';
 import pool from './config/db.js';
+import './config/initDb.js';
 import { queueStats } from './utils/jobQueue.js';
 
 dotenv.config();

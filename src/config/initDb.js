@@ -103,6 +103,13 @@ async function initDb() {
         )`,
         `ALTER TABLE event_meetups ADD COLUMN IF NOT EXISTS type VARCHAR(50) DEFAULT 'general'`,
         `ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id VARCHAR(120)`,
+        `ALTER TABLE users ADD COLUMN IF NOT EXISTS firebase_uid VARCHAR(120)`,
+        `ALTER TABLE ticket_types ADD COLUMN IF NOT EXISTS early_bird_deadline TIMESTAMPTZ`,
+        `ALTER TABLE ticket_types ADD COLUMN IF NOT EXISTS early_bird_max_qty INT`,
+        `ALTER TABLE ticket_types ADD COLUMN IF NOT EXISTS early_bird_price DECIMAL(10,2)`,
+        `ALTER TABLE ticket_types ADD COLUMN IF NOT EXISTS section_type VARCHAR(50) DEFAULT 'general'`,
+        `ALTER TABLE ticket_types ADD COLUMN IF NOT EXISTS perks JSONB`,
+        `ALTER TABLE orders ADD COLUMN IF NOT EXISTS invoice_number VARCHAR(64)`,
         `CREATE TABLE IF NOT EXISTS event_discussions (
           id                BIGSERIAL PRIMARY KEY,
           event_id          BIGINT NOT NULL,
