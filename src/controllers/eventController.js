@@ -606,7 +606,12 @@ export const getRecommendedEvents = async (req, res) => {
 export const getCategories = async (_req, res) => {
   try {
     const [rows] = await pool.execute(
-      `SELECT id, name, slug, icon, description FROM categories ORDER BY name ASC`,
+      `SELECT c.id, c.name, c.slug, c.icon, c.description,
+              COUNT(e.id)::int AS event_count
+       FROM categories c
+       LEFT JOIN events e ON (e.category_id = c.id OR LOWER(e.category) = LOWER(c.name)) AND e.status = 'published'
+       GROUP BY c.id, c.name, c.slug, c.icon, c.description
+       ORDER BY c.name ASC`,
     );
     res.json(rows);
   } catch (err) {
