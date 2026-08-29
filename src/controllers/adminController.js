@@ -606,7 +606,7 @@ export const featureEvent = async (req, res) => {
     const event = rows[0];
     if (!event) return res.status(404).json({ message: 'Event not found' });
 
-    await pool.execute('UPDATE events SET is_featured = ? WHERE id = ?', [featured ? 1 : 0, id]);
+    await pool.execute('UPDATE events SET is_featured = ? WHERE id = ?', [featured === true, id]);
     await logAudit({
       userId: req.user.id,
       action: featured ? 'feature_event' : 'unfeature_event',

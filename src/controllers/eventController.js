@@ -464,7 +464,7 @@ export const getFeaturedEvents = async (req, res) => {
               (SELECT MIN(price) FROM ticket_types WHERE event_id = e.id) AS min_price
        FROM events e
        LEFT JOIN users u ON u.id = e.organizer_id
-       WHERE e.status = 'published' AND e.is_featured = 1
+       WHERE e.status = 'published' AND e.is_featured = TRUE
          AND e.visibility = 'public' AND e.start_date >= CURRENT_DATE
        ORDER BY e.start_date ASC
        LIMIT ${Math.min(parseInt(limit, 10) || 6, 20)}`,
