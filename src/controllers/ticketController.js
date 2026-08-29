@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import pool from '../config/db.js';
 import { logAudit } from '../utils/audit.js';
 import textPdf from '../utils/pdf.js';
+import { sendNotification } from '../utils/notify.js';
 
 /* ------------------------------------------------------------------ */
 /* Get ticket types for an event (public)                              */
@@ -270,6 +271,27 @@ export const transferTicket = async (req, res) => {
 
     await conn.commit();
     conn.release();
+
+    // Notify recipient and sender
+    try {
+      const [eventRows] = await pool.execute('SELECT title FROM events WHERE id = ?', [ticket.event_id]);
+      const eventTitle = eventRows[0]?.title || 'your event';
+      const senderName = req.user.name || req.user.email || 'A friend';
+
+      sendNotification({
+        userId: recipient.id,
+        title: '🎟️ Ticket Received!',
+        message: `${senderName} just transferred a ticket for "${eventTitle}" to you. Access it now under My Tickets!`,
+        type: 'ticket',
+      }).catch(() => {});
+
+      sendNotification({
+        userId: req.user.id,
+        title: 'Ticket Transferred',
+        message: `Your ticket for "${eventTitle}" was successfully transferred to ${recipient.email}.`,
+        type: 'ticket',
+      }).catch(() => {});
+    } catch { /* ignore notification errors */ }
 
     await logAudit({
       userId: req.user.id,

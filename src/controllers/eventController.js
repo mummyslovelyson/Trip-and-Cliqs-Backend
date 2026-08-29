@@ -23,26 +23,71 @@ export const getEvents = async (req, res) => {
   try {
     const {
       category,
-      price,        // 'free' | 'paid'
-      date,         // ISO date or 'today' | 'tomorrow' | 'weekend' | 'this_week'
+      price,        // 'free' | 'paid' | '0-50' | '50-100' | '100-250' | '250+'
+      minPrice,
+      maxPrice,
+      date,         // ISO date or 'today' | 'tomorrow' | 'weekend' | 'this_week' | 'this-week' | 'this-weekend' | 'this-month'
+      dateFrom,
+      dateTo,
       location,     // city
+      city,
       search,
+      q: searchQuery,
+      sort = 'date-asc',
       page = 1,
-      limit = 10,
+      limit = 12,
     } = req.query;
+
+    const searchTerm = (search || searchQuery || '').trim();
+    const loc = (location || city || '').trim();
 
     const conditions = [`e.status = 'published'`, `e.visibility = 'public'`];
     const params = [];
 
+    // Category filter (supports comma-separated list)
     if (category && category !== 'all') {
-      conditions.push(`e.category = ?`);
-      params.push(category);
+      const cats = category.split(',').map((c) => c.trim()).filter(Boolean);
+      if (cats.length === 1) {
+        conditions.push(`e.category = ?`);
+        params.push(cats[0]);
+      } else if (cats.length > 1) {
+        conditions.push(`e.category IN (${cats.map(() => '?').join(', ')})`);
+        params.push(...cats);
+      }
+    }
+
+    // Price filters
+    if (minPrice !== undefined && Number(minPrice) > 0) {
+      conditions.push(`EXISTS (SELECT 1 FROM ticket_types tt WHERE tt.event_id = e.id AND tt.price >= ?)`);
+      params.push(Number(minPrice));
+    }
+    if (maxPrice !== undefined && Number(maxPrice) > 0) {
+      conditions.push(`EXISTS (SELECT 1 FROM ticket_types tt WHERE tt.event_id = e.id AND tt.price <= ?)`);
+      params.push(Number(maxPrice));
     }
 
     if (price === 'free') {
       conditions.push(`EXISTS (SELECT 1 FROM ticket_types tt WHERE tt.event_id = e.id AND tt.price = 0)`);
     } else if (price === 'paid') {
       conditions.push(`EXISTS (SELECT 1 FROM ticket_types tt WHERE tt.event_id = e.id AND tt.price > 0)`);
+    } else if (price === '0-50') {
+      conditions.push(`EXISTS (SELECT 1 FROM ticket_types tt WHERE tt.event_id = e.id AND tt.price BETWEEN 0 AND 50)`);
+    } else if (price === '50-100') {
+      conditions.push(`EXISTS (SELECT 1 FROM ticket_types tt WHERE tt.event_id = e.id AND tt.price BETWEEN 50 AND 100)`);
+    } else if (price === '100-250') {
+      conditions.push(`EXISTS (SELECT 1 FROM ticket_types tt WHERE tt.event_id = e.id AND tt.price BETWEEN 100 AND 250)`);
+    } else if (price === '250+') {
+      conditions.push(`EXISTS (SELECT 1 FROM ticket_types tt WHERE tt.event_id = e.id AND tt.price >= 250)`);
+    }
+
+    // Date filters
+    if (dateFrom) {
+      conditions.push(`e.start_date >= ?`);
+      params.push(dateFrom);
+    }
+    if (dateTo) {
+      conditions.push(`e.start_date <= ?`);
+      params.push(dateTo);
     }
 
     if (date) {
@@ -50,35 +95,57 @@ export const getEvents = async (req, res) => {
         conditions.push(`e.start_date = CURRENT_DATE`);
       } else if (date === 'tomorrow') {
         conditions.push(`e.start_date = CURRENT_DATE + INTERVAL '1 day'`);
-      } else if (date === 'this_week') {
+      } else if (date === 'this_week' || date === 'this-week') {
         conditions.push(`e.start_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'`);
-      } else if (date === 'weekend') {
+      } else if (date === 'weekend' || date === 'this-weekend') {
         conditions.push(`EXTRACT(DOW FROM e.start_date) IN (5,6) AND e.start_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'`);
-      } else {
+      } else if (date === 'this-month') {
+        conditions.push(`e.start_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'`);
+      } else if (!dateFrom && !dateTo) {
         conditions.push(`e.start_date >= ?`);
         params.push(date);
       }
     }
 
-    if (location && location !== 'all') {
-      conditions.push(`(e.city = ? OR e.country = ?)`);
-      params.push(location, location);
+    if (loc && loc !== 'all') {
+      conditions.push(`(e.city LIKE ? OR e.country LIKE ? OR e.venue LIKE ?)`);
+      const locQ = `%${loc}%`;
+      params.push(locQ, locQ, locQ);
     }
 
-    if (search) {
-      conditions.push(`(e.title LIKE ? OR e.description LIKE ? OR e.venue LIKE ? OR e.category LIKE ?)`);
-      const q = `%${search}%`;
-      params.push(q, q, q, q);
+    // Search matches title, description, venue, city, category, AND organizer/artist name
+    if (searchTerm) {
+      conditions.push(`(e.title LIKE ? OR e.description LIKE ? OR e.venue LIKE ? OR e.category LIKE ? OR e.city LIKE ? OR u.name LIKE ?)`);
+      const q = `%${searchTerm}%`;
+      params.push(q, q, q, q, q, q);
     }
 
     const where = conditions.join(' AND ');
     const pageNum = Math.max(parseInt(page, 10) || 1, 1);
-    const limitNum = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100);
+    const limitNum = Math.min(Math.max(parseInt(limit, 10) || 12, 1), 100);
     const offset = (pageNum - 1) * limitNum;
 
-    const countSql = `SELECT COUNT(*) AS total FROM events e WHERE ${where}`;
+    const countSql = `
+      SELECT COUNT(*) AS total
+      FROM events e
+      LEFT JOIN users u ON u.id = e.organizer_id
+      WHERE ${where}`;
     const [countRows] = await pool.execute(countSql, params);
     const total = countRows[0].total;
+
+    // Determine sort ordering
+    let orderClause = 'e.start_date ASC, e.start_time ASC';
+    if (sort === 'latest') {
+      orderClause = 'e.created_at DESC';
+    } else if (sort === 'price_low' || sort === 'price-asc') {
+      orderClause = 'min_price ASC NULLS LAST, e.start_date ASC';
+    } else if (sort === 'price_high' || sort === 'price-desc') {
+      orderClause = 'min_price DESC NULLS LAST, e.start_date ASC';
+    } else if (sort === 'popularity' || sort === 'popular') {
+      orderClause = 'e.is_featured DESC, (SELECT COUNT(*) FROM tickets t WHERE t.event_id = e.id) DESC';
+    } else if (sort === 'date-desc' || sort === 'date_desc') {
+      orderClause = 'e.start_date DESC';
+    }
 
     const dataSql = `
       SELECT e.*, u.name AS organizer_name,
@@ -86,18 +153,23 @@ export const getEvents = async (req, res) => {
       FROM events e
       LEFT JOIN users u ON u.id = e.organizer_id
       WHERE ${where}
-      ORDER BY e.start_date ASC, e.start_time ASC
+      ORDER BY ${orderClause}
       LIMIT ${limitNum} OFFSET ${offset}`;
 
     const [rows] = await pool.execute(dataSql, params);
 
     res.json({
       events: rows,
+      data: rows,
+      total,
+      page: pageNum,
+      limit: limitNum,
+      totalPages: Math.ceil(total / limitNum) || 1,
       pagination: {
         page: pageNum,
         limit: limitNum,
         total,
-        totalPages: Math.ceil(total / limitNum),
+        totalPages: Math.ceil(total / limitNum) || 1,
       },
     });
   } catch (err) {
@@ -523,7 +595,8 @@ export const getRecommendedEvents = async (req, res) => {
     const userId = req.user?.id;
 
     const [candidates] = await pool.execute(
-      `SELECT e.id, e.category, e.city, e.start_date, e.is_featured,
+      `SELECT e.id, e.title, e.slug, e.description, e.banner_image, e.venue, e.category, e.city,
+              e.start_date, e.end_date, e.start_time, e.is_featured,
               u.name AS organizer_name,
               (SELECT MIN(price) FROM ticket_types WHERE event_id = e.id) AS min_price
        FROM events e
@@ -565,14 +638,13 @@ export const getRecommendedEvents = async (req, res) => {
     }
 
     // The user's home city — derived from their profile location
-    // (e.g. "Accra, Ghana" → "Accra").
     let userCity = null;
     try {
       const [userRows] = await pool.execute('SELECT location FROM users WHERE id = ?', [userId]);
       const loc = userRows[0]?.location;
       if (loc && typeof loc === 'string') userCity = loc.split(',')[0].trim();
     } catch {
-      // location column may not exist on older installs — skip the signal.
+      // ignore
     }
 
     const scored = candidates
@@ -597,6 +669,88 @@ export const getRecommendedEvents = async (req, res) => {
   } catch (err) {
     console.error('[eventController.getRecommendedEvents]', err);
     res.status(500).json({ message: 'Server error' });
+  }
+};
+
+/* ------------------------------------------------------------------ */
+/* Event Reminders                                                     */
+/* ------------------------------------------------------------------ */
+export const toggleEventReminder = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+
+    const [eventRows] = await pool.execute('SELECT id, title, start_date FROM events WHERE id = ?', [id]);
+    const event = eventRows[0];
+    if (!event) return res.status(404).json({ message: 'Event not found' });
+
+    const [existing] = await pool.execute(
+      'SELECT id FROM event_reminders WHERE user_id = ? AND event_id = ?',
+      [userId, id],
+    );
+
+    if (existing.length > 0) {
+      await pool.execute('DELETE FROM event_reminders WHERE user_id = ? AND event_id = ?', [userId, id]);
+      return res.json({ isReminded: false, message: 'Event reminder removed' });
+    }
+
+    await pool.execute(
+      `INSERT INTO event_reminders (user_id, event_id, remind_at)
+       VALUES (?, ?, ?)`,
+      [userId, id, event.start_date],
+    );
+
+    sendNotification({
+      userId,
+      title: 'Event Reminder Set 🔔',
+      message: `You'll be notified before ${event.title} begins!`,
+      type: 'event',
+    }).catch(() => {});
+
+    res.json({ isReminded: true, message: 'Event reminder set! We will notify you before the event.' });
+  } catch (err) {
+    console.error('[eventController.toggleEventReminder]', err);
+    res.status(500).json({ message: 'Failed to update reminder' });
+  }
+};
+
+export const getEventReminderStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id;
+    if (!userId) return res.json({ isReminded: false });
+
+    const [rows] = await pool.execute(
+      'SELECT id FROM event_reminders WHERE user_id = ? AND event_id = ?',
+      [userId, id],
+    );
+    res.json({ isReminded: rows.length > 0 });
+  } catch (err) {
+    console.error('[eventController.getEventReminderStatus]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const getUserReminders = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const [rows] = await pool.execute(
+      `SELECT er.id AS reminder_id, er.remind_at, er.created_at AS reminder_created_at,
+              e.id, e.title, e.slug, e.description, e.banner_image, e.venue, e.city,
+              e.category, e.start_date, e.end_date, e.start_time, e.is_featured,
+              u.name AS organizer_name,
+              (SELECT MIN(price) FROM ticket_types WHERE event_id = e.id) AS min_price
+       FROM event_reminders er
+       JOIN events e ON e.id = er.event_id
+       LEFT JOIN users u ON u.id = e.organizer_id
+       WHERE er.user_id = ? AND e.status = 'published' AND e.start_date >= CURRENT_DATE
+       ORDER BY e.start_date ASC`,
+      [userId],
+    );
+    res.json({ reminders: rows });
+  } catch (err) {
+    console.error('[eventController.getUserReminders]', err);
+    res.status(500).json({ message: 'Server error fetching user reminders' });
   }
 };
 
@@ -649,6 +803,7 @@ export const getFeaturedOrganizers = async (req, res) => {
 export default {
   getEvents, getEvent, createEvent, updateEvent, deleteEvent,
   publishEvent, unpublishEvent,
-  getOrganizerEvents, getFeaturedEvents, getTrendingEvents,
+  getOrganizerEvents, getFeaturedEvents, getTrendingEvents, getRecommendedEvents,
+  toggleEventReminder, getEventReminderStatus,
   getCategories, getFeaturedOrganizers,
 };

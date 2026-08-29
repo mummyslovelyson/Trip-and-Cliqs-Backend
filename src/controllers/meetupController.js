@@ -19,26 +19,48 @@ const getHost = async (userId) => {
   return { id: u.id, name: u.name, avatar: u.avatar };
 };
 
-const decorate = async (meetup, userId) => ({
-  id: meetup.id,
-  eventId: meetup.event_id,
-  hostId: meetup.host_id,
-  host: await getHost(meetup.host_id),
-  title: meetup.title,
-  description: meetup.description,
-  meetingSpot: meetup.meeting_spot,
-  meetAt: meetup.meet_at,
-  maxMembers: Number(meetup.max_members) || 0,
-  isPublic: !!meetup.is_public,
-  createdAt: meetup.created_at,
-  memberCount: await getMemberCount(meetup.id),
-  joined: userId != null
-    ? !!(await pool.execute(
-      'SELECT id FROM event_meetup_members WHERE meetup_id = ? AND user_id = ?',
-      [meetup.id, userId],
-    ))[0].length
-    : false,
-});
+const getMembers = async (meetupId) => {
+  try {
+    const [rows] = await pool.execute(
+      `SELECT u.id, u.name, COALESCE(u.avatar_url, u.avatar) AS avatar, emm.role, emm.created_at
+       FROM event_meetup_members emm
+       JOIN users u ON u.id = emm.user_id
+       WHERE emm.meetup_id = ?
+       ORDER BY emm.created_at ASC
+       LIMIT 12`,
+      [meetupId],
+    );
+    return rows;
+  } catch {
+    return [];
+  }
+};
+
+const decorate = async (meetup, userId) => {
+  const members = await getMembers(meetup.id);
+  return {
+    id: meetup.id,
+    eventId: meetup.event_id,
+    hostId: meetup.host_id,
+    host: await getHost(meetup.host_id),
+    title: meetup.title,
+    type: meetup.type || 'general',
+    description: meetup.description,
+    meetingSpot: meetup.meeting_spot,
+    meetAt: meetup.meet_at,
+    maxMembers: Number(meetup.max_members) || 0,
+    isPublic: !!meetup.is_public,
+    createdAt: meetup.created_at,
+    memberCount: members.length || (await getMemberCount(meetup.id)),
+    members,
+    joined: userId != null
+      ? members.some((m) => m.id === userId) || !!(await pool.execute(
+        'SELECT id FROM event_meetup_members WHERE meetup_id = ? AND user_id = ?',
+        [meetup.id, userId],
+      ))[0].length
+      : false,
+  };
+};
 
 /* ------------------------------------------------------------------ */
 /* List meet-ups for an event (public)                                 */
@@ -65,7 +87,7 @@ export const getEventMeetups = async (req, res) => {
 export const createMeetup = async (req, res) => {
   try {
     const eventId = Number(req.params.eventId);
-    const { title, description, meetingSpot, meetAt, maxMembers, isPublic } = req.body || {};
+    const { title, description, meetingSpot, meetAt, maxMembers, isPublic, type = 'general' } = req.body || {};
 
     if (!title || !title.trim()) return res.status(400).json({ message: 'A title is required' });
 
@@ -73,8 +95,8 @@ export const createMeetup = async (req, res) => {
     if (!eventRows[0]) return res.status(404).json({ message: 'Event not found' });
 
     const [result] = await pool.execute(
-      `INSERT INTO event_meetups (event_id, host_id, title, description, meeting_spot, meet_at, max_members, is_public)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO event_meetups (event_id, host_id, title, description, meeting_spot, meet_at, max_members, is_public, type)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         eventId,
         req.user.id,
@@ -84,6 +106,7 @@ export const createMeetup = async (req, res) => {
         meetAt || null,
         Math.max(Number(maxMembers) || 0, 0),
         isPublic === false ? false : true,
+        type || 'general',
       ],
     );
     const meetupId = result.insertId;
@@ -94,7 +117,7 @@ export const createMeetup = async (req, res) => {
     );
 
     const [rows] = await pool.execute('SELECT * FROM event_meetups WHERE id = ?', [meetupId]);
-    res.status(201).json({ message: 'Meet-up created', meetup: await decorate(rows[0], req.user.id) });
+    res.status(201).json({ message: 'Group Outing created!', meetup: await decorate(rows[0], req.user.id) });
   } catch (err) {
     console.error('[meetupController.createMeetup]', err);
     res.status(500).json({ message: 'Server error' });
@@ -129,7 +152,7 @@ export const joinMeetup = async (req, res) => {
       `INSERT INTO event_meetup_members (meetup_id, user_id, role) VALUES (?, ?, 'member')`,
       [meetupId, req.user.id],
     );
-    res.json({ message: 'You joined the meet-up', joined: true });
+    res.json({ message: 'You joined the squad!', joined: true });
   } catch (err) {
     console.error('[meetupController.joinMeetup]', err);
     res.status(500).json({ message: 'Server error' });
@@ -197,6 +220,87 @@ export const getMyMeetups = async (req, res) => {
   }
 };
 
+/* ------------------------------------------------------------------ */
+/* Event Attendees Wall ("Who's Going")                                */
+/* ------------------------------------------------------------------ */
+export const getEventAttendees = async (req, res) => {
+  try {
+    const eventId = Number(req.params.eventId);
+    const [[{ total }]] = await pool.execute(
+      `SELECT COUNT(DISTINCT user_id) AS total FROM tickets WHERE event_id = ? AND status = 'active'`,
+      [eventId],
+    );
+
+    const [rows] = await pool.execute(
+      `SELECT DISTINCT u.id, u.name, COALESCE(u.avatar_url, u.avatar) AS avatar, u.role
+       FROM tickets t
+       JOIN users u ON u.id = t.user_id
+       WHERE t.event_id = ? AND t.status = 'active'
+       LIMIT 30`,
+      [eventId],
+    );
+
+    res.json({ totalAttendees: Number(total) || 0, attendees: rows });
+  } catch (err) {
+    console.error('[meetupController.getEventAttendees]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+/* ------------------------------------------------------------------ */
+/* Event Community Discussions                                         */
+/* ------------------------------------------------------------------ */
+export const getEventDiscussions = async (req, res) => {
+  try {
+    const eventId = Number(req.params.eventId);
+    const [rows] = await pool.execute(
+      `SELECT ed.id, ed.event_id, ed.user_id, ed.message, ed.created_at,
+              u.name AS user_name, COALESCE(u.avatar_url, u.avatar) AS user_avatar
+       FROM event_discussions ed
+       JOIN users u ON u.id = ed.user_id
+       WHERE ed.event_id = ?
+       ORDER BY ed.created_at ASC
+       LIMIT 100`,
+      [eventId],
+    );
+    res.json({ discussions: rows });
+  } catch (err) {
+    console.error('[meetupController.getEventDiscussions]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const postEventDiscussion = async (req, res) => {
+  try {
+    const eventId = Number(req.params.eventId);
+    const { message } = req.body || {};
+    if (!message || !message.trim()) {
+      return res.status(400).json({ message: 'Message is required' });
+    }
+
+    const [result] = await pool.execute(
+      `INSERT INTO event_discussions (event_id, user_id, message)
+       VALUES (?, ?, ?)`,
+      [eventId, req.user.id, message.trim().slice(0, 1000)],
+    );
+
+    const [rows] = await pool.execute(
+      `SELECT ed.id, ed.event_id, ed.user_id, ed.message, ed.created_at,
+              u.name AS user_name, COALESCE(u.avatar_url, u.avatar) AS user_avatar
+       FROM event_discussions ed
+       JOIN users u ON u.id = ed.user_id
+       WHERE ed.id = ?`,
+      [result.insertId],
+    );
+
+    res.status(201).json({ message: 'Message posted', discussion: rows[0] });
+  } catch (err) {
+    console.error('[meetupController.postEventDiscussion]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 export default {
   getEventMeetups, createMeetup, joinMeetup, leaveMeetup, deleteMeetup, getMyMeetups,
+  getEventAttendees, getEventDiscussions, postEventDiscussion,
 };

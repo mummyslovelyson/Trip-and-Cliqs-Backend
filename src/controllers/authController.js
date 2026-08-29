@@ -176,6 +176,13 @@ export const register = async (req, res) => {
     const otp = crypto.randomInt(100000, 1000000).toString();
     const otpHash = hashToken(`pending_otp:${otp}`);
     const orgName = (req.body.organizationName || req.body.organization_name || name).toString().trim().slice(0, 180);
+    const metadataObj = {
+      category: req.body.category || req.body.industry || null,
+      city: req.body.city || req.body.location || null,
+      description: req.body.description || req.body.bio || null,
+      website: req.body.website || req.body.websiteUrl || null,
+    };
+    const metadataStr = JSON.stringify(metadataObj);
 
     // Clean up older pending registrations for this email/phone
     try {
@@ -190,9 +197,9 @@ export const register = async (req, res) => {
     // Insert pending registration (account is NOT created in users table yet)
     await pool.execute(
       `INSERT INTO pending_registrations (
-        registration_id, name, email, phone, password_hash, role, organization_name, otp_hash, expires_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW() + INTERVAL '15 minutes')`,
-      [registrationId, cleanName, cleanEmail, cleanPhone, hashed, role, orgName, otpHash],
+        registration_id, name, email, phone, password_hash, role, organization_name, metadata, otp_hash, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW() + INTERVAL '15 minutes')`,
+      [registrationId, cleanName, cleanEmail, cleanPhone, hashed, role, orgName, metadataStr, otpHash],
     );
 
     // Background dispatches (safe, non-blocking)
@@ -262,10 +269,6 @@ export const login = async (req, res) => {
 
     if (user.status === 'suspended') {
       return res.status(403).json({ message: 'Your account has been suspended' });
-    }
-
-    if (user.role === 'organizer' && !user.is_approved) {
-      return res.status(403).json({ message: 'Your organizer account is pending approval' });
     }
 
     if (user.role !== 'admin' && (user.email_verified === false || user.email_verified === 0)) {
@@ -413,64 +416,105 @@ export const refreshToken = async (req, res) => {
 /* ------------------------------------------------------------------ */
 /* Forgot password                                                     */
 /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* Forgot password (dispatches 6-digit code via Email and SMS)         */
+/* ------------------------------------------------------------------ */
 export const forgotPassword = async (req, res) => {
   try {
-    const { email } = req.body;
-    if (!email) return res.status(400).json({ message: 'Email is required' });
+    const { email, identifier } = req.body;
+    const target = String(email || identifier || '').trim().toLowerCase();
+    if (!target) return res.status(400).json({ message: 'Email or phone number is required' });
 
-    const [rows] = await pool.execute('SELECT id FROM users WHERE email = ?', [email]);
+    const [rows] = await pool.execute(
+      'SELECT id, name, email, phone FROM users WHERE email = ? OR phone = ?',
+      [target, target],
+    );
     const user = rows[0];
     if (user) {
-      const rawToken = uuidv4();
+      const code = crypto.randomInt(100000, 1000000).toString();
+      const codeHash = hashToken(code);
+
+      // Clean up older unused reset tokens
+      await pool.execute(
+        'DELETE FROM password_reset_tokens WHERE user_id = ? OR expires_at < NOW()',
+        [user.id],
+      );
+
+      // Insert new 6-digit reset code with 15 minutes validity
       await pool.execute(
         `INSERT INTO password_reset_tokens (user_id, token_hash, expires_at, used)
-         VALUES (?, ?, NOW() + INTERVAL '1 hour', FALSE)`,
-        [user.id, hashToken(rawToken)],
+         VALUES (?, ?, NOW() + INTERVAL '15 minutes', FALSE)`,
+        [user.id, codeHash],
       );
-      await pool.execute(
-        `UPDATE password_reset_tokens SET used = TRUE
-         WHERE user_id = ? AND used = FALSE AND token_hash <> ?`,
-        [user.id, hashToken(rawToken)],
-      );
+
+      // 1. Dispatch Email with 6-digit code
       try {
-        await sendPasswordResetEmail(email, rawToken);
+        sendPasswordResetEmail(user.email, code, user.name);
       } catch (emailErr) {
         console.error('[authController.forgotPassword] sendPasswordResetEmail error:', emailErr.message);
       }
-      await logAudit({ userId: user.id, action: 'forgot_password', entityType: 'user', entityId: user.id });
+
+      // 2. Dispatch SMS with 6-digit code
+      if (user.phone) {
+        try {
+          sendSMS(
+            user.phone,
+            `Tribes & Cliqs: Your password reset code is ${code}. Valid for 15 minutes. Never share this code with anyone.`
+          ).catch((smsErr) => console.warn('[authController.forgotPassword] SMS error:', smsErr.message));
+        } catch {
+          /* ignore */
+        }
+      }
+
+      await logAudit({ userId: user.id, action: 'forgot_password_otp_sent', entityType: 'user', entityId: user.id });
     }
 
-    res.json({ message: 'If that email exists, a reset link has been sent.' });
+    res.json({
+      message: 'A 6-digit password reset code has been sent to your email and registered phone number.',
+      email: user?.email || target,
+      phone: user?.phone ? `${user.phone.slice(0, 4)}***${user.phone.slice(-3)}` : null,
+    });
   } catch (err) {
     console.error('[authController.forgotPassword]', err);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error sending password reset code' });
   }
 };
 
 /* ------------------------------------------------------------------ */
-/* Reset password                                                      */
+/* Reset password (verifies 6-digit code or link token)                */
 /* ------------------------------------------------------------------ */
 export const resetPassword = async (req, res) => {
   try {
-    const { token, password } = req.body;
-    if (!token || !password) {
-      return res.status(400).json({ message: 'Token and new password are required' });
+    const { token, code, email, password } = req.body;
+    const resetInput = String(code || token || '').trim();
+    if (!resetInput || !password) {
+      return res.status(400).json({ message: 'Reset code and new password are required' });
     }
     const strength = validatePassword(password);
     if (!strength.valid) {
       return res.status(400).json({ message: strength.message });
     }
 
-    const tokenHash = hashToken(token);
-    const [rows] = await pool.execute(
-      `SELECT prt.*, u.email
-       FROM password_reset_tokens prt
-       JOIN users u ON u.id = prt.user_id
-       WHERE prt.token_hash = ? AND prt.used = FALSE AND prt.expires_at > NOW()`,
-      [tokenHash],
-    );
+    const inputHash = hashToken(resetInput);
+
+    let query = `
+      SELECT prt.*, u.id AS user_id, u.email, u.phone, u.name
+      FROM password_reset_tokens prt
+      JOIN users u ON u.id = prt.user_id
+      WHERE prt.token_hash = ? AND prt.used = FALSE AND prt.expires_at > NOW()
+    `;
+    const params = [inputHash];
+
+    if (email) {
+      query += ` AND LOWER(u.email) = ?`;
+      params.push(String(email).trim().toLowerCase());
+    }
+
+    const [rows] = await pool.execute(query, params);
     const resetRow = rows[0];
-    if (!resetRow) return res.status(400).json({ message: 'Invalid or expired reset token' });
+    if (!resetRow) {
+      return res.status(400).json({ message: 'Invalid or expired 6-digit reset code. Please request a new one.' });
+    }
 
     const hashed = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
@@ -487,12 +531,27 @@ export const resetPassword = async (req, res) => {
     await pool.execute('UPDATE password_reset_tokens SET used = TRUE WHERE user_id = ?', [resetRow.user_id]);
     await revokeAllUserTokens(resetRow.user_id);
 
-    await logAudit({ userId: resetRow.user_id, action: 'reset_password', entityType: 'user', entityId: resetRow.user_id });
+    // Send confirmation SMS & in-app notification
+    if (resetRow.phone) {
+      sendSMS(
+        resetRow.phone,
+        'Tribes & Cliqs Security: Your account password was successfully reset. If you did not make this change, please contact support immediately.'
+      ).catch(() => {});
+    }
 
-    res.json({ message: 'Password reset successful. Please log in again on all devices.' });
+    sendNotification({
+      userId: resetRow.user_id,
+      title: 'Password Reset Successful 🔐',
+      message: 'Your account password has been updated. Other active sessions have been signed out for security.',
+      type: 'account',
+    }).catch(() => {});
+
+    await logAudit({ userId: resetRow.user_id, action: 'reset_password_completed', entityType: 'user', entityId: resetRow.user_id });
+
+    res.json({ message: 'Password reset successful! You can now sign in with your new password.' });
   } catch (err) {
     console.error('[authController.resetPassword]', err);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error during password reset' });
   }
 };
 
@@ -596,18 +655,39 @@ export const verifyEmail = async (req, res) => {
           }
 
           const isApproved = pending.role === 'organizer' ? 0 : 1;
+          const meta = pending.metadata
+            ? (typeof pending.metadata === 'string' ? JSON.parse(pending.metadata) : pending.metadata)
+            : {};
+
           const [result] = await pool.execute(
-            `INSERT INTO users (name, email, password, role, phone, status, is_approved, email_verified)
-             VALUES (?, ?, ?, ?, ?, 'active', ?, TRUE)`,
-            [pending.name, pending.email, pending.password_hash, pending.role, pending.phone || null, isApproved === 1],
+            `INSERT INTO users (name, email, password, role, phone, status, is_approved, email_verified, location, bio)
+             VALUES (?, ?, ?, ?, ?, 'active', ?, TRUE, ?, ?)`,
+            [
+              pending.name,
+              pending.email,
+              pending.password_hash,
+              pending.role,
+              pending.phone || null,
+              isApproved === 1,
+              meta.city || meta.location || null,
+              meta.description || null,
+            ],
           );
 
           const userId = result.insertId;
 
-          if (pending.role === 'organizer' && pending.organization_name) {
+          if (pending.role === 'organizer') {
             await pool.execute(
-              `INSERT INTO organizer_profiles (user_id, organization_name) VALUES (?, ?)`,
-              [userId, pending.organization_name],
+              `INSERT INTO organizer_profiles (user_id, organization_name, description, website, category, city, is_verified)
+               VALUES (?, ?, ?, ?, ?, ?, FALSE)`,
+              [
+                userId,
+                pending.organization_name || pending.name,
+                meta.description || null,
+                meta.website || null,
+                meta.category || null,
+                meta.city || meta.location || null,
+              ],
             );
           }
 

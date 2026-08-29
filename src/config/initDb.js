@@ -73,6 +73,10 @@ async function initDb() {
         `ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN NOT NULL DEFAULT FALSE`,
         `ALTER TABLE organizer_profiles ALTER COLUMN organization_name TYPE VARCHAR(255)`,
         `ALTER TABLE email_verifications ALTER COLUMN token_hash TYPE VARCHAR(128)`,
+        `ALTER TABLE organizer_profiles ADD COLUMN IF NOT EXISTS category VARCHAR(120)`,
+        `ALTER TABLE organizer_profiles ADD COLUMN IF NOT EXISTS city VARCHAR(120)`,
+        `ALTER TABLE organizer_profiles ADD COLUMN IF NOT EXISTS country VARCHAR(120)`,
+        `ALTER TABLE pending_registrations ADD COLUMN IF NOT EXISTS metadata JSONB`,
         `CREATE TABLE IF NOT EXISTS pending_registrations (
           id                BIGSERIAL PRIMARY KEY,
           registration_id   VARCHAR(64) NOT NULL UNIQUE,
@@ -82,8 +86,27 @@ async function initDb() {
           password_hash     VARCHAR(255) NOT NULL,
           role              VARCHAR(50) NOT NULL DEFAULT 'attendee',
           organization_name VARCHAR(180),
+          metadata          JSONB,
           otp_hash          VARCHAR(128) NOT NULL,
           expires_at        TIMESTAMPTZ NOT NULL,
+          created_at        TIMESTAMPTZ DEFAULT NOW()
+        )`,
+        `CREATE TABLE IF NOT EXISTS event_reminders (
+          id                BIGSERIAL PRIMARY KEY,
+          user_id           BIGINT NOT NULL,
+          event_id          BIGINT NOT NULL,
+          remind_at         TIMESTAMPTZ,
+          email_sent        BOOLEAN DEFAULT FALSE,
+          sms_sent          BOOLEAN DEFAULT FALSE,
+          created_at        TIMESTAMPTZ DEFAULT NOW(),
+          UNIQUE(user_id, event_id)
+        )`,
+        `ALTER TABLE event_meetups ADD COLUMN IF NOT EXISTS type VARCHAR(50) DEFAULT 'general'`,
+        `CREATE TABLE IF NOT EXISTS event_discussions (
+          id                BIGSERIAL PRIMARY KEY,
+          event_id          BIGINT NOT NULL,
+          user_id           BIGINT NOT NULL,
+          message           TEXT NOT NULL,
           created_at        TIMESTAMPTZ DEFAULT NOW()
         )`,
       ];

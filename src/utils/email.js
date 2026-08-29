@@ -108,19 +108,27 @@ export const sendVerificationEmail = async (to, token, otp = null) => {
   });
 };
 
-export const sendPasswordResetEmail = async (to, token) => {
-  const link = `${FRONTEND_URL}/reset-password?token=${token}`;
+export const sendPasswordResetEmail = async (to, tokenOrCode, name = 'User') => {
+  const code = tokenOrCode;
+  const link = `${FRONTEND_URL}/reset-password?code=${encodeURIComponent(code)}&email=${encodeURIComponent(to)}`;
   return sendEmail({
     to,
-    subject: 'Reset your password — Tribes & Cliqs',
+    subject: `Your Password Reset Code: ${code} — Tribes & Cliqs`,
     html: `
-      <div style="font-family:Arial,sans-serif;max-width:560px;margin:auto">
-        <h2>Password Reset</h2>
-        <p>You requested a password reset. Click below to choose a new password.</p>
-        <p><a href="${link}" style="display:inline-block;padding:10px 20px;background:#6d28d9;color:#fff;border-radius:6px;text-decoration:none">Reset Password</a></p>
-        <p style="color:#666;font-size:13px">This link expires in 1 hour. If you didn't request this, you can safely ignore this email.</p>
+      <div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
+        <h2 style="margin-top:0;color:#FFFFFF;">Password Reset Request</h2>
+        <p style="color:#A1A1AA;line-height:1.6;">Hello ${escapeHtml(name)}, we received a request to reset your password on Tribes &amp; Cliqs.</p>
+        <div style="margin:24px 0;padding:20px;background:#1E252B;border-radius:12px;border:1px solid #323A42;text-align:center;">
+          <p style="color:#949599;font-size:13px;margin:0 0 8px 0;text-transform:uppercase;letter-spacing:1px;">Your 6-Digit Reset Code</p>
+          <div style="font-size:32px;font-weight:bold;letter-spacing:8px;color:#FFFFFF;font-family:monospace;">${code}</div>
+          <p style="color:#64748b;font-size:12px;margin:8px 0 0 0;">Valid for 15 minutes</p>
+        </div>
+        <div style="text-align:center;margin:28px 0;">
+          <a href="${link}" style="display:inline-block;padding:12px 28px;background:#FFFFFF;color:#14191E;border-radius:8px;font-weight:bold;text-decoration:none;">Reset Password Directly</a>
+        </div>
+        <p style="color:#64748b;font-size:12px;margin-top:24px;border-top:1px solid #2B333B;padding-top:16px;">If you did not request this password reset, please ignore this email or contact support if you suspect unauthorized activity.</p>
       </div>`,
-    text: `Reset your password: ${link}`,
+    text: `Your password reset code is: ${code} (valid for 15 minutes).\n\nOr click here to reset your password: ${link}`,
   });
 };
 

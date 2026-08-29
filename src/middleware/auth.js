@@ -1,10 +1,14 @@
 import jwt from 'jsonwebtoken';
+import pool from '../config/db.js';
+
+const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret_change_me';
 
 /**
  * Verify the Bearer token from the Authorization header.
- * Attaches the decoded payload to req.user.
+ * Attaches the verified DB user payload to req.user.
+ * Automatically invalidates requests if the account was deleted by admin.
  */
-export const authenticate = (req, res, next) => {
+export const authenticate = async (req, res, next) => {
   const authHeader = req.headers.authorization;
   const token = authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
 
@@ -13,11 +17,39 @@ export const authenticate = (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const userId = decoded.id || decoded.userId || decoded.sub;
+    if (!userId) {
+      return res.status(401).json({ message: 'Invalid session payload' });
+    }
+
+    const [rows] = await pool.execute(
+      'SELECT id, name, email, role, status, is_approved, email_verified FROM users WHERE id = ?',
+      [userId],
+    );
+    const dbUser = rows[0];
+    if (!dbUser) {
+      return res.status(401).json({
+        message: 'Your account has been removed. You have been automatically signed out.',
+        accountDeleted: true,
+      });
+    }
+    if (dbUser.status === 'suspended') {
+      return res.status(403).json({
+        message: 'Your account has been suspended.',
+        accountSuspended: true,
+      });
+    }
+
+    req.user = {
+      ...decoded,
+      ...dbUser,
+      id: Number(dbUser.id),
+      is_approved: dbUser.is_approved === 1 || dbUser.is_approved === true,
+    };
     next();
-  } catch {
-    return res.status(401).json({ message: 'Invalid token' });
+  } catch (err) {
+    return res.status(401).json({ message: 'Invalid or expired session token' });
   }
 };
 
@@ -30,7 +62,7 @@ export const optionalAuth = (req, res, next) => {
   const token = authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
   if (token) {
     try {
-      req.user = jwt.verify(token, process.env.JWT_SECRET);
+      req.user = jwt.verify(token, JWT_SECRET);
     } catch {
       /* ignore — treated as anonymous */
     }

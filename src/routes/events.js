@@ -4,6 +4,7 @@ import {
   publishEvent, unpublishEvent,
   getOrganizerEvents, getFeaturedEvents, getTrendingEvents, getRecommendedEvents,
   getCategories, getFeaturedOrganizers,
+  toggleEventReminder, getEventReminderStatus, getUserReminders,
 } from '../controllers/eventController.js';
 import { authenticate, authorize, optionalAuth } from '../middleware/auth.js';
 import { uploadSingle, uploadArray } from '../middleware/upload.js';
@@ -21,6 +22,11 @@ router.get('/trending', getTrendingEvents);
 router.get('/recommended', optionalAuth, getRecommendedEvents);
 router.get('/categories', getCategories);
 router.get('/featured-organizers', getFeaturedOrganizers);
+
+// Reminders
+router.get('/reminders/mine', authenticate, getUserReminders);
+router.post('/:id/reminders', authenticate, writeLimiter, toggleEventReminder);
+router.get('/:id/reminders', optionalAuth, getEventReminderStatus);
 
 // Organizer-only (create / manage)
 router.get('/organizer/mine', authenticate, authorize('organizer', 'admin'), getOrganizerEvents);

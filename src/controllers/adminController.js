@@ -246,7 +246,7 @@ export const getUser = async (req, res) => {
   try {
     const { id } = req.params;
     const [rows] = await pool.execute(
-      `SELECT u.*, op.organization_name, op.description AS org_description, op.website, op.logo_url, op.banner_url, op.is_verified AS org_is_verified,
+      `SELECT u.*, op.organization_name, op.description AS org_description, op.website, op.category AS org_category, op.city AS org_city, op.country AS org_country, op.logo_url, op.banner_url, op.social_links, op.is_verified AS org_is_verified,
               (SELECT COUNT(*) FROM events e WHERE e.organizer_id = u.id) AS events_count,
               (SELECT COUNT(*) FROM tickets t WHERE t.user_id = u.id) AS tickets_count
        FROM users u
@@ -260,8 +260,6 @@ export const getUser = async (req, res) => {
     res.json({
       user: {
         ...safe,
-        // The stored credential is an irreversible bcrypt hash — the plaintext
-        // password is never kept, so this is the only view an admin can get.
         passwordHash: password || null,
         createdAt: safe.created_at,
         updatedAt: safe.updated_at,
@@ -274,12 +272,17 @@ export const getUser = async (req, res) => {
         suspendReason: safe.suspend_reason || null,
         suspendedAt: safe.suspended_at || null,
         organizationName: safe.organization_name || safe.name,
+        category: safe.org_category || null,
+        city: safe.org_city || safe.location || null,
         organization: {
           name: safe.organization_name || safe.name,
-          description: safe.org_description,
-          website: safe.website,
-          logoUrl: safe.logo_url,
-          bannerUrl: safe.banner_url,
+          category: safe.org_category || null,
+          city: safe.org_city || safe.location || null,
+          description: safe.org_description || safe.bio || null,
+          website: safe.website || null,
+          logoUrl: safe.logo_url || null,
+          bannerUrl: safe.banner_url || null,
+          socialLinks: safe.social_links || null,
           isVerified: !!safe.org_is_verified,
         },
       },
@@ -454,16 +457,34 @@ export const approveOrganizer = async (req, res) => {
     await pool.execute(`UPDATE users SET is_approved = TRUE, status = 'active' WHERE id = ?`, [id]);
     await pool.execute(`UPDATE organizer_profiles SET is_verified = TRUE, approved_at = NOW() WHERE user_id = ?`, [id]);
 
+    // Send Approval Email
     try {
       sendOrganizerApprovalEmail(user.email, user.name);
     } catch (e) {
-      /* ignore if email provider unconfigured */
+      console.warn('[adminController.approveOrganizer] Email send skipped:', e.message);
     }
 
-    sendNotification({ userId: Number(id), title: 'Organizer account approved', message: 'You can now create and publish events.', type: 'account' });
+    // Send Approval SMS
+    if (user.phone) {
+      try {
+        sendSMS(
+          user.phone,
+          `Tribes & Cliqs: Congratulations ${user.name}! Your organizer account has been approved by the Admin. You can now log in and manage your events & ticket sales.`
+        ).catch((err) => console.warn('[adminController.approveOrganizer] SMS send error:', err.message));
+      } catch {
+        /* ignore */
+      }
+    }
+
+    await sendNotification({
+      userId: Number(id),
+      title: 'Organizer Account Approved! 🎉',
+      message: 'Congratulations! Your organizer account has been approved by the Admin. You now have full access to create events, sell tickets, and manage your dashboard.',
+      type: 'account',
+    });
 
     await logAudit({ userId: req.user.id, action: 'approve_organizer', entityType: 'user', entityId: Number(id) });
-    res.json({ message: 'Organizer approved' });
+    res.json({ message: 'Organizer approved successfully' });
   } catch (err) {
     console.error('[adminController.approveOrganizer]', err);
     res.status(500).json({ message: 'Server error' });
@@ -1259,8 +1280,9 @@ export const deleteUser = async (req, res) => {
     }
 
     await logAudit({ userId: req.user.id, action: 'delete_user', entityType: 'user', entityId: Number(id), details: { name: user.name, email: user.email } });
+    await pool.execute('DELETE FROM refresh_tokens WHERE user_id = ?', [id]);
     await pool.execute('DELETE FROM users WHERE id = ?', [id]);
-    res.json({ message: 'User deleted' });
+    res.json({ message: 'User deleted successfully' });
   } catch (err) {
     console.error('[adminController.deleteUser]', err);
     res.status(500).json({ message: 'Server error' });
@@ -1632,6 +1654,10 @@ export const bulkDeleteUsers = async (req, res) => {
 
     const placeholders = ids.map(() => '?').join(',');
     // Don't delete admin accounts
+    await pool.execute(
+      `DELETE FROM refresh_tokens WHERE user_id IN (${placeholders})`,
+      [...ids],
+    );
     const [result] = await pool.execute(
       `DELETE FROM users WHERE id IN (${placeholders}) AND role != 'admin'`,
       [...ids],

@@ -12,41 +12,47 @@ import textPdf from '../utils/pdf.js';
 export const getDashboardStats = async (req, res) => {
   try {
     const organizerId = req.user.id;
-    const monthStart = `TO_CHAR(CURRENT_DATE, 'YYYY-MM-01')`;
+    const monthStart = `DATE_TRUNC('month', CURRENT_DATE)`;
 
     // Percentage change helper (month over month).
     const pct = (cur, prev) => (prev > 0 ? Math.round(((cur - prev) / prev) * 100) : cur > 0 ? 100 : 0);
 
     // Organization header.
-    const [[orgRow]] = await pool.execute(
+    const [orgRows] = await pool.execute(
       `SELECT u.name, u.is_approved, op.organization_name
        FROM users u
        LEFT JOIN organizer_profiles op ON op.user_id = u.id
        WHERE u.id = ?`,
       [organizerId],
     );
+    const orgRow = orgRows[0] || {};
 
     // Event counts.
-    const [[eventsCount]] = await pool.execute(
+    const [eventsCountRows] = await pool.execute(
       `SELECT COUNT(*) AS total FROM events WHERE organizer_id = ?`,
       [organizerId],
     );
-    const [[activeEventsCount]] = await pool.execute(
+    const totalEvents = Number(eventsCountRows[0]?.total || 0);
+
+    const [activeEventsRows] = await pool.execute(
       `SELECT COUNT(*) AS total
        FROM events
-       WHERE organizer_id = ? AND status = 'published' AND start_date >= CURRENT_DATE()`,
+       WHERE organizer_id = ? AND status = 'published' AND start_date >= CURRENT_DATE`,
       [organizerId],
     );
+    const activeEvents = Number(activeEventsRows[0]?.total || 0);
 
     // Totals: revenue, orders, tickets.
-    const [[revenueRow]] = await pool.execute(
+    const [revenueRows] = await pool.execute(
       `SELECT COALESCE(SUM(o.total_amount - o.discount_amount), 0) AS revenue
        FROM orders o
        JOIN events e ON e.id = o.event_id
        WHERE e.organizer_id = ? AND o.payment_status = 'completed'`,
       [organizerId],
     );
-    const [[ordersRow]] = await pool.execute(
+    const totalRevenue = Number(revenueRows[0]?.revenue || 0);
+
+    const [ordersRows] = await pool.execute(
       `SELECT COUNT(*) AS total,
               COALESCE(SUM(CASE WHEN o.payment_status = 'pending' THEN 1 ELSE 0 END), 0) AS pending,
               COALESCE(SUM(CASE WHEN o.payment_status = 'refunded' THEN 1 ELSE 0 END), 0) AS refunds
@@ -55,111 +61,148 @@ export const getDashboardStats = async (req, res) => {
        WHERE e.organizer_id = ?`,
       [organizerId],
     );
-    const [[ticketsRow]] = await pool.execute(
+    const ordersTotal = Number(ordersRows[0]?.total || 0);
+    const pendingOrders = Number(ordersRows[0]?.pending || 0);
+    const refunds = Number(ordersRows[0]?.refunds || 0);
+
+    const [ticketsRows] = await pool.execute(
       `SELECT COUNT(*) AS total
        FROM tickets t
        JOIN events e ON e.id = t.event_id
        WHERE e.organizer_id = ? AND t.status = 'active'`,
       [organizerId],
     );
+    const ticketsSold = Number(ticketsRows[0]?.total || 0);
 
-    // Month-over-month trends.
-    const [[eventTrend]] = await pool.execute(
-      `SELECT
-         COALESCE(SUM(CASE WHEN created_at >= ${monthStart} THEN 1 ELSE 0 END), 0) AS thisMonth,
-         COALESCE(SUM(CASE WHEN created_at < ${monthStart}
-                           AND created_at >= (${monthStart})::date - INTERVAL '1 month' THEN 1 ELSE 0 END), 0) AS lastMonth
-       FROM events
-       WHERE organizer_id = ?`,
-      [organizerId],
-    );
-    const [[activeTrend]] = await pool.execute(
-      `SELECT
-         COALESCE(SUM(CASE WHEN status = 'published' AND start_date >= ${monthStart} THEN 1 ELSE 0 END), 0) AS thisMonth,
-         COALESCE(SUM(CASE WHEN status = 'published' AND start_date >= (${monthStart})::date - INTERVAL '1 month'
-                           AND start_date < ${monthStart} THEN 1 ELSE 0 END), 0) AS lastMonth
-       FROM events
-       WHERE organizer_id = ?`,
-      [organizerId],
-    );
-    const [[ticketTrend]] = await pool.execute(
-      `SELECT
-         COALESCE(SUM(CASE WHEN t.created_at >= ${monthStart} THEN 1 ELSE 0 END), 0) AS thisMonth,
-         COALESCE(SUM(CASE WHEN t.created_at < ${monthStart}
-                           AND t.created_at >= (${monthStart})::date - INTERVAL '1 month' THEN 1 ELSE 0 END), 0) AS lastMonth
-       FROM tickets t
-       JOIN events e ON e.id = t.event_id
-       WHERE e.organizer_id = ?`,
-      [organizerId],
-    );
-    const [[orderTrend]] = await pool.execute(
-      `SELECT
-         COALESCE(SUM(CASE WHEN o.payment_status = 'completed' AND o.created_at >= ${monthStart}
-                           THEN o.total_amount - o.discount_amount ELSE 0 END), 0) AS revenueThisMonth,
-         COALESCE(SUM(CASE WHEN o.payment_status = 'completed' AND o.created_at < ${monthStart}
-                           AND o.created_at >= (${monthStart})::date - INTERVAL '1 month'
-                           THEN o.total_amount - o.discount_amount ELSE 0 END), 0) AS revenueLastMonth
-       FROM orders o
-       JOIN events e ON e.id = o.event_id
-       WHERE e.organizer_id = ?`,
-      [organizerId],
-    );
+    // Month-over-month trends with safe queries
+    let eventTrend = { thisMonth: 0, lastMonth: 0 };
+    let activeTrend = { thisMonth: 0, lastMonth: 0 };
+    let ticketTrend = { thisMonth: 0, lastMonth: 0 };
+    let orderTrend = { revenueThisMonth: 0, revenueLastMonth: 0 };
+
+    try {
+      const [eTrends] = await pool.execute(
+        `SELECT
+           COALESCE(SUM(CASE WHEN created_at >= ${monthStart} THEN 1 ELSE 0 END), 0) AS thismonth,
+           COALESCE(SUM(CASE WHEN created_at < ${monthStart}
+                             AND created_at >= ${monthStart} - INTERVAL '1 month' THEN 1 ELSE 0 END), 0) AS lastmonth
+         FROM events
+         WHERE organizer_id = ?`,
+        [organizerId],
+      );
+      if (eTrends[0]) eventTrend = { thisMonth: Number(eTrends[0].thismonth || 0), lastMonth: Number(eTrends[0].lastmonth || 0) };
+    } catch {}
+
+    try {
+      const [aTrends] = await pool.execute(
+        `SELECT
+           COALESCE(SUM(CASE WHEN status = 'published' AND start_date >= ${monthStart} THEN 1 ELSE 0 END), 0) AS thismonth,
+           COALESCE(SUM(CASE WHEN status = 'published' AND start_date >= ${monthStart} - INTERVAL '1 month'
+                             AND start_date < ${monthStart} THEN 1 ELSE 0 END), 0) AS lastmonth
+         FROM events
+         WHERE organizer_id = ?`,
+        [organizerId],
+      );
+      if (aTrends[0]) activeTrend = { thisMonth: Number(aTrends[0].thismonth || 0), lastMonth: Number(aTrends[0].lastmonth || 0) };
+    } catch {}
+
+    try {
+      const [tTrends] = await pool.execute(
+        `SELECT
+           COALESCE(SUM(CASE WHEN t.created_at >= ${monthStart} THEN 1 ELSE 0 END), 0) AS thismonth,
+           COALESCE(SUM(CASE WHEN t.created_at < ${monthStart}
+                             AND t.created_at >= ${monthStart} - INTERVAL '1 month' THEN 1 ELSE 0 END), 0) AS lastmonth
+         FROM tickets t
+         JOIN events e ON e.id = t.event_id
+         WHERE e.organizer_id = ?`,
+        [organizerId],
+      );
+      if (tTrends[0]) ticketTrend = { thisMonth: Number(tTrends[0].thismonth || 0), lastMonth: Number(tTrends[0].lastmonth || 0) };
+    } catch {}
+
+    try {
+      const [oTrends] = await pool.execute(
+        `SELECT
+           COALESCE(SUM(CASE WHEN o.payment_status = 'completed' AND o.created_at >= ${monthStart}
+                             THEN o.total_amount - o.discount_amount ELSE 0 END), 0) AS thismonth,
+           COALESCE(SUM(CASE WHEN o.payment_status = 'completed' AND o.created_at < ${monthStart}
+                             AND o.created_at >= ${monthStart} - INTERVAL '1 month'
+                             THEN o.total_amount - o.discount_amount ELSE 0 END), 0) AS lastmonth
+         FROM orders o
+         JOIN events e ON e.id = o.event_id
+         WHERE e.organizer_id = ?`,
+        [organizerId],
+      );
+      if (oTrends[0]) orderTrend = { revenueThisMonth: Number(oTrends[0].thismonth || 0), revenueLastMonth: Number(oTrends[0].lastmonth || 0) };
+    } catch {}
 
     // Recent orders (latest 8 across the organizer's events).
-    const [recentOrders] = await pool.execute(
-      `SELECT o.id, o.payment_reference AS reference, u.name AS customerName,
-              e.title AS eventTitle, COALESCE(SUM(oi.quantity), 0) AS ticketCount,
-              o.total_amount AS amount, o.payment_status AS status, o.created_at AS createdAt
-       FROM orders o
-       JOIN users u ON u.id = o.user_id
-       JOIN events e ON e.id = o.event_id
-       LEFT JOIN order_items oi ON oi.order_id = o.id
-       WHERE e.organizer_id = ?
-       GROUP BY o.id, o.payment_reference, u.name, e.title, o.total_amount, o.payment_status, o.created_at
-       ORDER BY o.created_at DESC
-       LIMIT 8`,
-      [organizerId],
-    );
+    let recentOrders = [];
+    try {
+      const [orders] = await pool.execute(
+        `SELECT o.id, o.payment_reference AS reference, u.name AS customerName,
+                e.title AS eventTitle, COALESCE(SUM(oi.quantity), 0) AS ticketCount,
+                o.total_amount AS amount, o.payment_status AS status, o.created_at AS createdAt
+         FROM orders o
+         JOIN users u ON u.id = o.user_id
+         JOIN events e ON e.id = o.event_id
+         LEFT JOIN order_items oi ON oi.order_id = o.id
+         WHERE e.organizer_id = ?
+         GROUP BY o.id, o.payment_reference, u.name, e.title, o.total_amount, o.payment_status, o.created_at
+         ORDER BY o.created_at DESC
+         LIMIT 8`,
+        [organizerId],
+      );
+      recentOrders = orders || [];
+    } catch {}
 
     // Upcoming events with capacity and tickets sold.
-    const [upcomingEvents] = await pool.execute(
-      `SELECT e.id, e.title, e.start_date AS startDate, e.venue, e.city, e.capacity AS totalCapacity,
-              (SELECT COUNT(*) FROM tickets t WHERE t.event_id = e.id AND t.status = 'active') AS ticketsSold
-       FROM events e
-       WHERE e.organizer_id = ? AND e.status IN ('published', 'pending') AND e.start_date >= CURRENT_DATE()
-       ORDER BY e.start_date ASC
-       LIMIT 6`,
-      [organizerId],
-    );
+    let upcomingEvents = [];
+    try {
+      const [upcoming] = await pool.execute(
+        `SELECT e.id, e.title, e.start_date AS startDate, e.venue, e.city, e.capacity AS totalCapacity,
+                (SELECT COUNT(*) FROM tickets t WHERE t.event_id = e.id AND t.status = 'active') AS ticketsSold
+         FROM events e
+         WHERE e.organizer_id = ? AND e.status IN ('published', 'pending') AND e.start_date >= CURRENT_DATE
+         ORDER BY e.start_date ASC
+         LIMIT 6`,
+        [organizerId],
+      );
+      upcomingEvents = upcoming || [];
+    } catch {}
 
     // Top 5 events by tickets sold.
-    const [topEvents] = await pool.execute(
-      `SELECT e.id, e.title AS name,
-              (SELECT COUNT(*) FROM tickets t WHERE t.event_id = e.id AND t.status = 'active') AS ticketsSold
-       FROM events e
-       WHERE e.organizer_id = ?
-       ORDER BY ticketsSold DESC
-       LIMIT 5`,
-      [organizerId],
-    );
+    let topEvents = [];
+    try {
+      const [top] = await pool.execute(
+        `SELECT e.id, e.title AS name,
+                (SELECT COUNT(*) FROM tickets t WHERE t.event_id = e.id AND t.status = 'active') AS ticketsSold
+         FROM events e
+         WHERE e.organizer_id = ?
+         ORDER BY ticketsSold DESC
+         LIMIT 5`,
+        [organizerId],
+      );
+      topEvents = top || [];
+    } catch {}
 
     res.json({
       organization: {
-        name: orgRow?.organization_name || orgRow?.name || '',
-        isApproved: Number(orgRow?.is_approved) === 1,
+        name: orgRow.organization_name || orgRow.name || '',
+        isApproved: Number(orgRow.is_approved) === 1 || orgRow.is_approved === true,
       },
       metrics: {
-        totalEvents: eventsCount.total,
+        totalEvents,
         totalEventsTrend: pct(eventTrend.thisMonth, eventTrend.lastMonth),
-        ticketsSold: ticketsRow.total,
+        ticketsSold,
         ticketsSoldTrend: pct(ticketTrend.thisMonth, ticketTrend.lastMonth),
-        totalRevenue: Number(revenueRow.revenue),
+        totalRevenue,
         revenueTrend: pct(orderTrend.revenueThisMonth, orderTrend.revenueLastMonth),
-        activeEvents: activeEventsCount.total,
+        activeEvents,
         activeEventsTrend: pct(activeTrend.thisMonth, activeTrend.lastMonth),
-        totalOrders: ordersRow.total,
-        pendingOrders: ordersRow.pending,
-        refunds: ordersRow.refunds,
+        totalOrders: ordersTotal,
+        pendingOrders,
+        refunds,
       },
       recentOrders,
       upcomingEvents,
@@ -167,7 +210,7 @@ export const getDashboardStats = async (req, res) => {
     });
   } catch (err) {
     console.error('[organizerController.getDashboardStats]', err);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error loading dashboard statistics' });
   }
 };
 
@@ -1050,38 +1093,48 @@ export const exportReport = async (req, res) => {
 /* ------------------------------------------------------------------ */
 export const getOrganizationSettings = async (req, res) => {
   try {
+    const [userRows] = await pool.execute('SELECT name, email, phone FROM users WHERE id = ?', [req.user.id]);
+    const user = userRows[0] || {};
+
     const [rows] = await pool.execute('SELECT * FROM organizer_profiles WHERE user_id = ?', [req.user.id]);
     const profile = rows[0] || {};
     let socials = {};
     try {
       socials = typeof profile.social_links === 'string' ? JSON.parse(profile.social_links) : profile.social_links || {};
-    } catch (e) {
+    } catch {
       socials = {};
     }
 
     res.json({
       organization: {
-        name: profile.organization_name || '',
+        name: profile.organization_name || user.name || '',
         description: profile.description || '',
         website: profile.website || '',
-        facebook: socials.facebook || '',
-        twitter: socials.twitter || '',
-        instagram: socials.instagram || '',
-        linkedin: socials.linkedin || '',
+        facebook: socials?.facebook || '',
+        twitter: socials?.twitter || '',
+        instagram: socials?.instagram || '',
+        linkedin: socials?.linkedin || '',
         logoUrl: profile.logo_url || '',
         bannerUrl: profile.banner_url || '',
+        phone: user.phone || '',
+        email: user.email || '',
       },
     });
   } catch (err) {
     console.error('[organizerController.getOrganizationSettings]', err);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error loading organization settings' });
   }
 };
 
 export const updateOrganizationSettings = async (req, res) => {
   try {
     const { name, description, website, facebook, twitter, instagram, linkedin, logoUrl, bannerUrl } = req.body;
-    const socials = JSON.stringify({ facebook, twitter, instagram, linkedin });
+    const socials = JSON.stringify({
+      facebook: facebook || '',
+      twitter: twitter || '',
+      instagram: instagram || '',
+      linkedin: linkedin || '',
+    });
 
     const [existing] = await pool.execute('SELECT id FROM organizer_profiles WHERE user_id = ?', [req.user.id]);
     if (existing.length) {
@@ -1099,10 +1152,10 @@ export const updateOrganizationSettings = async (req, res) => {
       );
     }
 
-    res.json({ message: 'Organization profile updated' });
+    res.json({ message: 'Organization profile updated successfully' });
   } catch (err) {
     console.error('[organizerController.updateOrganizationSettings]', err);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error updating organization settings' });
   }
 };
 
@@ -1122,7 +1175,7 @@ export const getPaymentAccount = async (req, res) => {
     });
   } catch (err) {
     console.error('[organizerController.getPaymentAccount]', err);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error loading payment account' });
   }
 };
 
