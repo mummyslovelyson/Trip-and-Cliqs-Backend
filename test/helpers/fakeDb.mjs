@@ -101,6 +101,12 @@ export function createFakeDb() {
 
   // Parse a WHERE condition into { col, op, token } — no params touched yet.
   function parseCond(cond) {
+    const inMatch = cond.trim().match(/^([\w.`]+)\s+IN\s*\(([^)]+)\)$/i);
+    if (inMatch) {
+      const col = inMatch[1].replace(/`/g, '').split('.').pop();
+      const list = splitTop(inMatch[2], ',').map((s) => s.trim().replace(/^['"]|['"]$/g, ''));
+      return { col, op: 'IN', list };
+    }
     const m = cond.trim().match(/^([\w.`]+)\s*(=|!=|<>|>=|<=|>|<|LIKE)\s*(.+)$/i);
     if (!m) throw new Error(`Unsupported WHERE condition: ${cond}`);
     return {
@@ -113,11 +119,15 @@ export function createFakeDb() {
   // Resolve a condition's expected value. Params are positional in SQL order
   // and consumed once per statement — never once per row.
   function resolveCond(cond, params, cursor) {
+    if (cond.op === 'IN') return cond;
     return { col: cond.col, op: cond.op, want: evalToken(cond.token, params, cursor) };
   }
 
   function matches(cond, row) {
     const got = row[cond.col];
+    if (cond.op === 'IN') {
+      return cond.list.includes(String(got));
+    }
     switch (cond.op) {
       case '=': return got == cond.want;
       case '!=':

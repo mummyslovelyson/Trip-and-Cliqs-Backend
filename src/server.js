@@ -279,6 +279,18 @@ const gracefulShutdown = (signal) => {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
+process.on('uncaughtException', (err) => {
+  if (err.code === 'ERR_HTTP_HEADERS_SENT') {
+    console.warn('[server] Warning: ERR_HTTP_HEADERS_SENT suppressed:', err.message);
+    return;
+  }
+  console.error('[server] Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[server] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 // The server instance is exported so tests (node --test) can close it and
 // let the process exit cleanly.
 export { server };

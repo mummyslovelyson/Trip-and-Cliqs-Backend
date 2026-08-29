@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import {
-  getDashboardStats, getUsers, getUser, updateUser, suspendUser, unsuspendUser, verifyUser, deleteUser, approveOrganizer, rejectOrganizer, resetUserPassword,
+  getDashboardStats, getUsers, getUser, updateUser, suspendUser, unsuspendUser, verifyUser, deleteUser, approveOrganizer, rejectOrganizer, resetUserPassword, createAdminUser,
   getUserManagementStats, getUserActivity, getUserSessions, forceLogoutUser, addAdminNote, getAdminNotes, deleteAdminNote,
   exportUsers, bulkRoleChange, bulkDeleteUsers, getUserStats,
   getEvents, approveEvent, rejectEvent, featureEvent, suspendEvent, unsuspendEvent, adminDeleteEvent,
@@ -30,6 +30,7 @@ router.get('/dashboard', getDashboardStats);
 router.get('/users', getUsers);
 router.get('/users/stats', getUserManagementStats);
 router.get('/users/export/csv', exportUsers);
+router.post('/users/create-admin', authorize('system_admin', 'superadmin'), writeLimiter, createAdminUser);
 router.get('/users/:id', getUser);
 router.put('/users/:id', writeLimiter, updateUser);
 router.put('/users/:id/suspend', writeLimiter, suspendUser);
@@ -103,15 +104,15 @@ router.post('/content', writeLimiter, createContentPage);
 router.put('/content/:id', writeLimiter, updateContentPage);
 router.delete('/content/:id', destructiveLimiter, deleteContentPage);
 
-// Audit logs
-router.get('/audit-logs', getAuditLogs);
+// Audit logs (System Admin Only)
+router.get('/audit-logs', authorize('system_admin', 'superadmin'), getAuditLogs);
 
-// System settings
-router.get('/settings', getSystemSettings);
-router.put('/settings', writeLimiter, updateSystemSettings);
-router.post('/settings/test-email', writeLimiter, testEmailSetting);
-router.post('/settings/test-sms', writeLimiter, testSmsSetting);
-router.get('/settings/sms-balance', getSmsBalanceSetting);
-router.post('/settings/test-paystack', writeLimiter, testPaystackSetting);
+// System settings (System Admin Only)
+router.get('/settings', authorize('system_admin', 'superadmin'), getSystemSettings);
+router.put('/settings', authorize('system_admin', 'superadmin'), writeLimiter, updateSystemSettings);
+router.post('/settings/test-email', authorize('system_admin', 'superadmin'), writeLimiter, testEmailSetting);
+router.post('/settings/test-sms', authorize('system_admin', 'superadmin'), writeLimiter, testSmsSetting);
+router.get('/settings/sms-balance', authorize('system_admin', 'superadmin'), getSmsBalanceSetting);
+router.post('/settings/test-paystack', authorize('system_admin', 'superadmin'), writeLimiter, testPaystackSetting);
 
 export default router;

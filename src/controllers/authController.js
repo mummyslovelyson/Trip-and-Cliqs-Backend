@@ -253,6 +253,13 @@ export const login = async (req, res) => {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
 
+    if (['admin', 'system_admin', 'superadmin', 'staff'].includes(user.role)) {
+      return res.status(403).json({
+        message: 'Admin accounts must log in via the Admin Portal at /admin-login',
+        isAdminPortalRedirect: true,
+      });
+    }
+
     if (user.status === 'suspended') {
       return res.status(403).json({ message: 'Your account has been suspended' });
     }
@@ -317,7 +324,7 @@ export const adminLogin = async (req, res) => {
     }
 
     const [rows] = await pool.execute(
-      `SELECT * FROM users WHERE email = ? AND role = 'admin'`,
+      `SELECT * FROM users WHERE email = ? AND role IN ('admin', 'system_admin', 'superadmin', 'staff')`,
       [email],
     );
     const user = rows[0];

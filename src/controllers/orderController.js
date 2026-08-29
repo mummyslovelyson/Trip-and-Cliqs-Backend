@@ -343,7 +343,8 @@ export const getOrderInvoice = async (req, res) => {
     const order = rows[0];
     if (!order) return res.status(404).json({ message: 'Order not found' });
 
-    if (order.user_id !== req.user.id && req.user.role !== 'admin' && req.user.role !== 'organizer') {
+    const isAllowedAdmin = ['admin', 'system_admin', 'superadmin', 'staff'].includes(req.user.role);
+    if (order.user_id !== req.user.id && !isAllowedAdmin && req.user.role !== 'organizer') {
       return res.status(403).json({ message: 'Forbidden' });
     }
 

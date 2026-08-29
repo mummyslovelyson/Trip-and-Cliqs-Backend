@@ -412,7 +412,7 @@ export const downloadTicket = async (req, res) => {
 
     const isOwner = ticket.user_id === req.user.id;
     const isOrganizer = ticket.organizer_id === req.user.id;
-    const isAdmin = req.user.role === 'admin';
+    const isAdmin = ['admin', 'system_admin', 'superadmin', 'staff'].includes(req.user.role);
     if (!isOwner && !isOrganizer && !isAdmin) {
       return res.status(403).json({ message: 'You do not have access to this ticket' });
     }

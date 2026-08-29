@@ -16,11 +16,37 @@ export const requestTimeout = (timeoutMs = DEFAULT_TIMEOUT_MS) => {
     // Already timed out or response already sent — skip.
     if (res.writableEnded || res.headersSent) return next();
 
+    let isTimedOut = false;
     const timer = setTimeout(() => {
-      if (!res.headersSent) {
-        res.status(504).json({ message: 'Request timed out. Please try again.' });
+      if (!res.headersSent && !res.writableEnded) {
+        isTimedOut = true;
+        try {
+          res.status(504).json({ message: 'Request timed out. Please try again.' });
+        } catch {
+          // Ignore
+        }
       }
     }, timeoutMs);
+
+    // Guard against controller calls after timeout has already responded
+    const origJson = res.json.bind(res);
+    const origSend = res.send.bind(res);
+    const origEnd = res.end.bind(res);
+
+    res.json = function (...args) {
+      if (isTimedOut || res.headersSent || res.writableEnded) return this;
+      return origJson(...args);
+    };
+
+    res.send = function (...args) {
+      if (isTimedOut || res.headersSent || res.writableEnded) return this;
+      return origSend(...args);
+    };
+
+    res.end = function (...args) {
+      if (isTimedOut || res.writableEnded) return this;
+      return origEnd(...args);
+    };
 
     // Clear the timer as soon as a response is finished so it doesn't keep
     // the event loop alive for completed requests.

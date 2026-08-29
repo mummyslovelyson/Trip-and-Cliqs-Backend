@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS users (
   name            VARCHAR(120)  NOT NULL,
   email           VARCHAR(190)  NOT NULL UNIQUE,
   password        VARCHAR(255)  NOT NULL,
-  role            TEXT NOT NULL DEFAULT 'attendee' CHECK (role IN ('attendee','organizer','admin')),
+  role            TEXT NOT NULL DEFAULT 'attendee' CHECK (role IN ('attendee','organizer','admin','system_admin','superadmin','staff')),
   phone           VARCHAR(25),
   avatar_url      VARCHAR(500),
   avatar          VARCHAR(500),

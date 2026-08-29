@@ -32,6 +32,8 @@ const getClientIp = (req) =>
 export const globalRateLimit = (req, res, next) => {
   const ip = getClientIp(req);
   const now = Date.now();
+  if (res.headersSent || res.writableEnded) return next();
+
   let bucket = buckets.get(ip);
 
   if (!bucket || now - bucket.windowStart >= WINDOW_MS) {
@@ -42,13 +44,21 @@ export const globalRateLimit = (req, res, next) => {
   bucket.count += 1;
 
   // Set standard rate-limit headers on every response.
-  res.setHeader('X-RateLimit-Limit', String(MAX));
-  res.setHeader('X-RateLimit-Remaining', String(Math.max(0, MAX - bucket.count)));
-  res.setHeader('X-RateLimit-Reset', String(Math.ceil((bucket.windowStart + WINDOW_MS) / 1000)));
+  try {
+    if (!res.headersSent) {
+      res.setHeader('X-RateLimit-Limit', String(MAX));
+      res.setHeader('X-RateLimit-Remaining', String(Math.max(0, MAX - bucket.count)));
+      res.setHeader('X-RateLimit-Reset', String(Math.ceil((bucket.windowStart + WINDOW_MS) / 1000)));
+    }
+  } catch {
+    // Ignore header set race conditions
+  }
 
   if (bucket.count > MAX) {
     const retryAfter = Math.ceil((bucket.windowStart + WINDOW_MS - now) / 1000);
-    res.setHeader('Retry-After', String(Math.max(retryAfter, 1)));
+    try {
+      if (!res.headersSent) res.setHeader('Retry-After', String(Math.max(retryAfter, 1)));
+    } catch {}
     return res.status(429).json({
       message: 'Too many requests. Please slow down and try again later.',
     });

@@ -99,25 +99,27 @@ async function initDb() {
     }
 
     const bcrypt = (await import('bcryptjs')).default;
-    const adminEmail = process.env.ADMIN_EMAIL || 'admin@tribesandcliqs.com';
+    const adminEmail = (process.env.ADMIN_EMAIL || 'admin@tribesandcliqs.com').toLowerCase().trim();
     const { rows: adminRows } = await connection.query(
-      `SELECT id FROM users WHERE role = 'admin' LIMIT 1`,
+      `SELECT id, role FROM users WHERE email = $1 OR role IN ('system_admin', 'superadmin', 'admin') LIMIT 1`,
+      [adminEmail],
     );
 
     if (adminRows.length === 0) {
-      const adminPass = process.env.ADMIN_PASSWORD || 'Admin@TC2024';
+      const adminPass = process.env.ADMIN_PASSWORD || 'tribesandcliqs';
       if (!process.env.ADMIN_PASSWORD && process.env.NODE_ENV === 'production') {
         console.warn('⚠️ ADMIN_PASSWORD is not set — the seed admin account uses the default password. Set ADMIN_PASSWORD before deploying.');
       }
       const adminHash = await bcrypt.hash(adminPass, 12);
       await connection.query(
         `INSERT INTO users (name, email, password, role, status, is_approved, email_verified)
-         VALUES ('System Administrator', $1, $2, 'admin', 'active', TRUE, TRUE)`,
+         VALUES ('System Administrator', $1, $2, 'system_admin', 'active', TRUE, TRUE)
+         ON CONFLICT (email) DO UPDATE SET role = 'system_admin', status = 'active', email_verified = TRUE`,
         [adminEmail, adminHash],
       );
-      console.log('✅ Seed admin account created.');
+      console.log('✅ Seed system admin account created.');
     } else {
-      console.log('✅ Admin account already exists — skipping seed (password untouched).');
+      console.log('✅ System Admin account already exists — skipping seed (password untouched).');
     }
 
     // Seed default categories if none exist

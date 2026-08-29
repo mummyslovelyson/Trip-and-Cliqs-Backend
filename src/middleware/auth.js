@@ -39,11 +39,21 @@ export const optionalAuth = (req, res, next) => {
 };
 
 /**
- * Role-based authorization. Usage: authorize('admin') or authorize('organizer','admin')
+ * Role-based authorization. Usage: authorize('admin') or authorize('system_admin')
+ * system_admin/superadmin automatically satisfies 'admin' role checks.
  */
 export const authorize = (...roles) => (req, res, next) => {
-  if (!req.user || !roles.includes(req.user.role)) {
+  if (!req.user) {
     return res.status(403).json({ message: 'Forbidden' });
+  }
+
+  const userRole = req.user.role;
+  const isSystemAdmin = userRole === 'system_admin' || userRole === 'superadmin';
+  const hasDirectRole = roles.includes(userRole);
+  const hasAdminPerm = roles.includes('admin') && isSystemAdmin;
+
+  if (!hasDirectRole && !hasAdminPerm) {
+    return res.status(403).json({ message: 'Forbidden: Insufficient administrative privileges' });
   }
   next();
 };

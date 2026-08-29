@@ -42,11 +42,14 @@ if (sweep.unref) sweep.unref();
  * Place after authenticate on protected routes.
  */
 export const blockBannedIps = (req, res, next) => {
+  if (res.headersSent || res.writableEnded) return next();
   const ip = getClientIp(req);
   const ban = bans.get(ip);
   if (ban && Date.now() < ban.expiresAt) {
     const retryAfter = Math.ceil((ban.expiresAt - Date.now()) / 1000);
-    res.setHeader('Retry-After', String(retryAfter));
+    try {
+      if (!res.headersSent) res.setHeader('Retry-After', String(retryAfter));
+    } catch {}
     return res.status(429).json({
       message: 'Your IP has been temporarily blocked due to suspicious activity.',
     });

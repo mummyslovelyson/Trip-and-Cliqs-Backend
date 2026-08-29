@@ -342,10 +342,16 @@ export const updateUser = async (req, res) => {
     const values = [];
     const changed = {};
 
-    // Admin accounts are protected: they cannot be demoted, suspended, or
-    // de-approved through this endpoint (use the audit-safe paths elsewhere).
-    const touchesPrivilege = ['role', 'status', 'is_approved'].some((k) => req.body[k] !== undefined);
-    if (target.role === 'admin' && touchesPrivilege) {
+    const isMasterAdmin = req.user.role === 'system_admin' || req.user.role === 'superadmin';
+    const isTargetAdmin = target.role === 'admin' || target.role === 'system_admin' || target.role === 'superadmin';
+
+    // System Admin accounts cannot be modified by others
+    if ((target.role === 'system_admin' || target.role === 'superadmin') && target.id !== req.user.id) {
+      return res.status(400).json({ message: 'System Admin accounts cannot be modified' });
+    }
+
+    // Only System Admins can modify Admin accounts
+    if (isTargetAdmin && !isMasterAdmin) {
       return res.status(400).json({ message: 'Admin accounts cannot be modified' });
     }
 
@@ -353,10 +359,9 @@ export const updateUser = async (req, res) => {
       if (req.body[key] === undefined) continue;
       let value = req.body[key];
       if (key === 'role') {
-        // Role promotion to admin is only possible through the seed/CLI —
-        // never through the admin panel.
-        if (!['attendee', 'organizer'].includes(value)) {
-          return res.status(400).json({ message: 'Role must be attendee or organizer' });
+        const allowedRoles = isMasterAdmin ? ['attendee', 'organizer', 'admin'] : ['attendee', 'organizer'];
+        if (!allowedRoles.includes(value)) {
+          return res.status(400).json({ message: isMasterAdmin ? 'Role must be attendee, organizer, or admin' : 'Role must be attendee or organizer' });
         }
       }
       if (key === 'email' && typeof value === 'string' && !EMAIL_RE.test(value.trim())) {
@@ -407,7 +412,14 @@ export const suspendUser = async (req, res) => {
     const [rows] = await pool.execute('SELECT * FROM users WHERE id = ?', [id]);
     const user = rows[0];
     if (!user) return res.status(404).json({ message: 'User not found' });
-    if (user.role === 'admin') return res.status(400).json({ message: 'Admin accounts cannot be suspended' });
+
+    if (user.role === 'system_admin' || user.role === 'superadmin') {
+      return res.status(400).json({ message: 'System Admin accounts cannot be suspended' });
+    }
+    const isMasterAdmin = req.user.role === 'system_admin' || req.user.role === 'superadmin';
+    if (user.role === 'admin' && !isMasterAdmin) {
+      return res.status(400).json({ message: 'Admin accounts cannot be suspended' });
+    }
     if (user.status === 'suspended') return res.status(400).json({ message: 'User is already suspended' });
 
     await pool.execute(
@@ -1237,7 +1249,14 @@ export const deleteUser = async (req, res) => {
     const [rows] = await pool.execute('SELECT * FROM users WHERE id = ?', [id]);
     const user = rows[0];
     if (!user) return res.status(404).json({ message: 'User not found' });
-    if (user.role === 'admin') return res.status(400).json({ message: 'Admin accounts cannot be deleted' });
+
+    if (user.role === 'system_admin' || user.role === 'superadmin') {
+      return res.status(400).json({ message: 'System Admin accounts cannot be deleted' });
+    }
+    const isMasterAdmin = req.user.role === 'system_admin' || req.user.role === 'superadmin';
+    if (user.role === 'admin' && !isMasterAdmin) {
+      return res.status(400).json({ message: 'Admin accounts cannot be deleted' });
+    }
 
     await logAudit({ userId: req.user.id, action: 'delete_user', entityType: 'user', entityId: Number(id), details: { name: user.name, email: user.email } });
     await pool.execute('DELETE FROM users WHERE id = ?', [id]);
@@ -1305,8 +1324,16 @@ export const resetUserPassword = async (req, res) => {
     const [rows] = await pool.execute('SELECT * FROM users WHERE id = ?', [id]);
     const user = rows[0];
     if (!user) return res.status(404).json({ message: 'User not found' });
-    if (user.role === 'admin') {
-      return res.status(400).json({ message: 'Admin account passwords cannot be reset here' });
+
+    if (user.role === 'system_admin' || user.role === 'superadmin') {
+      if (user.id !== req.user.id) {
+        return res.status(400).json({ message: 'System Admin passwords cannot be reset here' });
+      }
+    } else if (user.role === 'admin') {
+      const isMasterAdmin = req.user.role === 'system_admin' || req.user.role === 'superadmin';
+      if (!isMasterAdmin) {
+        return res.status(400).json({ message: 'Admin account passwords cannot be reset here' });
+      }
     }
 
     const generated = !password;
@@ -1704,8 +1731,57 @@ export const getUserStats = async (req, res) => {
   }
 };
 
+export const createAdminUser = async (req, res) => {
+  try {
+    const { name, email, password, phone } = req.body || {};
+    if (!name || !email || !password) {
+      return res.status(400).json({ message: 'Name, email, and password are required' });
+    }
+
+    const cleanEmail = String(email).trim().toLowerCase();
+    if (!EMAIL_RE.test(cleanEmail)) {
+      return res.status(400).json({ message: 'Invalid email address' });
+    }
+
+    const [existing] = await pool.execute('SELECT id FROM users WHERE email = ?', [cleanEmail]);
+    if (existing.length > 0) {
+      return res.status(400).json({ message: 'A user with this email already exists' });
+    }
+
+    const strength = validatePassword(String(password));
+    if (!strength.valid) {
+      return res.status(400).json({ message: strength.message });
+    }
+
+    const hash = await bcrypt.hash(String(password), 12);
+    const [result] = await pool.execute(
+      `INSERT INTO users (name, email, password, role, phone, status, is_approved, email_verified)
+       VALUES (?, ?, ?, 'admin', ?, 'active', TRUE, TRUE)`,
+      [name.trim(), cleanEmail, hash, phone ? String(phone).trim() : null],
+    );
+
+    const newAdminId = result.insertId;
+
+    await logAudit({
+      userId: req.user.id,
+      action: 'create_admin_user',
+      entityType: 'user',
+      entityId: Number(newAdminId),
+      details: { name: name.trim(), email: cleanEmail, role: 'admin' },
+    });
+
+    res.status(201).json({
+      message: 'Operations Admin created successfully',
+      user: { id: newAdminId, name: name.trim(), email: cleanEmail, role: 'admin', status: 'active', is_approved: 1, email_verified: 1 },
+    });
+  } catch (err) {
+    console.error('[adminController.createAdminUser]', err);
+    res.status(500).json({ message: 'Failed to create admin user' });
+  }
+};
+
 export default {
-  getDashboardStats, getUsers, getUser, updateUser, suspendUser, unsuspendUser, verifyUser, deleteUser, approveOrganizer, rejectOrganizer, resetUserPassword,
+  getDashboardStats, getUsers, getUser, updateUser, suspendUser, unsuspendUser, verifyUser, deleteUser, approveOrganizer, rejectOrganizer, resetUserPassword, createAdminUser,
   getUserManagementStats, getUserActivity, getUserSessions, getUserStats, forceLogoutUser, addAdminNote, getAdminNotes, deleteAdminNote, exportUsers, bulkRoleChange, bulkDeleteUsers,
   getEvents, approveEvent, rejectEvent, featureEvent, suspendEvent, unsuspendEvent, adminDeleteEvent,
   getCategories, createCategory, updateCategory, deleteCategory,
