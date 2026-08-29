@@ -63,6 +63,37 @@ async function initDb() {
       const schemaSql = fs.readFileSync(schemaPath, 'utf8');
       await connection.query(schemaSql);
       console.log('✅ Database schema created/updated successfully!');
+
+      // Safe column widening migrations for existing tables
+      const safeMigrations = [
+        `ALTER TABLE users ALTER COLUMN phone TYPE VARCHAR(60)`,
+        `ALTER TABLE users ALTER COLUMN name TYPE VARCHAR(255)`,
+        `ALTER TABLE users ALTER COLUMN email TYPE VARCHAR(255)`,
+        `ALTER TABLE users ALTER COLUMN password TYPE VARCHAR(255)`,
+        `ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN NOT NULL DEFAULT FALSE`,
+        `ALTER TABLE organizer_profiles ALTER COLUMN organization_name TYPE VARCHAR(255)`,
+        `ALTER TABLE email_verifications ALTER COLUMN token_hash TYPE VARCHAR(128)`,
+        `CREATE TABLE IF NOT EXISTS pending_registrations (
+          id                BIGSERIAL PRIMARY KEY,
+          registration_id   VARCHAR(64) NOT NULL UNIQUE,
+          name              VARCHAR(120) NOT NULL,
+          email             VARCHAR(190) NOT NULL,
+          phone             VARCHAR(50),
+          password_hash     VARCHAR(255) NOT NULL,
+          role              VARCHAR(50) NOT NULL DEFAULT 'attendee',
+          organization_name VARCHAR(180),
+          otp_hash          VARCHAR(128) NOT NULL,
+          expires_at        TIMESTAMPTZ NOT NULL,
+          created_at        TIMESTAMPTZ DEFAULT NOW()
+        )`,
+      ];
+      for (const migSql of safeMigrations) {
+        try {
+          await connection.query(migSql);
+        } catch {
+          // ignore if already migrated or column doesn't need change
+        }
+      }
     } else {
       console.warn('⚠️ schema.sql not found at', schemaPath);
     }

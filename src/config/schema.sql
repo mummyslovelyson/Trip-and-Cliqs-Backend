@@ -606,7 +606,7 @@ CREATE INDEX IF NOT EXISTS idx_prt_user ON password_reset_tokens(user_id);
 CREATE TABLE IF NOT EXISTS email_verifications (
   id         BIGSERIAL PRIMARY KEY,
   user_id    BIGINT NOT NULL,
-  token_hash VARCHAR(64) NOT NULL UNIQUE,
+  token_hash VARCHAR(128) NOT NULL UNIQUE,
   expires_at TIMESTAMPTZ NOT NULL,
   used       BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -614,6 +614,25 @@ CREATE TABLE IF NOT EXISTS email_verifications (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ev_user ON email_verifications(user_id);
+
+-- ────────────────  PENDING REGISTRATIONS (PRE-VERIFICATION)  ────────────────
+CREATE TABLE IF NOT EXISTS pending_registrations (
+  id                BIGSERIAL PRIMARY KEY,
+  registration_id   VARCHAR(64) NOT NULL UNIQUE,
+  name              VARCHAR(120) NOT NULL,
+  email             VARCHAR(190) NOT NULL,
+  phone             VARCHAR(50),
+  password_hash     VARCHAR(255) NOT NULL,
+  role              VARCHAR(50) NOT NULL DEFAULT 'attendee',
+  organization_name VARCHAR(180),
+  otp_hash          VARCHAR(128) NOT NULL,
+  expires_at        TIMESTAMPTZ NOT NULL,
+  created_at        TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_pr_email ON pending_registrations(email);
+CREATE INDEX IF NOT EXISTS idx_pr_phone ON pending_registrations(phone);
+CREATE INDEX IF NOT EXISTS idx_pr_reg_id ON pending_registrations(registration_id);
 
 -- ────────────────  TEAM INVITES  ────────────────
 CREATE TABLE IF NOT EXISTS team_invites (

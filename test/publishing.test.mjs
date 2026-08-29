@@ -126,7 +126,7 @@ test('public registration rejects admin/staff roles', async () => {
 });
 
 test('organizer registration creates a pending-approval organizer account', async () => {
-  const r = await api('POST', '/api/auth/register', {
+  const reg = await api('POST', '/api/auth/register', {
     body: {
       name: 'Accra Events Co',
       email: 'org@test.com',
@@ -135,7 +135,19 @@ test('organizer registration creates a pending-approval organizer account', asyn
       organizationName: 'Accra Events Co',
     },
   });
-  assert.equal(r.status, 201);
+  assert.equal(reg.status, 201);
+  assert.equal(reg.json.status, 'pending_verification');
+
+  // Verify pending registration with OTP
+  const pending = db.tables.pending_registrations.find((p) => p.email === 'org@test.com');
+  assert.ok(pending, 'pending registration row created');
+  const knownOtp = '112233';
+  pending.otp_hash = (await import('crypto')).default.createHash('sha256').update(`pending_otp:${knownOtp}`).digest('hex');
+
+  const r = await api('POST', '/api/auth/verify-email', {
+    body: { email: 'org@test.com', otp: knownOtp },
+  });
+  assert.equal(r.status, 200);
   assert.equal(r.json.user.role, 'organizer');
   assert.equal(r.json.user.is_approved, 0, 'organizer accounts start unapproved');
   organizerToken = r.json.accessToken;

@@ -1,22 +1,17 @@
-import nodemailer from 'nodemailer';
+import { getEmailConfig } from './settings.js';
 
-const RESEND_API_KEY = process.env.RESEND_API_KEY;
-const FROM_EMAIL = process.env.FROM_EMAIL || 'no-reply@tribesandcliqs.com';
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 
-// Lazily-initialised Resend client. The `resend` package is optional; when it
-// is not installed we fall back to SMTP via nodemailer. Resolved on first use
-// so the server never crashes at boot if the package is missing.
 let resendClient = null;
-let resendChecked = false;
+let lastResendKey = '';
 
-const getResend = async () => {
-  if (resendChecked) return resendClient;
-  resendChecked = true;
-  if (!RESEND_API_KEY) return null;
+const getResend = async (key) => {
+  if (!key) return null;
+  if (resendClient && lastResendKey === key) return resendClient;
   try {
     const { Resend } = await import('resend');
-    resendClient = new Resend(RESEND_API_KEY);
+    resendClient = new Resend(key);
+    lastResendKey = key;
     return resendClient;
   } catch {
     console.warn('[email] "resend" package not installed — falling back to SMTP.');
@@ -24,14 +19,14 @@ const getResend = async () => {
   }
 };
 
-const smtpTransport = () => {
-  if (process.env.SMTP_HOST) {
+const getSmtpTransport = (cfg) => {
+  if (cfg.smtpHost) {
     return nodemailer.createTransport({
-      host: process.env.SMTP_HOST,
-      port: Number(process.env.SMTP_PORT) || 587,
-      secure: (process.env.SMTP_SECURE || 'false') === 'true',
-      auth: process.env.SMTP_USER
-        ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+      host: cfg.smtpHost,
+      port: Number(cfg.smtpPort) || 587,
+      secure: Number(cfg.smtpPort) === 465,
+      auth: cfg.smtpUser
+        ? { user: cfg.smtpUser, pass: cfg.smtpPass }
         : undefined,
     });
   }
@@ -39,34 +34,39 @@ const smtpTransport = () => {
 };
 
 /**
- * Send an email. Tries Resend first, then SMTP, then silently no-ops.
+ * Send an email. Tries Resend first, then SMTP, then logs locally.
  * @param {{ to: string, subject: string, html?: string, text?: string }} opts
  */
 export const sendEmail = async ({ to, subject, html, text }) => {
   try {
-    if (RESEND_API_KEY) {
-      const resend = await getResend();
+    const cfg = await getEmailConfig();
+    const from = cfg.fromName ? `"${cfg.fromName}" <${cfg.fromEmail}>` : cfg.fromEmail;
+
+    if (cfg.resendKey) {
+      const resend = await getResend(cfg.resendKey);
       if (resend) {
         const { error } = await resend.emails.send({
-          from: FROM_EMAIL,
+          from,
           to,
           subject,
           html,
           text,
         });
         if (error) throw error;
+        console.log(`✅ [email] Email sent via Resend to ${to} (${subject})`);
         return true;
       }
     }
 
-    const transport = smtpTransport();
+    const transport = getSmtpTransport(cfg);
     if (transport) {
-      await transport.sendMail({ from: FROM_EMAIL, to, subject, html, text });
+      await transport.sendMail({ from, to, subject, html, text });
+      console.log(`✅ [email] Email sent via SMTP to ${to} (${subject})`);
       return true;
     }
 
     // No provider configured — log so devs can see the email locally.
-    console.warn('[email] No provider configured — email not sent:', { to, subject });
+    console.warn('[email] No provider configured (RESEND_API_KEY or SMTP_HOST missing in .env / system_settings) — email not sent:', { to, subject });
     return false;
   } catch (err) {
     console.error('[email] sendEmail failed:', err.message);
@@ -78,19 +78,33 @@ export const sendEmail = async ({ to, subject, html, text }) => {
  * Templated helpers
  * ------------------------------------------------------------------ */
 
-export const sendVerificationEmail = async (to, token) => {
-  const link = `${FRONTEND_URL}/verify-email?token=${token}`;
+export const sendVerificationEmail = async (to, token, otp = null) => {
+  const link = `${FRONTEND_URL}/verify-email?token=${token}${to ? `&email=${encodeURIComponent(to)}` : ''}`;
+  const otpSection = otp
+    ? `
+      <div style="margin:24px 0;padding:20px;background:#1E252B;border-radius:12px;border:1px solid #323A42;text-align:center;">
+        <p style="color:#949599;font-size:13px;margin:0 0 8px 0;text-transform:uppercase;letter-spacing:1px;">Your 6-Digit Verification Code</p>
+        <div style="font-size:32px;font-weight:bold;letter-spacing:8px;color:#FFFFFF;font-family:monospace;">${otp}</div>
+        <p style="color:#64748b;font-size:12px;margin:8px 0 0 0;">Valid for 15 minutes</p>
+      </div>`
+    : '';
+
   return sendEmail({
     to,
-    subject: 'Verify your email — Tribes & Cliqs',
+    subject: otp ? `Your Verification Code: ${otp} — Tribes & Cliqs` : 'Verify your email — Tribes & Cliqs',
     html: `
-      <div style="font-family:Arial,sans-serif;max-width:560px;margin:auto">
-        <h2>Welcome to Tribes &amp; Cliqs!</h2>
-        <p>Please verify your email address to activate your account.</p>
-        <p><a href="${link}" style="display:inline-block;padding:10px 20px;background:#6d28d9;color:#fff;border-radius:6px;text-decoration:none">Verify Email</a></p>
-        <p style="color:#666;font-size:13px">If the button doesn't work, copy this link:<br>${link}</p>
+      <div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
+        <h2 style="margin-top:0;color:#FFFFFF;">Welcome to Tribes &amp; Cliqs!</h2>
+        <p style="color:#A1A1AA;line-height:1.6;">Please use the verification code below or click the button to verify your account.</p>
+        ${otpSection}
+        <div style="text-align:center;margin:28px 0;">
+          <a href="${link}" style="display:inline-block;padding:12px 28px;background:#FFFFFF;color:#14191E;font-weight:600;border-radius:8px;text-decoration:none;font-size:14px;">Verify Account</a>
+        </div>
+        <p style="color:#64748B;font-size:12px;line-height:1.5;margin-bottom:0;">If you did not request this email, you can safely ignore it.</p>
       </div>`,
-    text: `Welcome to Tribes & Cliqs! Verify your email: ${link}`,
+    text: otp
+      ? `Welcome to Tribes & Cliqs!\n\nYour 6-digit verification code is: ${otp}\n(Valid for 15 minutes)\n\nOr click here to verify: ${link}`
+      : `Welcome to Tribes & Cliqs! Verify your email: ${link}`,
   });
 };
 

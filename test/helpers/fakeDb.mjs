@@ -19,6 +19,7 @@ export function createFakeDb() {
     resale_listings: 1, orders: 1, order_items: 1,
     refresh_tokens: 1, password_history: 1,
     admin_user_notes: 1, user_activity_log: 1,
+    pending_registrations: 1,
   };
   const tables = {
     users: [], events: [], ticket_types: [], notifications: [],
@@ -29,6 +30,7 @@ export function createFakeDb() {
     resale_listings: [], orders: [], order_items: [],
     refresh_tokens: [], password_history: [],
     admin_user_notes: [], user_activity_log: [],
+    pending_registrations: [],
   };
 
   const nowIso = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
@@ -84,7 +86,16 @@ export function createFakeDb() {
     if (/^false$/i.test(token)) return 0;
     if (/^null$/i.test(token)) return null;
     if (/^CURDATE\(\)$/.test(token) || /^CURRENT_DATE\(\)$/.test(token) || /^CURRENT_DATE$/.test(token)) return today();
-    if (/^NOW\(\)$/.test(token)) return nowIso();
+    if (/^NOW\(\)/i.test(token)) {
+      const m = token.match(/INTERVAL\s*'(\d+)\s*(minute|hour|day)s?'/i);
+      if (m) {
+        const amt = Number(m[1]);
+        const unit = m[2].toLowerCase();
+        const ms = unit === 'minute' ? amt * 60000 : unit === 'hour' ? amt * 3600000 : amt * 86400000;
+        return new Date(Date.now() + ms).toISOString().slice(0, 19).replace('T', ' ');
+      }
+      return nowIso();
+    }
     return undefined;
   }
 

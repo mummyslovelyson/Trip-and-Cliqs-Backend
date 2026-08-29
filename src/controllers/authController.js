@@ -12,6 +12,8 @@ import {
   revokeSession,
 } from '../utils/jwt.js';
 import { sendVerificationEmail, sendPasswordResetEmail, sendWelcomeEmail } from '../utils/email.js';
+import { sendVerificationSMS, sendSMS } from '../utils/sms.js';
+import { sendNotification } from '../utils/notify.js';
 import { logAudit } from '../utils/audit.js';
 import { validatePassword } from '../utils/password.js';
 import { recordAuthFailure, recordAuthSuccess } from '../middleware/abuse.js';
@@ -72,33 +74,41 @@ const resetFailedAttempts = async (userId) => {
   );
 };
 
-/** Check if a password was used recently (password history). */
+/** Check if password matches any of the last N passwords for this user. */
 const isPasswordReused = async (userId, newHash) => {
-  const [rows] = await pool.execute(
-    'SELECT password_hash FROM password_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ?',
-    [userId, MAX_PASSWORD_HISTORY],
-  );
-  for (const row of rows) {
-    if (await bcrypt.compare(newHash.replace(/^\$2[aby]\$\d{2}\$/, ''), row.password_hash)) return true;
+  try {
+    const [rows] = await pool.execute(
+      'SELECT password_hash FROM password_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ?',
+      [userId, MAX_PASSWORD_HISTORY],
+    );
+    for (const row of rows) {
+      if (await bcrypt.compare(newHash.replace(/^\$2[aby]\$\d{2}\$/, ''), row.password_hash)) return true;
+    }
+  } catch (err) {
+    console.warn('[authController] isPasswordReused check skipped:', err.message);
   }
   return false;
 };
 
 /** Store a password in history (call after successful password change). */
 const storePasswordHistory = async (userId, passwordHash) => {
-  await pool.execute(
-    'INSERT INTO password_history (user_id, password_hash) VALUES (?, ?)',
-    [userId, passwordHash],
-  );
-  // Trim history beyond limit
-  await pool.execute(
-    `DELETE FROM password_history WHERE user_id = ? AND id NOT IN (
-      SELECT id FROM (
-        SELECT id FROM password_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ?
-      ) AS recent
-    )`,
-    [userId, userId, MAX_PASSWORD_HISTORY],
-  );
+  try {
+    await pool.execute(
+      'INSERT INTO password_history (user_id, password_hash) VALUES (?, ?)',
+      [userId, passwordHash],
+    );
+    // Trim history beyond limit
+    await pool.execute(
+      `DELETE FROM password_history WHERE user_id = ? AND id NOT IN (
+        SELECT id FROM (
+          SELECT id FROM password_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ?
+        ) AS recent
+      )`,
+      [userId, userId, MAX_PASSWORD_HISTORY],
+    );
+  } catch (err) {
+    console.warn('[authController] storePasswordHistory skipped:', err.message);
+  }
 };
 
 /** Build meta object for refresh token storage. */
@@ -108,8 +118,31 @@ const buildMeta = (req, family) => ({
   family,
 });
 
+/** Helper to persist verification tokens & OTP for a user */
+const createEmailVerification = async (userId, otp, verifyToken) => {
+  // Invalidate previous unused verification entries for this user
+  await pool.execute('UPDATE email_verifications SET used = TRUE WHERE user_id = ? AND used = FALSE', [userId]);
+
+  // Insert link token hash (valid for 24 hours)
+  await pool.execute(
+    `INSERT INTO email_verifications (user_id, token_hash, expires_at, used)
+     VALUES (?, ?, NOW() + INTERVAL '24 hours', FALSE)`,
+    [userId, hashToken(verifyToken)],
+  );
+
+  // Insert 6-digit OTP hash (valid for 15 minutes)
+  if (otp) {
+    await pool.execute(
+      `INSERT INTO email_verifications (user_id, token_hash, expires_at, used)
+       VALUES (?, ?, NOW() + INTERVAL '15 minutes', FALSE)`,
+      [userId, hashToken(`otp:${userId}:${otp}`)],
+    );
+  }
+};
+
+
 /* ------------------------------------------------------------------ */
-/* Register                                                            */
+/* Register (Step 1: Validate, Store Pending & Dispatch OTP)          */
 /* ------------------------------------------------------------------ */
 const ALLOWED_PUBLIC_ROLES = ['attendee', 'organizer'];
 
@@ -129,64 +162,60 @@ export const register = async (req, res) => {
       return res.status(400).json({ message: strength.message });
     }
 
-    const [existing] = await pool.execute('SELECT id FROM users WHERE email = ?', [email]);
+    const cleanName = String(name).trim().slice(0, 120);
+    const cleanEmail = String(email).trim().toLowerCase().slice(0, 190);
+    const cleanPhone = phone ? String(phone).trim().slice(0, 30) : null;
+
+    const [existing] = await pool.execute('SELECT id FROM users WHERE email = ?', [cleanEmail]);
     if (existing.length) {
       return res.status(409).json({ message: 'Email already registered' });
     }
 
     const hashed = await bcrypt.hash(password, BCRYPT_ROUNDS);
-    const isApproved = role === 'organizer' ? 0 : 1;
-    const verifyToken = uuidv4();
+    const registrationId = uuidv4();
+    const otp = crypto.randomInt(100000, 1000000).toString();
+    const otpHash = hashToken(`pending_otp:${otp}`);
+    const orgName = (req.body.organizationName || req.body.organization_name || name).toString().trim().slice(0, 180);
 
-    const [result] = await pool.execute(
-      `INSERT INTO users (name, email, password, role, phone, status, is_approved, email_verified)
-       VALUES (?, ?, ?, ?, ?, 'active', ?, FALSE)`,
-      [name, email, hashed, role, phone || null, isApproved === 1],
+    // Clean up older pending registrations for this email/phone
+    try {
+      await pool.execute(
+        'DELETE FROM pending_registrations WHERE email = ? OR (phone IS NOT NULL AND phone = ?)',
+        [cleanEmail, cleanPhone || ''],
+      );
+    } catch {
+      // ignore table or cleanup errors
+    }
+
+    // Insert pending registration (account is NOT created in users table yet)
+    await pool.execute(
+      `INSERT INTO pending_registrations (
+        registration_id, name, email, phone, password_hash, role, organization_name, otp_hash, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW() + INTERVAL '15 minutes')`,
+      [registrationId, cleanName, cleanEmail, cleanPhone, hashed, role, orgName, otpHash],
     );
 
-    const userId = result.insertId;
-
-    if (role === 'organizer') {
-      const orgName = req.body.organizationName || req.body.organization_name || name;
-      await pool.execute(
-        `INSERT INTO organizer_profiles (user_id, organization_name) VALUES (?, ?)`,
-        [userId, orgName],
+    // Background dispatches (safe, non-blocking)
+    sendVerificationEmail(cleanEmail, registrationId, otp).catch((err) =>
+      console.error('[authController.register] Verification email failed:', err.message)
+    );
+    if (cleanPhone) {
+      sendVerificationSMS(cleanPhone, otp).catch((err) =>
+        console.error('[authController.register] SMS send error:', err.message)
       );
     }
 
-    // Store password in history
-    await storePasswordHistory(userId, hashed);
-
-    // Persist hashed verification token
-    await pool.execute(
-      `INSERT INTO email_verifications (user_id, token_hash, expires_at, used)
-       VALUES (?, ?, NOW() + INTERVAL '24 hours', FALSE)`,
-      [userId, hashToken(verifyToken)],
-    );
-
-    // Issue tokens — unverified users still get a short-lived access token
-    // for the verify-email flow, but the frontend should gate most features
-    // on email_verified.
-    const family = uuidv4();
-    const accessToken = generateToken({ id: userId, role, email });
-    const { rawToken: refreshToken } = await generateRefreshToken(
-      { id: userId, role, email },
-      buildMeta(req, family),
-    );
-
-    sendVerificationEmail(email, verifyToken);
-    await logAudit({ userId, action: 'register', entityType: 'user', entityId: userId });
+    const verifyMessage = cleanPhone
+      ? 'Verification code sent to your phone via SMS and to your email. Please enter the code to complete account creation.'
+      : 'Verification code sent to your email. Please enter the code to complete account creation.';
 
     res.status(201).json({
-      message: role === 'organizer'
-        ? 'Account created. Your organizer account is pending approval.'
-        : 'Account created. Please verify your email to activate your account.',
-      user: sanitize({
-        id: userId, name, email, role, phone, status: 'active',
-        is_approved: isApproved, email_verified: 0,
-      }),
-      accessToken,
-      refreshToken,
+      status: 'pending_verification',
+      message: verifyMessage,
+      registrationId,
+      email: cleanEmail,
+      phone: cleanPhone,
+      name: cleanName,
     });
   } catch (err) {
     console.error('[authController.register]', err);
@@ -232,6 +261,15 @@ export const login = async (req, res) => {
       return res.status(403).json({ message: 'Your organizer account is pending approval' });
     }
 
+    if (user.role !== 'admin' && (user.email_verified === false || user.email_verified === 0)) {
+      return res.status(403).json({
+        message: 'Please verify your account before logging in. A 6-digit code was sent to your SMS and email.',
+        requiresVerification: true,
+        email: user.email,
+        phone: user.phone,
+      });
+    }
+
     // Success — reset lockout, issue tokens
     await resetFailedAttempts(user.id);
 
@@ -241,6 +279,18 @@ export const login = async (req, res) => {
     const { rawToken: refreshToken } = await generateRefreshToken(payload, buildMeta(req, family));
 
     await pool.execute('UPDATE users SET last_login_at = NOW() WHERE id = ?', [user.id]);
+    await sendNotification({
+      userId: user.id,
+      title: 'Account Login 🔐',
+      message: `Signed in successfully on ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}.`,
+      type: 'account',
+    });
+    if (user.phone) {
+      sendSMS(
+        user.phone,
+        `Tribes & Cliqs Security: Login detected on your account at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}.`,
+      ).catch((err) => console.error('[authController.login] SMS alert error:', err.message));
+    }
     await logAudit({ userId: user.id, action: 'login', entityType: 'user', entityId: user.id });
     recordAuthSuccess(req);
 
@@ -301,6 +351,12 @@ export const adminLogin = async (req, res) => {
     const { rawToken: refreshToken } = await generateRefreshToken(payload, buildMeta(req, family));
 
     await pool.execute('UPDATE users SET last_login_at = NOW() WHERE id = ?', [user.id]);
+    await sendNotification({
+      userId: user.id,
+      title: 'Admin Portal Login 🛡️',
+      message: `Admin portal signed in on ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}.`,
+      type: 'account',
+    });
     await logAudit({ userId: user.id, action: 'admin_login', entityType: 'user', entityId: user.id });
     recordAuthSuccess(req);
 
@@ -487,33 +543,283 @@ export const changePassword = async (req, res) => {
 };
 
 /* ------------------------------------------------------------------ */
-/* Verify email                                                        */
+/* Verify email & OTP (Creates and activates account upon OTP match)   */
 /* ------------------------------------------------------------------ */
 export const verifyEmail = async (req, res) => {
   try {
-    const { token } = req.body;
-    if (!token) return res.status(400).json({ message: 'Verification token required' });
+    const { token, otp, email, phone, registrationId } = req.body;
+    const cleanOtp = otp ? String(otp).trim() : '';
+    const cleanEmail = email ? String(email).trim().toLowerCase() : '';
+    const cleanPhone = phone ? String(phone).trim() : '';
+    const cleanRegId = registrationId ? String(registrationId).trim() : '';
 
-    const tokenHash = hashToken(token);
-    const [rows] = await pool.execute(
-      `SELECT ev.*, u.email, u.name
-       FROM email_verifications ev
-       JOIN users u ON u.id = ev.user_id
-       WHERE ev.token_hash = ? AND ev.used = FALSE AND ev.expires_at > NOW()`,
-      [tokenHash],
-    );
-    const verification = rows[0];
-    if (!verification) return res.status(400).json({ message: 'Invalid or expired verification token' });
+    // --- STEP 1: Check pending_registrations (Pre-verification creation) ---
+    if (cleanOtp && (cleanRegId || cleanEmail || cleanPhone)) {
+      let pending = null;
+      if (cleanRegId) {
+        const [rows] = await pool.execute(
+          `SELECT * FROM pending_registrations WHERE registration_id = ? AND expires_at > NOW()`,
+          [cleanRegId],
+        );
+        pending = rows[0];
+      }
+      if (!pending && cleanEmail) {
+        const [rows] = await pool.execute(
+          `SELECT * FROM pending_registrations WHERE email = ? AND expires_at > NOW()`,
+          [cleanEmail],
+        );
+        pending = rows[0];
+      }
+      if (!pending && cleanPhone) {
+        const [rows] = await pool.execute(
+          `SELECT * FROM pending_registrations WHERE phone = ? AND expires_at > NOW()`,
+          [cleanPhone],
+        );
+        pending = rows[0];
+      }
 
-    await pool.execute('UPDATE email_verifications SET used = TRUE WHERE id = ?', [verification.id]);
+      if (pending) {
+        const expectedHash = hashToken(`pending_otp:${cleanOtp}`);
+        if (pending.otp_hash === expectedHash) {
+          // Double check email uniqueness before final insert
+          const [dupCheck] = await pool.execute('SELECT id FROM users WHERE email = ?', [pending.email]);
+          if (dupCheck.length) {
+            await pool.execute('DELETE FROM pending_registrations WHERE id = ?', [pending.id]);
+            return res.status(409).json({ message: 'An account with this email is already registered.' });
+          }
+
+          const isApproved = pending.role === 'organizer' ? 0 : 1;
+          const [result] = await pool.execute(
+            `INSERT INTO users (name, email, password, role, phone, status, is_approved, email_verified)
+             VALUES (?, ?, ?, ?, ?, 'active', ?, TRUE)`,
+            [pending.name, pending.email, pending.password_hash, pending.role, pending.phone || null, isApproved === 1],
+          );
+
+          const userId = result.insertId;
+
+          if (pending.role === 'organizer' && pending.organization_name) {
+            await pool.execute(
+              `INSERT INTO organizer_profiles (user_id, organization_name) VALUES (?, ?)`,
+              [userId, pending.organization_name],
+            );
+          }
+
+          // Clean up pending registration
+          await pool.execute('DELETE FROM pending_registrations WHERE id = ?', [pending.id]);
+          await storePasswordHistory(userId, pending.password_hash);
+
+          sendWelcomeEmail(pending.email, pending.name).catch(() => {});
+          sendNotification({
+            userId,
+            title: 'Account Created & Verified 🎉',
+            message: 'Your account has been successfully verified and activated. Welcome to Tribes & Cliqs!',
+            type: 'account',
+          }).catch(() => {});
+          logAudit({ userId, action: 'create_and_verify_account', entityType: 'user', entityId: userId }).catch(() => {});
+
+          const family = uuidv4();
+          const payload = { id: userId, role: pending.role, email: pending.email };
+          const accessToken = generateToken(payload);
+          const { rawToken: refreshToken } = await generateRefreshToken(payload, buildMeta(req, family));
+
+          return res.json({
+            message: 'Account verified and created successfully! 🎉',
+            user: sanitize({
+              id: userId,
+              name: pending.name,
+              email: pending.email,
+              role: pending.role,
+              phone: pending.phone,
+              status: 'active',
+              is_approved: isApproved,
+              email_verified: 1,
+            }),
+            accessToken,
+            refreshToken,
+          });
+        }
+      }
+    }
+
+    // --- STEP 2: Legacy / Existing user verification in DB ---
+    let verification = null;
+    if (token) {
+      const tokenHash = hashToken(token);
+      const [rows] = await pool.execute(
+        `SELECT ev.*, u.email, u.name, u.role, u.status, u.is_approved
+         FROM email_verifications ev
+         JOIN users u ON u.id = ev.user_id
+         WHERE ev.token_hash = ? AND ev.used = FALSE AND ev.expires_at > NOW()`,
+        [tokenHash],
+      );
+      verification = rows[0];
+    } else if (cleanOtp && (cleanEmail || cleanPhone)) {
+      let user = null;
+      if (cleanEmail) {
+        const [userRows] = await pool.execute('SELECT id, email, name, role, status, is_approved FROM users WHERE email = ?', [cleanEmail]);
+        user = userRows[0];
+      } else if (cleanPhone) {
+        const [userRows] = await pool.execute('SELECT id, email, name, role, status, is_approved FROM users WHERE phone = ?', [cleanPhone]);
+        user = userRows[0];
+      }
+
+      if (user) {
+        const otpHash = hashToken(`otp:${user.id}:${cleanOtp}`);
+        const [rows] = await pool.execute(
+          `SELECT ev.*, u.email, u.name, u.role, u.status, u.is_approved
+           FROM email_verifications ev
+           JOIN users u ON u.id = ev.user_id
+           WHERE ev.token_hash = ? AND ev.used = FALSE AND ev.expires_at > NOW()`,
+          [otpHash],
+        );
+        verification = rows[0];
+      }
+    }
+
+    if (!verification) {
+      return res.status(400).json({ message: 'Invalid or expired verification code' });
+    }
+
+    await pool.execute('UPDATE email_verifications SET used = TRUE WHERE user_id = ?', [verification.user_id]);
     await pool.execute('UPDATE users SET email_verified = TRUE WHERE id = ?', [verification.user_id]);
 
-    sendWelcomeEmail(verification.email, verification.name);
-    await logAudit({ userId: verification.user_id, action: 'verify_email', entityType: 'user', entityId: verification.user_id });
+    await sendNotification({
+      userId: verification.user_id,
+      title: 'Account Verified ✅',
+      message: 'Your account has been successfully verified.',
+      type: 'account',
+    });
 
-    res.json({ message: 'Email verified successfully' });
+    sendWelcomeEmail(verification.email, verification.name).catch(() => {});
+    await logAudit({ userId: verification.user_id, action: 'verify_account', entityType: 'user', entityId: verification.user_id });
+
+    // Issue tokens upon verification
+    const family = uuidv4();
+    const payload = { id: verification.user_id, role: verification.role, email: verification.email };
+    const accessToken = generateToken(payload);
+    const { rawToken: refreshToken } = await generateRefreshToken(payload, buildMeta(req, family));
+
+    res.json({
+      message: 'Account verified successfully',
+      user: sanitize({ ...verification, email_verified: 1 }),
+      accessToken,
+      refreshToken,
+    });
   } catch (err) {
     console.error('[authController.verifyEmail]', err);
+    res.status(500).json({ message: 'Server error during verification' });
+  }
+};
+
+/* ------------------------------------------------------------------ */
+/* Resend verification email / SMS OTP                                 */
+/* ------------------------------------------------------------------ */
+export const resendVerification = async (req, res) => {
+  try {
+    const { email, phone, registrationId, channel = 'email' } = req.body;
+    if (!email && !phone && !registrationId) {
+      return res.status(400).json({ message: 'Email address, phone number, or registration ID is required' });
+    }
+
+    const cleanEmail = email ? String(email).trim().toLowerCase() : '';
+    const cleanPhone = phone ? String(phone).trim() : '';
+    const cleanRegId = registrationId ? String(registrationId).trim() : '';
+
+    // Check pending_registrations first
+    let pending = null;
+    if (cleanRegId) {
+      const [rows] = await pool.execute(
+        `SELECT * FROM pending_registrations WHERE registration_id = ?`,
+        [cleanRegId],
+      );
+      pending = rows[0];
+    }
+    if (!pending && cleanEmail) {
+      const [rows] = await pool.execute(
+        `SELECT * FROM pending_registrations WHERE email = ?`,
+        [cleanEmail],
+      );
+      pending = rows[0];
+    }
+    if (!pending && cleanPhone) {
+      const [rows] = await pool.execute(
+        `SELECT * FROM pending_registrations WHERE phone = ?`,
+        [cleanPhone],
+      );
+      pending = rows[0];
+    }
+    if (pending) {
+      const otp = crypto.randomInt(100000, 1000000).toString();
+      const otpHash = hashToken(`pending_otp:${otp}`);
+      await pool.execute(
+        `UPDATE pending_registrations SET otp_hash = ?, expires_at = NOW() + INTERVAL '15 minutes' WHERE id = ?`,
+        [otpHash, pending.id],
+      );
+
+      const destEmail = cleanEmail || pending.email;
+      const destPhone = cleanPhone || pending.phone;
+
+      // Always send to email if available
+      if (destEmail && channel !== 'sms_only') {
+        sendVerificationEmail(destEmail, pending.registration_id, otp).catch((err) =>
+          console.error('[authController.resendVerification] email send failed:', err.message)
+        );
+      }
+
+      // Always send to SMS if phone is available
+      if (destPhone && channel !== 'email_only') {
+        sendVerificationSMS(destPhone, otp).catch((err) =>
+          console.error('[authController.resendVerification] SMS send error:', err.message)
+        );
+      }
+
+      const resendMsg = (destPhone && destEmail)
+        ? 'A new verification code has been sent to your email and via SMS to your phone.'
+        : (destPhone ? 'A new verification code has been sent via SMS.' : 'A new verification code has been sent to your email.');
+
+      return res.json({ message: resendMsg });
+    }
+
+    // Check existing users table
+    let user = null;
+    if (cleanEmail) {
+      const [rows] = await pool.execute('SELECT id, name, email, phone, email_verified FROM users WHERE email = ?', [cleanEmail]);
+      user = rows[0];
+    } else if (cleanPhone) {
+      const [rows] = await pool.execute('SELECT id, name, email, phone, email_verified FROM users WHERE phone = ?', [cleanPhone]);
+      user = rows[0];
+    }
+
+    if (user && !user.email_verified) {
+      const verifyToken = uuidv4();
+      const otp = crypto.randomInt(100000, 1000000).toString();
+      await createEmailVerification(user.id, otp, verifyToken);
+
+      const destEmail = cleanEmail || user.email;
+      const destPhone = cleanPhone || user.phone;
+
+      if (destEmail && channel !== 'sms_only') {
+        sendVerificationEmail(destEmail, verifyToken, otp).catch((err) =>
+          console.error('[authController.resendVerification] email send failed:', err.message)
+        );
+      }
+
+      if (destPhone && channel !== 'email_only') {
+        sendVerificationSMS(destPhone, otp).catch((err) =>
+          console.error('[authController.resendVerification] SMS send error:', err.message)
+        );
+      }
+
+      await logAudit({ userId: user.id, action: 'resend_verification', entityType: 'user', entityId: user.id, details: { channel } });
+    }
+
+    const finalMsg = (cleanPhone && cleanEmail)
+      ? 'A verification code has been sent to your email and via SMS to your phone.'
+      : (cleanPhone ? 'A verification code has been sent via SMS.' : 'A verification code has been sent to your email.');
+
+    res.json({ message: finalMsg });
+  } catch (err) {
+    console.error('[authController.resendVerification]', err);
     res.status(500).json({ message: 'Server error' });
   }
 };

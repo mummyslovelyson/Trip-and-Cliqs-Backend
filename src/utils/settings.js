@@ -35,4 +35,25 @@ export const getPaystackPublicKey = async () => {
   return dbKey || process.env.PAYSTACK_PUBLIC_KEY || '';
 };
 
-export default { getSetting, getPaystackSecretKey, getPaystackPublicKey };
+export const getSmsApiKey = async () => {
+  const dbKey = await getSetting('smsonlinegh_api_key') || await getSetting('sms_api_key');
+  return dbKey || process.env.SMSONLINEGH_API_KEY || process.env.SMS_API_KEY || process.env.SMSONLINE_API_KEY || '';
+};
+
+export const getSmsSenderId = async () => {
+  const dbSender = await getSetting('smsonlinegh_sender_id') || await getSetting('sms_sender_id');
+  return dbSender || process.env.SMSONLINEGH_SENDER_ID || process.env.SMS_SENDER_ID || 'TribesCliqs';
+};
+
+export const getEmailConfig = async () => {
+  const resendKey = (await getSetting('resend_api_key')) || process.env.RESEND_API_KEY || '';
+  const smtpHost = (await getSetting('smtp_host')) || process.env.SMTP_HOST || '';
+  const smtpPort = (await getSetting('smtp_port')) || process.env.SMTP_PORT || '587';
+  const smtpUser = (await getSetting('smtp_username')) || process.env.SMTP_USER || '';
+  const smtpPass = (await getSetting('smtp_password')) || process.env.SMTP_PASS || '';
+  const fromEmail = (await getSetting('from_email')) || process.env.FROM_EMAIL || 'no-reply@tribesandcliqs.com';
+  const fromName = (await getSetting('from_name')) || process.env.FROM_NAME || 'Tribes & Cliqs';
+  return { resendKey, smtpHost, smtpPort, smtpUser, smtpPass, fromEmail, fromName };
+};
+
+export default { getSetting, getPaystackSecretKey, getPaystackPublicKey, getSmsApiKey, getSmsSenderId, getEmailConfig };

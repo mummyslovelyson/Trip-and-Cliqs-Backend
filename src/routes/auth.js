@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import {
   register, login, adminLogin, refreshToken, forgotPassword,
-  resetPassword, changePassword, verifyEmail, logout, logoutAll,
+  resetPassword, changePassword, verifyEmail, resendVerification, logout, logoutAll,
   getSessions, revokeOneSession,
 } from '../controllers/authController.js';
 import { authenticate } from '../middleware/auth.js';
@@ -60,11 +60,18 @@ router.post(
   resetPassword,
 );
 
-// Email verification
+// Email / OTP verification
 router.post(
   '/verify-email',
-  rateLimit({ windowMs: 15 * 60 * 1000, max: 10, message: 'Too many verification attempts' }),
+  rateLimit({ windowMs: 15 * 60 * 1000, max: 15, message: 'Too many verification attempts' }),
   verifyEmail,
+);
+
+// Resend verification email / OTP
+router.post(
+  '/resend-verification',
+  rateLimit({ windowMs: 15 * 60 * 1000, max: 5, message: 'Too many verification resend attempts. Please wait a few minutes.' }),
+  resendVerification,
 );
 
 /* ------------------------------------------------------------------ */

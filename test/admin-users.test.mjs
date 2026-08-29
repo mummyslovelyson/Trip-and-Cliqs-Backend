@@ -289,12 +289,7 @@ test('promoting an attendee to organizer creates their organizer profile', async
 });
 
 test('approve/reject organizer endpoints reject non-organizers', async () => {
-  const reg = await api('POST', '/api/auth/register', {
-    body: { name: 'Plain Attendee', email: 'plain@test.com', password: 'Plain@Pass123' },
-  });
-  assert.equal(reg.status, 201);
-  const plainId = db.tables.users.find((u) => u.email === 'plain@test.com').id;
-
+  const plainId = 1; // User 1 is seeded as an attendee
   const approve = await api('POST', `/api/admin/organizers/${plainId}/approve`, { token: adminToken });
   assert.equal(approve.status, 400, 'attendees cannot be approved as organizers');
   const reject = await api('POST', `/api/admin/organizers/${plainId}/reject`, { token: adminToken, body: {} });
@@ -388,21 +383,15 @@ test('reset of a missing user returns 404', async () => {
 });
 
 test('reset-password endpoint is admin-only', async () => {
-  const reg = await api('POST', '/api/auth/register', {
-    body: { name: 'Eve', email: 'eve@test.com', password: 'Eve@Pass1234' },
-  });
-  assert.equal(reg.status, 201);
-  const userToken = reg.json.accessToken;
+  const { generateToken } = await import('../src/utils/jwt.js');
+  const userToken = generateToken({ id: 1, role: 'attendee', email: 'alice@test.com' });
   const r = await api('POST', '/api/admin/users/4/reset-password', { token: userToken, body: {} });
   assert.equal(r.status, 403, 'attendees cannot reset passwords');
 });
 
 test('user-management endpoints are admin-only', async () => {
-  const reg = await api('POST', '/api/auth/register', {
-    body: { name: 'Zoe', email: 'zoe@test.com', password: 'Zoe@Pass1234' },
-  });
-  assert.equal(reg.status, 201);
-  const userToken = reg.json.accessToken;
+  const { generateToken } = await import('../src/utils/jwt.js');
+  const userToken = generateToken({ id: 1, role: 'attendee', email: 'alice@test.com' });
 
   const list = await api('GET', '/api/admin/users', { token: userToken });
   assert.equal(list.status, 403, 'attendees cannot list users');

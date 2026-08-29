@@ -7,7 +7,7 @@ import pool from '../config/db.js';
 export const sendNotification = async ({ userId, title, message = '', type = 'info' }) => {
   try {
     await pool.execute(
-      `INSERT INTO notifications (user_id, title, message, type, is_read) VALUES (?, ?, ?, ?, 0)`,
+      `INSERT INTO notifications (user_id, title, message, type, is_read) VALUES (?, ?, ?, ?, FALSE)`,
       [userId, title, message, type],
     );
   } catch (err) {
@@ -18,8 +18,8 @@ export const sendNotification = async ({ userId, title, message = '', type = 'in
 export const sendNotificationToMany = async (userIds, { title, message = '', type = 'info' }) => {
   if (!userIds.length) return;
   try {
-    const values = userIds.map((uid) => [uid, title, message, type, 0]);
-    const placeholders = values.map(() => '(?, ?, ?, ?, 0)').join(', ');
+    const values = userIds.map((uid) => [uid, title, message, type]);
+    const placeholders = values.map(() => '(?, ?, ?, ?, FALSE)').join(', ');
     const flat = values.flat();
     await pool.execute(
       `INSERT INTO notifications (user_id, title, message, type, is_read) VALUES ${placeholders}`,

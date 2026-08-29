@@ -985,14 +985,14 @@ export const getAuditLogs = async (req, res) => {
 const ensureSettingsTable = async () => {
   await pool.execute(
     `CREATE TABLE IF NOT EXISTS system_settings (
-      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-      setting_key VARCHAR(120) NOT NULL,
+      id BIGSERIAL PRIMARY KEY,
+      setting_key VARCHAR(100) NOT NULL UNIQUE,
       setting_value TEXT,
-      updated_by BIGINT UNSIGNED DEFAULT NULL,
-      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      PRIMARY KEY (id),
-      UNIQUE KEY uniq_settings_key (setting_key)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+      category VARCHAR(60) DEFAULT 'general',
+      updated_by BIGINT DEFAULT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
   );
 };
 
