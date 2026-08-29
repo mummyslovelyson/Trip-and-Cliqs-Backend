@@ -52,16 +52,18 @@ export const sendSMS = async (recipients, message) => {
     return { success: false, error: 'No valid recipient numbers' };
   }
 
-  const destination = numbers.join(',');
+  // Sanitize sender ID: GSM standard is max 11 alphanumeric characters, no symbols like &
+  const rawSender = senderId || 'TribesCliqs';
+  const cleanSender = String(rawSender).replace(/[^a-zA-Z0-9]/g, '').slice(0, 11) || 'TribesCliqs';
 
   try {
-    console.log(`📡 [sms] Sending SMS via SMSOnlineGH to ${destination} (Sender: ${senderId})...`);
+    console.log(`📡 [sms] Sending SMS via SMSOnlineGH to ${destination} (Sender: ${cleanSender})...`);
 
     const queryUrl = new URL(API_URL);
     queryUrl.searchParams.set('key', apiKey);
     queryUrl.searchParams.set('text', message);
     queryUrl.searchParams.set('type', '0');
-    queryUrl.searchParams.set('sender', senderId);
+    queryUrl.searchParams.set('sender', cleanSender);
     queryUrl.searchParams.set('to', destination);
 
     const response = await fetch(queryUrl.toString(), {
@@ -76,7 +78,14 @@ export const sendSMS = async (recipients, message) => {
       return { success: false, error: data?.message || data?.handshake?.label || `HTTP ${response.status}` };
     }
 
-    console.log(`✅ [sms] SMS successfully delivered via SMSOnlineGH to ${destination}! (Batch: ${data?.data?.batch || 'OK'})`);
+    // Inspect destinations for telecom delivery status
+    const destinations = data?.data?.destinations || [];
+    const rejectedDest = destinations.find((d) => d.status?.label === 'DS_REJECTED_SENDER_UNREGISTERED' || d.status?.id === 2128);
+    if (rejectedDest) {
+      console.warn(`⚠️ [sms] SMSOnlineGH: Sender ID "${cleanSender}" is not registered/approved on your SMSOnlineGH account. (Ghana telcos require approved Sender IDs).`);
+    }
+
+    console.log(`✅ [sms] SMS request accepted by SMSOnlineGH for ${destination}! (Batch: ${data?.data?.batch || 'OK'})`);
     return { success: true, data };
   } catch (err) {
     console.error('❌ [sms] sendSMS failed:', err.message);
