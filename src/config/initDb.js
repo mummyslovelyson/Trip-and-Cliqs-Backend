@@ -102,6 +102,7 @@ async function initDb() {
           UNIQUE(user_id, event_id)
         )`,
         `ALTER TABLE event_meetups ADD COLUMN IF NOT EXISTS type VARCHAR(50) DEFAULT 'general'`,
+        `ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id VARCHAR(120)`,
         `CREATE TABLE IF NOT EXISTS event_discussions (
           id                BIGSERIAL PRIMARY KEY,
           event_id          BIGINT NOT NULL,

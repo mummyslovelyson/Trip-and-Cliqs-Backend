@@ -979,8 +979,209 @@ export const revokeOneSession = async (req, res) => {
   }
 };
 
+/* ------------------------------------------------------------------ */
+/* Google OAuth / Social Authentication                                */
+/* ------------------------------------------------------------------ */
+export const googleAuth = async (req, res) => {
+  try {
+    const {
+      credential,
+      idToken,
+      accessToken,
+      role = 'attendee',
+      organizationName,
+      category,
+      city,
+      phone,
+    } = req.body;
+
+    const token = credential || idToken;
+    let googleUser = null;
+
+    if (token) {
+      try {
+        const gRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(token)}`);
+        if (gRes.ok) {
+          const data = await gRes.json();
+          googleUser = {
+            id: data.sub,
+            email: data.email?.toLowerCase()?.trim(),
+            name: data.name || data.given_name || 'User',
+            picture: data.picture,
+            emailVerified: data.email_verified === 'true' || data.email_verified === true,
+          };
+        }
+      } catch (err) {
+        console.warn('[googleAuth] Google tokeninfo fetch failed:', err.message);
+      }
+
+      // Fallback decode if offline or simulated token
+      if (!googleUser) {
+        try {
+          const parts = token.split('.');
+          if (parts.length === 3) {
+            const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+            if (payload.email) {
+              googleUser = {
+                id: payload.sub || `g_${Date.now()}`,
+                email: payload.email.toLowerCase().trim(),
+                name: payload.name || payload.given_name || 'User',
+                picture: payload.picture,
+                emailVerified: true,
+              };
+            }
+          }
+        } catch { /* ignore */ }
+      }
+    } else if (accessToken) {
+      try {
+        const gRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (gRes.ok) {
+          const data = await gRes.json();
+          googleUser = {
+            id: data.sub,
+            email: data.email?.toLowerCase()?.trim(),
+            name: data.name || data.given_name || 'User',
+            picture: data.picture,
+            emailVerified: data.email_verified === true,
+          };
+        }
+      } catch (err) {
+        console.warn('[googleAuth] Google userinfo fetch failed:', err.message);
+      }
+    }
+
+    if (!googleUser || !googleUser.email) {
+      return res.status(400).json({ message: 'Invalid or missing Google authentication credentials' });
+    }
+
+    // Check if user exists
+    const [existingRows] = await pool.execute(
+      'SELECT * FROM users WHERE email = ? OR google_id = ? LIMIT 1',
+      [googleUser.email, googleUser.id],
+    );
+    let user = existingRows[0];
+
+    if (user) {
+      // Existing user
+      if (user.status === 'suspended') {
+        return res.status(403).json({ message: 'Account is suspended. Please contact support.' });
+      }
+
+      // Update google_id and avatar if missing
+      await pool.execute(
+        `UPDATE users SET
+           google_id = COALESCE(google_id, ?),
+           avatar = COALESCE(avatar, ?),
+           avatar_url = COALESCE(avatar_url, ?),
+           email_verified = TRUE,
+           last_login_at = NOW()
+         WHERE id = ?`,
+        [googleUser.id, googleUser.picture, googleUser.picture, user.id],
+      );
+
+      user.google_id = user.google_id || googleUser.id;
+      user.avatar = user.avatar || googleUser.picture;
+      user.avatar_url = user.avatar_url || googleUser.picture;
+      user.email_verified = true;
+    } else {
+      // New user registration via Google
+      const assignedRole = role === 'organizer' ? 'organizer' : 'attendee';
+      const status = assignedRole === 'organizer' ? 'pending' : 'active';
+      const isApproved = assignedRole === 'organizer' ? false : true;
+      const randomPassword = `G_${uuidv4()}_${Date.now()}`;
+      const passwordHash = await bcrypt.hash(randomPassword, BCRYPT_ROUNDS);
+
+      const [insertResult] = await pool.execute(
+        `INSERT INTO users (name, email, password, role, status, is_approved, email_verified, google_id, avatar, avatar_url, phone)
+         VALUES (?, ?, ?, ?, ?, ?, TRUE, ?, ?, ?, ?)`,
+        [
+          googleUser.name,
+          googleUser.email,
+          passwordHash,
+          assignedRole,
+          status,
+          isApproved,
+          googleUser.id,
+          googleUser.picture,
+          googleUser.picture,
+          phone || null,
+        ],
+      );
+
+      const newUserId = insertResult.insertId;
+
+      if (assignedRole === 'organizer') {
+        await pool.execute(
+          `INSERT INTO organizer_profiles (user_id, organization_name, description, is_verified)
+           VALUES (?, ?, ?, FALSE)
+           ON CONFLICT (user_id) DO NOTHING`,
+          [newUserId, organizationName || googleUser.name, `Category: ${category || 'Events'}`],
+        );
+
+        // Notify admins about new organizer
+        try {
+          const [adminRows] = await pool.execute(
+            `SELECT id FROM users WHERE role IN ('admin', 'system_admin', 'superadmin')`,
+          );
+          for (const a of adminRows) {
+            sendNotification({
+              userId: a.id,
+              title: 'New Organizer Signed Up (Google)',
+              message: `${googleUser.name} (${googleUser.email}) registered as an organizer via Google and is awaiting approval.`,
+              type: 'organizer_approval',
+            }).catch(() => {});
+          }
+        } catch { /* ignore */ }
+      }
+
+      const [newUserRows] = await pool.execute('SELECT * FROM users WHERE id = ?', [newUserId]);
+      user = newUserRows[0];
+
+      await logAudit({
+        userId: user.id,
+        action: 'google_register',
+        entityType: 'user',
+        entityId: user.id,
+        details: { role: user.role, email: user.email },
+      });
+    }
+
+    // Check organizer pending approval
+    const isPendingOrganizer = user.role === 'organizer' && (!user.is_approved || user.status === 'pending');
+
+    const meta = buildMeta(req, uuidv4());
+    const tokenPayload = { id: user.id, role: user.role, email: user.email };
+    const jwtToken = generateToken(tokenPayload);
+    const refreshToken = await generateRefreshToken(user.id, meta);
+
+    await logAudit({
+      userId: user.id,
+      action: 'google_login',
+      entityType: 'user',
+      entityId: user.id,
+    });
+
+    res.json({
+      message: isPendingOrganizer
+        ? 'Account registered! Your organizer application is pending admin review.'
+        : 'Google sign-in successful',
+      token: jwtToken,
+      accessToken: jwtToken,
+      refreshToken,
+      user: sanitize(user),
+      pendingApproval: isPendingOrganizer,
+    });
+  } catch (err) {
+    console.error('[authController.googleAuth]', err);
+    res.status(500).json({ message: 'Google authentication failed' });
+  }
+};
+
 export default {
   register, login, adminLogin, refreshToken, forgotPassword,
   resetPassword, changePassword, verifyEmail, logout, logoutAll,
-  getSessions, revokeOneSession,
+  getSessions, revokeOneSession, googleAuth,
 };

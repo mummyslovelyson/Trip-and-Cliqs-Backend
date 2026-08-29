@@ -2,7 +2,7 @@ import { Router } from 'express';
 import {
   register, login, adminLogin, refreshToken, forgotPassword,
   resetPassword, changePassword, verifyEmail, resendVerification, logout, logoutAll,
-  getSessions, revokeOneSession,
+  getSessions, revokeOneSession, googleAuth,
 } from '../controllers/authController.js';
 import { authenticate } from '../middleware/auth.js';
 import { rateLimit } from '../middleware/rateLimit.js';
@@ -13,6 +13,13 @@ const router = Router();
 /* ------------------------------------------------------------------ */
 /* Public routes                                                        */
 /* ------------------------------------------------------------------ */
+
+// Google OAuth / Social Sign-In
+router.post(
+  '/google',
+  rateLimit({ windowMs: 15 * 60 * 1000, max: 20, message: 'Too many Google sign-in attempts' }),
+  googleAuth,
+);
 
 // Registration — strict rate limit + honeypot + validation
 router.post(
