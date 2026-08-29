@@ -55,6 +55,7 @@ export const sendSMS = async (recipients, message) => {
   // Sanitize sender ID: GSM standard is max 11 alphanumeric characters, no symbols like &
   const rawSender = senderId || 'TribesCliqs';
   const cleanSender = String(rawSender).replace(/[^a-zA-Z0-9]/g, '').slice(0, 11) || 'TribesCliqs';
+  const destination = numbers.join(',');
 
   try {
     console.log(`📡 [sms] Sending SMS via SMSOnlineGH to ${destination} (Sender: ${cleanSender})...`);
@@ -101,6 +102,18 @@ export const sendVerificationSMS = async (phone, otp) =>
     phone,
     `Tribes & Cliqs: Your verification code is ${otp}. Valid for 15 minutes. Never share this code with anyone.`,
   );
+
+/**
+ * Send a welcome alert SMS after account verification.
+ */
+export const sendWelcomeSMS = async (phone, name = '') => {
+  const firstName = name ? String(name).trim().split(' ')[0] : '';
+  const greeting = firstName ? `Hi ${firstName}, ` : '';
+  return sendSMS(
+    phone,
+    `Welcome to Tribes & Cliqs! ${greeting}Your account has been verified and activated. Start exploring top events and booking tickets now!`,
+  );
+};
 
 /**
  * Send a ticket confirmation SMS with a short ticket reference.

@@ -9,6 +9,7 @@ import {
   getReports, getRevenueReport, getGrowthReport,
   getSupportTickets, getSupportTicket, respondToSupportTicket, closeSupportTicket, resolveSupportTicket,
   sendAnnouncement, getAdminNotifications, getAuditLogs, getSystemSettings, updateSystemSettings,
+  testEmailSetting, testSmsSetting, getSmsBalanceSetting, testPaystackSetting,
   getContentPages, createContentPage, updateContentPage, deleteContentPage,
 } from '../controllers/adminController.js';
 import { authenticate, authorize } from '../middleware/auth.js';
@@ -108,5 +109,9 @@ router.get('/audit-logs', getAuditLogs);
 // System settings
 router.get('/settings', getSystemSettings);
 router.put('/settings', writeLimiter, updateSystemSettings);
+router.post('/settings/test-email', writeLimiter, testEmailSetting);
+router.post('/settings/test-sms', writeLimiter, testSmsSetting);
+router.get('/settings/sms-balance', getSmsBalanceSetting);
+router.post('/settings/test-paystack', writeLimiter, testPaystackSetting);
 
 export default router;

@@ -56,4 +56,9 @@ export const getEmailConfig = async () => {
   return { resendKey, smtpHost, smtpPort, smtpUser, smtpPass, fromEmail, fromName };
 };
 
-export default { getSetting, getPaystackSecretKey, getPaystackPublicKey, getSmsApiKey, getSmsSenderId, getEmailConfig };
+export const clearSettingsCache = () => {
+  cache.clear();
+  lastFetch = 0;
+};
+
+export default { getSetting, getPaystackSecretKey, getPaystackPublicKey, getSmsApiKey, getSmsSenderId, getEmailConfig, clearSettingsCache };

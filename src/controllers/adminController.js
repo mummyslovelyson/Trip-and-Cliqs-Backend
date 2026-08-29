@@ -3,8 +3,10 @@ import bcrypt from 'bcryptjs';
 import pool from '../config/db.js';
 import { sendNotification, sendNotificationToMany } from '../utils/notify.js';
 import {
-  sendOrganizerApprovalEmail, sendEventApprovalEmail, sendEventRejectionEmail,
+  sendEmail, sendOrganizerApprovalEmail, sendEventApprovalEmail, sendEventRejectionEmail,
 } from '../utils/email.js';
+import { sendSMS } from '../utils/sms.js';
+import { getSmsApiKey, getPaystackSecretKey, clearSettingsCache } from '../utils/settings.js';
 import { logAudit } from '../utils/audit.js';
 import { validatePassword } from '../utils/password.js';
 
@@ -1027,11 +1029,93 @@ export const updateSystemSettings = async (req, res) => {
       );
     }
 
+    clearSettingsCache();
     await logAudit({ userId: req.user.id, action: 'update_system_settings', entityType: 'system', details: { keys: entries.map((e) => e[0]) } });
-    res.json({ message: 'Settings updated' });
+    res.json({ message: 'Settings updated successfully' });
   } catch (err) {
     console.error('[adminController.updateSystemSettings]', err);
     res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const testEmailSetting = async (req, res) => {
+  try {
+    const targetEmail = req.body?.targetEmail || req.user?.email;
+    if (!targetEmail) return res.status(400).json({ message: 'Target email is required' });
+
+    const result = await sendEmail({
+      to: targetEmail,
+      subject: 'Tribes & Cliqs — Email Settings Test',
+      text: 'Congratulations! Your email provider is correctly configured and working.',
+      html: `<h2>Email Test Successful</h2><p>Your email provider settings on Tribes & Cliqs are configured correctly and active.</p>`,
+    });
+
+    if (!result.success) {
+      return res.status(400).json({ message: result.error || 'Failed to send test email' });
+    }
+    res.json({ message: `Test email sent successfully to ${targetEmail}!` });
+  } catch (err) {
+    console.error('[adminController.testEmailSetting]', err);
+    res.status(500).json({ message: err.message || 'Server error sending test email' });
+  }
+};
+
+export const testSmsSetting = async (req, res) => {
+  try {
+    const targetPhone = req.body?.targetPhone || req.user?.phone;
+    if (!targetPhone) return res.status(400).json({ message: 'Target phone number is required' });
+
+    const result = await sendSMS(
+      targetPhone,
+      'Tribes & Cliqs: SMS provider settings test successful! Your SMS gateway is active.',
+    );
+
+    if (!result.success) {
+      return res.status(400).json({ message: result.error || 'Failed to send test SMS' });
+    }
+    res.json({ message: `Test SMS dispatched successfully to ${targetPhone}!`, data: result.data });
+  } catch (err) {
+    console.error('[adminController.testSmsSetting]', err);
+    res.status(500).json({ message: err.message || 'Server error sending test SMS' });
+  }
+};
+
+export const getSmsBalanceSetting = async (_req, res) => {
+  try {
+    const apiKey = await getSmsApiKey();
+    if (!apiKey) return res.status(400).json({ message: 'SMS API Key not configured' });
+
+    const url = `https://api.smsonlinegh.com/v5/account/balance?key=${apiKey}`;
+    const response = await fetch(url, { headers: { Accept: 'application/json' } });
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok || (data.handshake && data.handshake.id !== 0)) {
+      return res.status(400).json({ message: data?.handshake?.label || 'Failed to retrieve SMS balance' });
+    }
+    res.json({ balance: data.data?.balance ?? 0, data: data.data });
+  } catch (err) {
+    console.error('[adminController.getSmsBalanceSetting]', err);
+    res.status(500).json({ message: err.message || 'Server error fetching SMS balance' });
+  }
+};
+
+export const testPaystackSetting = async (_req, res) => {
+  try {
+    const secretKey = await getPaystackSecretKey();
+    if (!secretKey) return res.status(400).json({ message: 'Paystack Secret Key is not configured' });
+
+    const response = await fetch('https://api.paystack.co/balance', {
+      headers: { Authorization: `Bearer ${secretKey}` },
+    });
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok || !data.status) {
+      return res.status(400).json({ message: data?.message || 'Invalid Paystack Secret Key' });
+    }
+    res.json({ message: 'Paystack connection verified successfully!', data: data.data });
+  } catch (err) {
+    console.error('[adminController.testPaystackSetting]', err);
+    res.status(500).json({ message: err.message || 'Server error verifying Paystack' });
   }
 };
 

@@ -12,7 +12,7 @@ import {
   revokeSession,
 } from '../utils/jwt.js';
 import { sendVerificationEmail, sendPasswordResetEmail, sendWelcomeEmail } from '../utils/email.js';
-import { sendVerificationSMS, sendSMS } from '../utils/sms.js';
+import { sendVerificationSMS, sendWelcomeSMS, sendSMS } from '../utils/sms.js';
 import { sendNotification } from '../utils/notify.js';
 import { logAudit } from '../utils/audit.js';
 import { validatePassword } from '../utils/password.js';
@@ -608,7 +608,16 @@ export const verifyEmail = async (req, res) => {
           await pool.execute('DELETE FROM pending_registrations WHERE id = ?', [pending.id]);
           await storePasswordHistory(userId, pending.password_hash);
 
-          sendWelcomeEmail(pending.email, pending.name).catch(() => {});
+          // Dispatch Welcome Email and SMS alerts
+          sendWelcomeEmail(pending.email, pending.name).catch((err) =>
+            console.error('[authController.verifyEmail] sendWelcomeEmail error:', err.message)
+          );
+          if (pending.phone) {
+            sendWelcomeSMS(pending.phone, pending.name).catch((err) =>
+              console.error('[authController.verifyEmail] sendWelcomeSMS error:', err.message)
+            );
+          }
+
           sendNotification({
             userId,
             title: 'Account Created & Verified 🎉',
@@ -691,6 +700,9 @@ export const verifyEmail = async (req, res) => {
     });
 
     sendWelcomeEmail(verification.email, verification.name).catch(() => {});
+    if (verification.phone) {
+      sendWelcomeSMS(verification.phone, verification.name).catch(() => {});
+    }
     await logAudit({ userId: verification.user_id, action: 'verify_account', entityType: 'user', entityId: verification.user_id });
 
     // Issue tokens upon verification
