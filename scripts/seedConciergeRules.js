@@ -103,7 +103,7 @@ Core Persona & Communication Rules:
 async function seed() {
   try {
     await client.connect();
-    console.log('✅ Connected to database');
+    console.log('Connected to database');
 
     // 1. Ensure table exists
     await client.query(`
@@ -156,10 +156,10 @@ async function seed() {
       ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = NOW()
     `);
 
-    console.log('✅ Concierge voice guidelines & temperature settings saved.');
-    console.log('🎉 All concierge training rules successfully active in the database!');
+    console.log('Concierge voice guidelines & temperature settings saved.');
+    console.log('All concierge training rules successfully active in the database!');
   } catch (err) {
-    console.error('❌ Seeding error:', err.message);
+    console.error('Seeding error:', err.message);
   } finally {
     await client.end();
   }
