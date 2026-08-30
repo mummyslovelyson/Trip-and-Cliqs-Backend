@@ -2017,32 +2017,69 @@ ${eventsSummary}
 `;
 
     const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
-    if (!GEMINI_API_KEY) {
+    if (GEMINI_API_KEY) {
+      try {
+        const axios = (await import('axios')).default;
+        const geminiRes = await axios.post(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+          {
+            contents: [{ role: 'user', parts: [{ text: testQuery }] }],
+            systemInstruction: { parts: [{ text: prompt }] },
+            generationConfig: { temperature: Number(temperature), maxOutputTokens: 250 },
+          },
+          { timeout: 8000 }
+        );
+
+        const reply = geminiRes.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (reply) {
+          return res.json({
+            reply: reply.trim(),
+            contextUsed: { knowledgeCount: items?.length || 0, eventsCount: events?.length || 0 },
+          });
+        }
+      } catch (geminiError) {
+        console.warn('[testAIPrompt] Gemini API returned error, falling back to trained knowledge base:', geminiError.response?.data?.error?.message || geminiError.message);
+      }
+    }
+
+    // Local Trained Knowledge Base Fallback
+    const lower = testQuery.toLowerCase();
+    let matchedAnswer = null;
+
+    for (const item of items || []) {
+      const keys = (item.keywords || '').toLowerCase().split(',').map((k) => k.trim()).filter(Boolean);
+      const titleMatch = lower.includes(item.title.toLowerCase());
+      const keyMatch = keys.some((k) => lower.includes(k));
+
+      if (titleMatch || keyMatch) {
+        matchedAnswer = item.instruction_or_answer;
+        break;
+      }
+    }
+
+    if (matchedAnswer) {
       return res.json({
-        reply: `[Simulated Local Test Response for: "${testQuery}"] Based on your active training knowledge and live event database.`,
-        contextUsed: { knowledgeCount: items?.length || 0, eventsCount: events?.length || 0 },
+        reply: matchedAnswer,
+        contextUsed: { knowledgeCount: items?.length || 0, eventsCount: events?.length || 0, engine: 'local_rules' },
       });
     }
 
-    const axios = (await import('axios')).default;
-    const geminiRes = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        contents: [{ role: 'user', parts: [{ text: testQuery }] }],
-        systemInstruction: { parts: [{ text: prompt }] },
-        generationConfig: { temperature: Number(temperature), maxOutputTokens: 250 },
-      },
-      { timeout: 8000 }
-    );
+    // If query asks about events
+    if (lower.includes('event') || lower.includes('concert') || lower.includes('happening') || lower.includes('show')) {
+      const eventList = (events || []).slice(0, 3).map((e) => `• ${e.title} at ${e.venue || e.city} (from GHS ${e.min_price})`).join('\n');
+      return res.json({
+        reply: `Here are some of the upcoming events right now:\n${eventList || 'No published events at the moment.'}`,
+        contextUsed: { knowledgeCount: items?.length || 0, eventsCount: events?.length || 0, engine: 'local_events' },
+      });
+    }
 
-    const reply = geminiRes.data?.candidates?.[0]?.content?.parts?.[0]?.text;
     res.json({
-      reply: reply || 'No response generated.',
-      contextUsed: { knowledgeCount: items?.length || 0, eventsCount: events?.length || 0 },
+      reply: `Hey! I can help you discover upcoming concerts, shows, and festivals, or assist with your tickets, transfers, and receipts. How can I help you today?`,
+      contextUsed: { knowledgeCount: items?.length || 0, eventsCount: events?.length || 0, engine: 'local_default' },
     });
   } catch (err) {
-    console.error('[adminController.testAIPrompt]', err.response?.data || err.message);
-    res.status(500).json({ message: 'AI test failed. Please verify API key.' });
+    console.error('[adminController.testAIPrompt]', err);
+    res.status(500).json({ message: 'Response test failed' });
   }
 };
 
