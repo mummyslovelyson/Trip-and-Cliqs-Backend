@@ -371,7 +371,7 @@ export const adminLogin = async (req, res) => {
       userId: user.id,
       title: 'Admin Portal Login',
       message: `Admin portal signed in on ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}.`,
-      type: 'account',
+      type: 'system',
     });
     await logAudit({ userId: user.id, action: 'admin_login', entityType: 'user', entityId: user.id });
     recordAuthSuccess(req);

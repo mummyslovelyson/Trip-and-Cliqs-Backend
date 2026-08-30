@@ -107,15 +107,16 @@ router.post('/content', writeLimiter, createContentPage);
 router.put('/content/:id', writeLimiter, updateContentPage);
 router.delete('/content/:id', destructiveLimiter, deleteContentPage);
 
-// Audit logs (System Admin Only)
-router.get('/audit-logs', authorize('system_admin', 'superadmin'), getAuditLogs);
+// Audit logs (Admin & System Admin)
+router.get('/audit-logs', authorize('admin', 'system_admin', 'superadmin'), getAuditLogs);
 
-// System settings (System Admin Only)
-router.get('/settings', authorize('system_admin', 'superadmin'), getSystemSettings);
-router.put('/settings', authorize('system_admin', 'superadmin'), writeLimiter, updateSystemSettings);
-router.post('/settings/test-email', authorize('system_admin', 'superadmin'), writeLimiter, testEmailSetting);
-router.post('/settings/test-sms', authorize('system_admin', 'superadmin'), writeLimiter, testSmsSetting);
-router.get('/settings/sms-balance', authorize('system_admin', 'superadmin'), getSmsBalanceSetting);
+// System settings (Admin & System Admin)
+router.get('/settings', authorize('admin', 'system_admin', 'superadmin'), getSystemSettings);
+router.put('/settings', authorize('admin', 'system_admin', 'superadmin'), writeLimiter, updateSystemSettings);
+router.post('/settings/test-email', authorize('admin', 'system_admin', 'superadmin'), writeLimiter, testEmailSetting);
+router.post('/settings/test-sms', authorize('admin', 'system_admin', 'superadmin'), writeLimiter, testSmsSetting);
+router.post('/settings/test-paystack', authorize('admin', 'system_admin', 'superadmin'), writeLimiter, testPaystackSetting);
+router.get('/settings/sms-balance', authorize('admin', 'system_admin', 'superadmin'), getSmsBalanceSetting);
 // AI Model Training & Knowledge Management
 router.get('/ai/knowledge', getAITrainingData);
 router.post('/ai/knowledge', writeLimiter, createAIKnowledgeItem);

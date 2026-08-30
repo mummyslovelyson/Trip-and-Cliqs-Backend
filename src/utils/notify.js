@@ -1,14 +1,17 @@
 import pool from '../config/db.js';
 
+const VALID_TYPES = new Set(['ticket', 'reminder', 'update', 'price_change', 'announcement', 'system', 'marketing', 'payment', 'refund', 'info', 'account', 'withdrawal', 'support']);
+
 /**
  * Insert a notification for a user.
  * @param {{ userId: number, title: string, message?: string, type?: string }} n
  */
 export const sendNotification = async ({ userId, title, message = '', type = 'info' }) => {
   try {
+    const notifType = VALID_TYPES.has(type) ? type : 'system';
     await pool.execute(
       `INSERT INTO notifications (user_id, title, message, type, is_read) VALUES (?, ?, ?, ?, FALSE)`,
-      [userId, title, message, type],
+      [userId, title, message, notifType],
     );
   } catch (err) {
     console.error('[notifications] insert failed:', err.message);
