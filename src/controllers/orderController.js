@@ -38,9 +38,8 @@ const applyCoupon = async (eventId, code, subtotal) => {
 /* ------------------------------------------------------------------ */
 /* Create order                                                        */
 /* ------------------------------------------------------------------ */
-// Only Paystack is wired up end-to-end; reject anything else rather than
-// creating orders that can never be paid for or completed.
-const SUPPORTED_PAYMENT_METHODS = ['paystack'];
+// Payment methods supported via Paystack gateway (Card, MoMo, Bank)
+const SUPPORTED_PAYMENT_METHODS = ['paystack', 'mobile_money', 'card', 'momo', 'telecel', 'mtn', 'hubtel'];
 
 // Hard cap per ticket type per order. The UI limits to 10; keep a sane
 // server-side ceiling too.
@@ -50,7 +49,7 @@ export const createOrder = async (req, res) => {
   const conn = await pool.getConnection();
   try {
     const { eventId, items, couponCode } = req.body;
-    const paymentMethod = req.body.paymentMethod ?? 'paystack';
+    const paymentMethod = (req.body.paymentMethod ?? 'paystack').toLowerCase();
     if (!eventId || !Array.isArray(items) || items.length === 0) {
       conn.release();
       return res.status(400).json({ message: 'eventId and items[] are required' });
@@ -160,13 +159,13 @@ export const createOrder = async (req, res) => {
 
     // Initialise Paystack transaction when the order has a real cost.
     let authorizationUrl = null;
-    if (total > 0 && paymentMethod === 'paystack') {
+    if (total > 0 && SUPPORTED_PAYMENT_METHODS.includes(paymentMethod)) {
       const [userRows] = await pool.execute('SELECT email FROM users WHERE id = ?', [req.user.id]);
       const payResult = await initializeTransaction({
-        email: userRows[0].email,
+        email: userRows[0]?.email,
         amount: total,
         reference,
-        metadata: { orderId, eventId, userId: req.user.id },
+        metadata: { orderId, eventId, userId: req.user.id, paymentMethod },
       });
       if (!payResult.status) {
         return res.status(400).json({ message: 'Could not initialise payment', error: payResult.error, orderId, reference });
