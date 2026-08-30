@@ -1806,6 +1806,232 @@ export const createAdminUser = async (req, res) => {
   }
 };
 
+/* ------------------------------------------------------------------ */
+/* AI Training & Knowledge Management                                 */
+/* ------------------------------------------------------------------ */
+export const getAITrainingData = async (_req, res) => {
+  try {
+    const [items] = await pool.execute(
+      `SELECT * FROM ai_training_knowledge ORDER BY id DESC`
+    );
+
+    // Fetch custom system instruction & temperature from system_settings
+    const [settings] = await pool.execute(
+      `SELECT key, value FROM system_settings WHERE key IN ('ai_custom_instructions', 'ai_temperature')`
+    );
+
+    const config = {};
+    for (const row of settings) {
+      config[row.key] = row.value;
+    }
+
+    res.json({
+      knowledge: items || [],
+      customInstructions: config.ai_custom_instructions || '',
+      temperature: config.ai_temperature ? Number(config.ai_temperature) : 0.7,
+    });
+  } catch (err) {
+    console.error('[adminController.getAITrainingData]', err);
+    res.status(500).json({ message: 'Failed to fetch AI training data' });
+  }
+};
+
+export const createAIKnowledgeItem = async (req, res) => {
+  try {
+    const { title, category = 'faq', keywords = '', instruction_or_answer } = req.body;
+    if (!title || !instruction_or_answer) {
+      return res.status(400).json({ message: 'Title and training answer/instruction are required' });
+    }
+
+    const [result] = await pool.execute(
+      `INSERT INTO ai_training_knowledge (title, category, keywords, instruction_or_answer, is_active)
+       VALUES (?, ?, ?, ?, TRUE)`,
+      [title.trim(), category.trim(), keywords.trim(), instruction_or_answer.trim()]
+    );
+
+    await logAudit({
+      userId: req.user.id,
+      action: 'create_ai_knowledge_item',
+      entityType: 'ai_knowledge',
+      entityId: Number(result.insertId),
+      details: { title, category },
+    });
+
+    res.status(201).json({
+      message: 'Knowledge item created successfully',
+      item: {
+        id: result.insertId,
+        title,
+        category,
+        keywords,
+        instruction_or_answer,
+        is_active: true,
+      },
+    });
+  } catch (err) {
+    console.error('[adminController.createAIKnowledgeItem]', err);
+    res.status(500).json({ message: 'Failed to create AI knowledge item' });
+  }
+};
+
+export const updateAIKnowledgeItem = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, category, keywords, instruction_or_answer, is_active } = req.body;
+
+    const [existing] = await pool.execute(
+      `SELECT * FROM ai_training_knowledge WHERE id = ?`,
+      [id]
+    );
+    if (!existing[0]) {
+      return res.status(404).json({ message: 'Knowledge item not found' });
+    }
+
+    const newTitle = title !== undefined ? title.trim() : existing[0].title;
+    const newCategory = category !== undefined ? category.trim() : existing[0].category;
+    const newKeywords = keywords !== undefined ? keywords.trim() : existing[0].keywords;
+    const newInstruction = instruction_or_answer !== undefined ? instruction_or_answer.trim() : existing[0].instruction_or_answer;
+    const newActive = is_active !== undefined ? Boolean(is_active) : existing[0].is_active;
+
+    await pool.execute(
+      `UPDATE ai_training_knowledge
+       SET title = ?, category = ?, keywords = ?, instruction_or_answer = ?, is_active = ?, updated_at = NOW()
+       WHERE id = ?`,
+      [newTitle, newCategory, newKeywords, newInstruction, newActive, id]
+    );
+
+    res.json({
+      message: 'Knowledge item updated successfully',
+      item: {
+        id: Number(id),
+        title: newTitle,
+        category: newCategory,
+        keywords: newKeywords,
+        instruction_or_answer: newInstruction,
+        is_active: newActive,
+      },
+    });
+  } catch (err) {
+    console.error('[adminController.updateAIKnowledgeItem]', err);
+    res.status(500).json({ message: 'Failed to update AI knowledge item' });
+  }
+};
+
+export const deleteAIKnowledgeItem = async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.execute(`DELETE FROM ai_training_knowledge WHERE id = ?`, [id]);
+    await logAudit({
+      userId: req.user.id,
+      action: 'delete_ai_knowledge_item',
+      entityType: 'ai_knowledge',
+      entityId: Number(id),
+    });
+    res.json({ message: 'Knowledge item deleted successfully' });
+  } catch (err) {
+    console.error('[adminController.deleteAIKnowledgeItem]', err);
+    res.status(500).json({ message: 'Failed to delete AI knowledge item' });
+  }
+};
+
+export const updateAISettings = async (req, res) => {
+  try {
+    const { customInstructions = '', temperature = 0.7 } = req.body;
+
+    await pool.execute(
+      `INSERT INTO system_settings (key, value)
+       VALUES ('ai_custom_instructions', ?)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+      [customInstructions]
+    );
+
+    await pool.execute(
+      `INSERT INTO system_settings (key, value)
+       VALUES ('ai_temperature', ?)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+      [String(temperature)]
+    );
+
+    await logAudit({
+      userId: req.user.id,
+      action: 'update_ai_settings',
+      entityType: 'system_settings',
+      details: { customInstructionsLength: customInstructions.length, temperature },
+    });
+
+    res.json({ message: 'AI settings updated successfully' });
+  } catch (err) {
+    console.error('[adminController.updateAISettings]', err);
+    res.status(500).json({ message: 'Failed to update AI settings' });
+  }
+};
+
+export const testAIPrompt = async (req, res) => {
+  try {
+    const { message, customInstructions, temperature = 0.7 } = req.body;
+    const testQuery = (message || '').trim();
+    if (!testQuery) {
+      return res.status(400).json({ message: 'Test message is required' });
+    }
+
+    const [items] = await pool.execute(
+      `SELECT * FROM ai_training_knowledge WHERE is_active = TRUE`
+    );
+
+    const [events] = await pool.execute(`
+      SELECT e.id, e.title, e.start_date, e.venue, e.city, e.category,
+             COALESCE(MIN(tt.price), 0) AS min_price
+      FROM events e
+      LEFT JOIN ticket_types tt ON tt.event_id = e.id
+      WHERE e.status = 'published'
+      GROUP BY e.id
+      ORDER BY e.start_date ASC
+      LIMIT 6
+    `);
+
+    const knowledgeSummary = (items || []).map((k) => `[${k.category.toUpperCase()}] ${k.title}: ${k.instruction_or_answer}`).join('\n');
+    const eventsSummary = (events || []).map((e) => `- ${e.title} (${e.category}) on ${e.start_date} at ${e.venue || e.city} (From GHS ${e.min_price})`).join('\n');
+
+    const prompt = `You are Cliq Concierge, the official event guide for Tribes & Cliqs in Ghana.
+${customInstructions || 'Tone: Friendly, concise, insider host. Avoid robotic lists or emoji spam. Keep responses short and punchy (1 to 3 sentences).'}
+
+Trained Knowledge Base:
+${knowledgeSummary}
+
+Live Published Events:
+${eventsSummary}
+`;
+
+    const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+    if (!GEMINI_API_KEY) {
+      return res.json({
+        reply: `[Simulated Local Test Response for: "${testQuery}"] Based on your active training knowledge and live event database.`,
+        contextUsed: { knowledgeCount: items?.length || 0, eventsCount: events?.length || 0 },
+      });
+    }
+
+    const axios = (await import('axios')).default;
+    const geminiRes = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        contents: [{ role: 'user', parts: [{ text: testQuery }] }],
+        systemInstruction: { parts: [{ text: prompt }] },
+        generationConfig: { temperature: Number(temperature), maxOutputTokens: 250 },
+      },
+      { timeout: 8000 }
+    );
+
+    const reply = geminiRes.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    res.json({
+      reply: reply || 'No response generated.',
+      contextUsed: { knowledgeCount: items?.length || 0, eventsCount: events?.length || 0 },
+    });
+  } catch (err) {
+    console.error('[adminController.testAIPrompt]', err.response?.data || err.message);
+    res.status(500).json({ message: 'AI test failed. Please verify API key.' });
+  }
+};
+
 export default {
   getDashboardStats, getUsers, getUser, updateUser, suspendUser, unsuspendUser, verifyUser, deleteUser, approveOrganizer, rejectOrganizer, resetUserPassword, createAdminUser,
   getUserManagementStats, getUserActivity, getUserSessions, getUserStats, forceLogoutUser, addAdminNote, getAdminNotes, deleteAdminNote, exportUsers, bulkRoleChange, bulkDeleteUsers,
@@ -1816,4 +2042,5 @@ export default {
   getSupportTickets, getSupportTicket, respondToSupportTicket, closeSupportTicket, resolveSupportTicket,
   sendAnnouncement, getAdminNotifications, getAuditLogs, getSystemSettings, updateSystemSettings,
   getContentPages, createContentPage, updateContentPage, deleteContentPage,
+  getAITrainingData, createAIKnowledgeItem, updateAIKnowledgeItem, deleteAIKnowledgeItem, updateAISettings, testAIPrompt,
 };

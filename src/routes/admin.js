@@ -11,6 +11,7 @@ import {
   sendAnnouncement, getAdminNotifications, getAuditLogs, getSystemSettings, updateSystemSettings,
   testEmailSetting, testSmsSetting, getSmsBalanceSetting, testPaystackSetting,
   getContentPages, createContentPage, updateContentPage, deleteContentPage,
+  getAITrainingData, createAIKnowledgeItem, updateAIKnowledgeItem, deleteAIKnowledgeItem, updateAISettings, testAIPrompt,
 } from '../controllers/adminController.js';
 import { authenticate, authorize } from '../middleware/auth.js';
 import { rateLimit } from '../middleware/rateLimit.js';
@@ -113,6 +114,12 @@ router.put('/settings', authorize('system_admin', 'superadmin'), writeLimiter, u
 router.post('/settings/test-email', authorize('system_admin', 'superadmin'), writeLimiter, testEmailSetting);
 router.post('/settings/test-sms', authorize('system_admin', 'superadmin'), writeLimiter, testSmsSetting);
 router.get('/settings/sms-balance', authorize('system_admin', 'superadmin'), getSmsBalanceSetting);
-router.post('/settings/test-paystack', authorize('system_admin', 'superadmin'), writeLimiter, testPaystackSetting);
+// AI Model Training & Knowledge Management
+router.get('/ai/knowledge', getAITrainingData);
+router.post('/ai/knowledge', writeLimiter, createAIKnowledgeItem);
+router.put('/ai/knowledge/:id', writeLimiter, updateAIKnowledgeItem);
+router.delete('/ai/knowledge/:id', destructiveLimiter, deleteAIKnowledgeItem);
+router.put('/ai/settings', writeLimiter, updateAISettings);
+router.post('/ai/test', writeLimiter, testAIPrompt);
 
 export default router;

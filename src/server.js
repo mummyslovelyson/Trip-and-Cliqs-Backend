@@ -18,6 +18,7 @@ import meetupRoutes from './routes/meetups.js';
 import resaleRoutes from './routes/resale.js';
 import uploadRoutes from './routes/upload.js';
 import supportRoutes from './routes/support.js';
+import chatRoutes from './routes/chat.js';
 import { getSetting } from './utils/settings.js';
 import { maintenanceMiddleware } from './middleware/maintenance.js';
 import { globalRateLimit } from './middleware/globalRateLimit.js';
@@ -157,6 +158,7 @@ app.use('/api/meetups', meetupRoutes);
 app.use('/api/resale', resaleRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/support', supportRoutes);
+app.use('/api/chat', chatRoutes);
 
 // Public, unauthenticated platform settings (currency display config).
 app.get('/api/public/settings', async (_req, res) => {

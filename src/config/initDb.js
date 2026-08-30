@@ -117,6 +117,16 @@ async function initDb() {
           message           TEXT NOT NULL,
           created_at        TIMESTAMPTZ DEFAULT NOW()
         )`,
+        `CREATE TABLE IF NOT EXISTS ai_training_knowledge (
+          id                      BIGSERIAL PRIMARY KEY,
+          title                   VARCHAR(255) NOT NULL,
+          category                VARCHAR(100) NOT NULL DEFAULT 'faq',
+          keywords                TEXT,
+          instruction_or_answer   TEXT NOT NULL,
+          is_active               BOOLEAN DEFAULT TRUE,
+          created_at              TIMESTAMPTZ DEFAULT NOW(),
+          updated_at              TIMESTAMPTZ DEFAULT NOW()
+        )`,
       ];
       for (const migSql of safeMigrations) {
         try {
@@ -124,6 +134,28 @@ async function initDb() {
         } catch {
           // ignore if already migrated or column doesn't need change
         }
+      }
+
+      // Seed default AI training knowledge items if empty
+      const { rows: aiRows } = await connection.query('SELECT COUNT(*) AS count FROM ai_training_knowledge');
+      if (parseInt(aiRows[0].count, 10) === 0) {
+        const defaultAITraining = [
+          ['Ticket Transfers', 'ticketing', 'transfer, gift, send ticket, friend, email', 'Attendees can transfer any purchased ticket directly from the "My Tickets" dashboard by clicking "Transfer" and entering the recipient\'s email. A new QR code is issued instantly.'],
+          ['Resale Marketplace', 'ticketing', 'resale, sell, cant attend, marketplace, payout', 'If an attendee cannot attend an event, they can list their ticket for resale under "My Tickets" > "Sell". Once bought by another user, payout is processed automatically.'],
+          ['Tax Invoices & Receipts', 'ticketing', 'invoice, receipt, tax, pdf, vat, proof of payment', 'Itemized tax receipts with sequential invoice numbers are available on each ticket pass under "My Tickets" with 1-click Print and Save PDF options.'],
+          ['Accepted Payment Methods', 'payments', 'paystack, momo, mobile money, mtn, telecel, at, card, visa, mastercard', 'Checkout is powered securely by Paystack, accepting Mobile Money (MTN, Telecel, AT) and Visa/Mastercard debit and credit cards.'],
+          ['VIP Seating & Early Bird Deals', 'venue_policy', 'vip, table, early bird, seating map, layout, discounts', 'Check out the interactive Seating & VIP Sections tab on event pages for stage floor plans and Early-Bird ticket discounts before tier deadlines.'],
+          ['Hosting Events & Organizer Tools', 'organizer', 'host, create event, organizer, scanner, checkin, qr scanner', 'Creators and planners can sign up or switch to the Organizer Portal to publish events, configure ticket tiers, scan attendee QR codes, and withdraw revenue.'],
+        ];
+
+        for (const [title, category, keywords, instruction_or_answer] of defaultAITraining) {
+          await connection.query(
+            `INSERT INTO ai_training_knowledge (title, category, keywords, instruction_or_answer, is_active)
+             VALUES ($1, $2, $3, $4, TRUE)`,
+            [title, category, keywords, instruction_or_answer],
+          );
+        }
+        console.log('✅ Default AI training knowledge items seeded.');
       }
     } else {
       console.warn('⚠️ schema.sql not found at', schemaPath);
