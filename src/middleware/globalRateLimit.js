@@ -13,7 +13,7 @@
 const buckets = new Map();
 
 const WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS, 10) || 60_000;
-const MAX = parseInt(process.env.RATE_LIMIT_MAX, 10) || 100;
+const MAX = parseInt(process.env.RATE_LIMIT_MAX, 10) || (process.env.NODE_ENV === 'production' ? 120 : 600);
 
 // Sweep stale entries every 2 minutes so memory stays bounded.
 const sweep = setInterval(() => {
@@ -30,6 +30,11 @@ const getClientIp = (req) =>
   'unknown';
 
 export const globalRateLimit = (req, res, next) => {
+  // Exempt frequent lightweight status polling endpoints
+  if (req.path === '/api/public/maintenance' || req.path === '/public/maintenance') {
+    return next();
+  }
+
   const ip = getClientIp(req);
   const now = Date.now();
   if (res.headersSent || res.writableEnded) return next();

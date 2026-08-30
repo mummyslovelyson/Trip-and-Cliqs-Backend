@@ -1811,18 +1811,32 @@ export const createAdminUser = async (req, res) => {
 /* ------------------------------------------------------------------ */
 export const getAITrainingData = async (_req, res) => {
   try {
+    // Ensure table exists safely
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS ai_training_knowledge (
+        id                      BIGSERIAL PRIMARY KEY,
+        title                   VARCHAR(255) NOT NULL,
+        category                VARCHAR(100) NOT NULL DEFAULT 'faq',
+        keywords                TEXT,
+        instruction_or_answer   TEXT NOT NULL,
+        is_active               BOOLEAN DEFAULT TRUE,
+        created_at              TIMESTAMPTZ DEFAULT NOW(),
+        updated_at              TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+
     const [items] = await pool.execute(
       `SELECT * FROM ai_training_knowledge ORDER BY id DESC`
     );
 
     // Fetch custom system instruction & temperature from system_settings
     const [settings] = await pool.execute(
-      `SELECT key, value FROM system_settings WHERE key IN ('ai_custom_instructions', 'ai_temperature')`
+      `SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN ('ai_custom_instructions', 'ai_temperature')`
     );
 
     const config = {};
-    for (const row of settings) {
-      config[row.key] = row.value;
+    for (const row of settings || []) {
+      config[row.setting_key] = row.setting_value;
     }
 
     res.json({
@@ -1939,16 +1953,16 @@ export const updateAISettings = async (req, res) => {
     const { customInstructions = '', temperature = 0.7 } = req.body;
 
     await pool.execute(
-      `INSERT INTO system_settings (key, value)
+      `INSERT INTO system_settings (setting_key, setting_value)
        VALUES ('ai_custom_instructions', ?)
-       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+       ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = NOW()`,
       [customInstructions]
     );
 
     await pool.execute(
-      `INSERT INTO system_settings (key, value)
+      `INSERT INTO system_settings (setting_key, setting_value)
        VALUES ('ai_temperature', ?)
-       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+       ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = NOW()`,
       [String(temperature)]
     );
 

@@ -538,6 +538,21 @@ CREATE TABLE IF NOT EXISTS system_settings (
   updated_at    TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- ────────────────  AI TRAINING KNOWLEDGE  ────────────────
+CREATE TABLE IF NOT EXISTS ai_training_knowledge (
+  id                      BIGSERIAL PRIMARY KEY,
+  title                   VARCHAR(255) NOT NULL,
+  category                VARCHAR(100) NOT NULL DEFAULT 'faq',
+  keywords                TEXT,
+  instruction_or_answer   TEXT NOT NULL,
+  is_active               BOOLEAN DEFAULT TRUE,
+  created_at              TIMESTAMPTZ DEFAULT NOW(),
+  updated_at              TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_atk_category ON ai_training_knowledge(category);
+CREATE INDEX IF NOT EXISTS idx_atk_active ON ai_training_knowledge(is_active);
+
 -- ────────────────  NOTIFICATION TEMPLATES  ────────────────
 CREATE TABLE IF NOT EXISTS notification_templates (
   id         BIGSERIAL PRIMARY KEY,

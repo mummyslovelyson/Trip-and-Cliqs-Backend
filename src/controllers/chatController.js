@@ -38,12 +38,12 @@ async function getAITrainingContext() {
     );
 
     const [settings] = await pool.execute(
-      `SELECT key, value FROM system_settings WHERE key IN ('ai_custom_instructions', 'ai_temperature')`
+      `SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN ('ai_custom_instructions', 'ai_temperature')`
     );
 
     const config = {};
     for (const row of settings || []) {
-      config[row.key] = row.value;
+      config[row.setting_key] = row.setting_value;
     }
 
     return {
