@@ -8,7 +8,7 @@ import {
   getPayments, getPayment, refundPayment, getWithdrawals, approveWithdrawal,
   getReports, getRevenueReport, getGrowthReport,
   getSupportTickets, getSupportTicket, respondToSupportTicket, closeSupportTicket, resolveSupportTicket,
-  sendAnnouncement, getAdminNotifications, getAuditLogs, getSystemSettings, updateSystemSettings,
+  sendAnnouncement, getAdminNotifications, markAdminNotificationsRead, getAuditLogs, getSystemSettings, updateSystemSettings,
   testEmailSetting, testSmsSetting, getSmsBalanceSetting, testPaystackSetting,
   getContentPages, createContentPage, updateContentPage, deleteContentPage,
   getAITrainingData, createAIKnowledgeItem, updateAIKnowledgeItem, deleteAIKnowledgeItem, updateAISettings, testAIPrompt,
@@ -96,6 +96,8 @@ router.put('/support-tickets/:id/resolve', writeLimiter, resolveSupportTicket);
 
 // Notifications & Announcements
 router.get('/notifications', getAdminNotifications);
+router.put('/notifications/:id/read', markAdminNotificationsRead);
+router.post('/notifications/mark-read', markAdminNotificationsRead);
 router.post('/notifications', writeLimiter, sendAnnouncement);
 router.post('/announcements', writeLimiter, sendAnnouncement);
 

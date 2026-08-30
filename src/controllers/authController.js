@@ -13,7 +13,7 @@ import {
 } from '../utils/jwt.js';
 import { sendVerificationEmail, sendPasswordResetEmail, sendWelcomeEmail } from '../utils/email.js';
 import { sendVerificationSMS, sendWelcomeSMS, sendSMS } from '../utils/sms.js';
-import { sendNotification } from '../utils/notify.js';
+import { sendNotification, notifyAdmins } from '../utils/notify.js';
 import { logAudit } from '../utils/audit.js';
 import { validatePassword } from '../utils/password.js';
 import { recordAuthFailure, recordAuthSuccess } from '../middleware/abuse.js';
@@ -717,6 +717,14 @@ export const verifyEmail = async (req, res) => {
             message: 'Your account has been successfully verified and activated. Welcome to Tribes & Cliqs!',
             type: 'account',
           }).catch(() => {});
+
+          notifyAdmins({
+            title: pending.role === 'organizer' ? '🏢 New Organizer Application' : '👤 New Attendee Registered',
+            message: `${pending.name} (${pending.email}) just verified their ${pending.role} account.${pending.role === 'organizer' ? ' Profile is awaiting approval.' : ''}`,
+            type: 'account',
+            link: pending.role === 'organizer' ? '/admin/organizers' : '/admin/users',
+          }).catch(() => {});
+
           logAudit({ userId, action: 'create_and_verify_account', entityType: 'user', entityId: userId }).catch(() => {});
 
           const family = uuidv4();

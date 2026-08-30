@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import pool from '../config/db.js';
 import { logAudit } from '../utils/audit.js';
-import { sendNotification } from '../utils/notify.js';
+import { sendNotification, notifyAdmins } from '../utils/notify.js';
 import { initializeTransaction } from '../utils/paystack.js';
 
 /* ------------------------------------------------------------------ */
@@ -126,6 +126,13 @@ export const createResaleListing = async (req, res) => {
       entityId: result.insertId,
       details: { ticketId, eventId: ticket.event_id, price: listPrice },
     });
+
+    notifyAdmins({
+      title: '🏷️ New Ticket Resale Listed',
+      message: `User "${req.user.name || 'User'}" listed a ticket for "${ticket.event_title || 'Event'}" at GHS ${listPrice}.`,
+      type: 'ticket',
+      link: '/admin/events',
+    }).catch(() => {});
 
     res.status(201).json({ message: 'Ticket listed for resale', listingId: result.insertId });
   } catch (err) {
@@ -328,6 +335,13 @@ export const completeResaleOrder = async (orderId, reference) => {
       message: 'Your resale ticket was purchased. It has been transferred to the buyer.',
       type: 'payment',
     });
+
+    notifyAdmins({
+      title: '💰 Resale Ticket Sold',
+      message: `Resale ticket for "${listing.event_title || 'Event'}" was purchased for GHS ${Number(listing.price || 0).toFixed(2)}.`,
+      type: 'ticket',
+      link: '/admin/events',
+    }).catch(() => {});
 
     await logAudit({
       userId: order.user_id,

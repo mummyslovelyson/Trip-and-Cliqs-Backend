@@ -1,5 +1,5 @@
 import pool from '../config/db.js';
-import { sendNotification } from '../utils/notify.js';
+import { sendNotification, notifyAdmins } from '../utils/notify.js';
 
 /* ------------------------------------------------------------------ */
 /* Create a support ticket                                             */
@@ -23,6 +23,13 @@ export const createTicket = async (req, res) => {
       'INSERT INTO support_tickets (user_id, subject, message, category, priority, status) VALUES (?, ?, ?, ?, ?, ?)',
       [userId, subject.slice(0, 200), message, cat, pri, 'open'],
     );
+
+    notifyAdmins({
+      title: '🆘 New Support Request',
+      message: `Ticket from ${req.user.name || 'User'}: "${subject.slice(0, 80)}" (Priority: ${pri}).`,
+      type: 'support',
+      link: '/admin/support',
+    }).catch(() => {});
 
     res.status(201).json({
       message: 'Ticket created successfully',

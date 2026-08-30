@@ -5,7 +5,7 @@ import { initializeTransaction, verifyTransaction, refundTransaction } from '../
 import { getPaystackSecretKey } from '../utils/settings.js';
 import { sendTicketConfirmationEmail } from '../utils/email.js';
 import { sendTicketConfirmationSMS } from '../utils/sms.js';
-import { sendNotification } from '../utils/notify.js';
+import { sendNotification, notifyAdmins } from '../utils/notify.js';
 import { logAudit } from '../utils/audit.js';
 import textPdf from '../utils/pdf.js';
 
@@ -264,6 +264,13 @@ const completeOrder = async (orderId, reference) => {
     message: `Your payment for "${eventTitle || 'your event'}" was confirmed. Your tickets are ready.`,
     type: 'payment',
   });
+
+  notifyAdmins({
+    title: 'Ticket Order Completed',
+    message: `Order #${order.id} paid (GHS ${Number(order.total_amount).toFixed(2)}) for "${eventTitle || 'Event'}".`,
+    type: 'payment',
+    link: '/admin/payments',
+  }).catch(() => {});
 };
 
 /* ------------------------------------------------------------------ */

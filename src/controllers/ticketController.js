@@ -2,7 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import pool from '../config/db.js';
 import { logAudit } from '../utils/audit.js';
 import textPdf from '../utils/pdf.js';
-import { sendNotification } from '../utils/notify.js';
+import { sendNotification, notifyAdmins } from '../utils/notify.js';
 
 /* ------------------------------------------------------------------ */
 /* Get ticket types for an event (public)                              */
@@ -306,6 +306,13 @@ export const transferTicket = async (req, res) => {
         title: 'Ticket Transferred',
         message: `Your ticket for "${eventTitle}" was successfully transferred to ${recipient.email}.`,
         type: 'ticket',
+      }).catch(() => {});
+
+      notifyAdmins({
+        title: '🤝 Ticket Transferred',
+        message: `${senderName} transferred ticket #${ticket.id} (${eventTitle}) to ${recipient.email}.`,
+        type: 'ticket',
+        link: '/admin/events',
       }).catch(() => {});
     } catch { /* ignore notification errors */ }
 

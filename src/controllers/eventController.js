@@ -1,5 +1,6 @@
 import pool from '../config/db.js';
 import { logAudit } from '../utils/audit.js';
+import { notifyAdmins } from '../utils/notify.js';
 
 // JSON columns (images, tags) arrive as strings from MySQL — normalise to
 // arrays so the API always hands the frontend something it can iterate.
@@ -337,6 +338,13 @@ export const createEvent = async (req, res) => {
     }
 
     await logAudit({ userId: organizerId, action: 'create_event', entityType: 'event', entityId: Number(eventId) });
+
+    notifyAdmins({
+      title: '🎉 New Event Created',
+      message: `Organizer "${req.user.name || 'Organizer'}" created "${title}" (${category || 'General'}) in ${city || 'Accra'}.`,
+      type: 'system',
+      link: '/admin/events',
+    }).catch(() => {});
 
     conn.release();
     res.status(201).json({ message: 'Event created', eventId });

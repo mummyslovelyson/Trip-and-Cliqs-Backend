@@ -975,6 +975,64 @@ export const sendAnnouncement = async (req, res) => {
 };
 
 /* ------------------------------------------------------------------ */
+/* Admin Notifications                                                */
+/* ------------------------------------------------------------------ */
+export const getAdminNotifications = async (req, res) => {
+  try {
+    const { page = 1, limit = 20, unreadOnly = 'false' } = req.query;
+    const pageNum = Math.max(parseInt(page, 10) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+    const offset = (pageNum - 1) * limitNum;
+
+    const unreadClause = unreadOnly === 'true' ? 'AND is_read = FALSE' : '';
+
+    const [countRows] = await pool.execute(
+      `SELECT COUNT(*) AS total FROM notifications WHERE user_id = ? ${unreadClause}`,
+      [req.user.id]
+    );
+
+    const [unreadCountRows] = await pool.execute(
+      `SELECT COUNT(*) AS unread FROM notifications WHERE user_id = ? AND is_read = FALSE`,
+      [req.user.id]
+    );
+
+    const [rows] = await pool.execute(
+      `SELECT * FROM notifications WHERE user_id = ? ${unreadClause} ORDER BY created_at DESC LIMIT ${limitNum} OFFSET ${offset}`,
+      [req.user.id]
+    );
+
+    res.json({
+      notifications: rows,
+      unreadCount: Number(unreadCountRows[0]?.unread || 0),
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: Number(countRows[0]?.total || 0),
+        totalPages: Math.ceil(Number(countRows[0]?.total || 0) / limitNum) || 1,
+      },
+    });
+  } catch (err) {
+    console.error('[adminController.getAdminNotifications]', err);
+    res.status(500).json({ message: 'Failed to fetch admin notifications' });
+  }
+};
+
+export const markAdminNotificationsRead = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (id === 'all') {
+      await pool.execute(`UPDATE notifications SET is_read = TRUE WHERE user_id = ?`, [req.user.id]);
+    } else {
+      await pool.execute(`UPDATE notifications SET is_read = TRUE WHERE id = ? AND user_id = ?`, [id, req.user.id]);
+    }
+    res.json({ message: 'Notifications marked as read' });
+  } catch (err) {
+    console.error('[adminController.markAdminNotificationsRead]', err);
+    res.status(500).json({ message: 'Failed to update notification status' });
+  }
+};
+
+/* ------------------------------------------------------------------ */
 /* Audit logs                                                          */
 /* ------------------------------------------------------------------ */
 export const getAuditLogs = async (req, res) => {
@@ -1177,31 +1235,6 @@ export const updateContentPage = async (_req, res) => {
 
 export const deleteContentPage = async (_req, res) => {
   res.json({ message: 'Content deleted' });
-};
-
-/* ------------------------------------------------------------------ */
-/* Admin Notifications                                                 */
-/* ------------------------------------------------------------------ */
-export const getAdminNotifications = async (req, res) => {
-  try {
-    const { page = 1, limit = 10 } = req.query;
-    const pageNum = Math.max(parseInt(page, 10) || 1, 1);
-    const limitNum = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50);
-    const offset = (pageNum - 1) * limitNum;
-
-    const [countRows] = await pool.execute(`SELECT COUNT(*) AS total FROM announcements`);
-    const [rows] = await pool.execute(
-      `SELECT * FROM announcements ORDER BY created_at DESC LIMIT ${limitNum} OFFSET ${offset}`
-    );
-
-    res.json({
-      notifications: rows,
-      pagination: { page: pageNum, limit: limitNum, total: countRows[0]?.total || 0, totalPages: Math.ceil((countRows[0]?.total || 0) / limitNum) },
-    });
-  } catch (err) {
-    console.error('[adminController.getAdminNotifications]', err);
-    res.status(500).json({ message: 'Server error' });
-  }
 };
 
 /* ------------------------------------------------------------------ */
