@@ -1,6 +1,7 @@
 import pool from '../config/db.js';
 import { logAudit } from '../utils/audit.js';
 import { notifyAdmins } from '../utils/notify.js';
+import cache from '../utils/cache.js';
 
 // JSON columns (images, tags) arrive as strings from MySQL — normalise to
 // arrays so the API always hands the frontend something it can iterate.
@@ -338,6 +339,7 @@ export const createEvent = async (req, res) => {
     }
 
     await logAudit({ userId: organizerId, action: 'create_event', entityType: 'event', entityId: Number(eventId) });
+    cache.clearPrefix('events');
 
     notifyAdmins({
       title: 'New Event Created',
@@ -423,6 +425,7 @@ export const updateEvent = async (req, res) => {
     await pool.execute(`UPDATE events SET ${fields.join(', ')} WHERE id = ?`, values);
 
     await logAudit({ userId: organizerId, action: 'update_event', entityType: 'event', entityId: Number(id) });
+    cache.clearPrefix('events');
 
     res.json({ message: 'Event updated' });
   } catch (err) {
@@ -460,6 +463,7 @@ export const deleteEvent = async (req, res) => {
 
     await pool.execute('DELETE FROM events WHERE id = ?', [id]);
     await logAudit({ userId: organizerId, action: 'delete_event', entityType: 'event', entityId: Number(id) });
+    cache.clearPrefix('events');
 
     res.json({ message: 'Event deleted' });
   } catch (err) {
@@ -489,6 +493,7 @@ const setEventStatus = async (req, res, status) => {
       entityType: 'event',
       entityId: Number(id),
     });
+    cache.clearPrefix('events');
 
     res.json({ message: status === 'pending' ? 'Event submitted for review' : 'Event unpublished', status });
   } catch (err) {
@@ -539,6 +544,11 @@ export const getOrganizerEvents = async (req, res) => {
 export const getFeaturedEvents = async (req, res) => {
   try {
     const { limit = 6 } = req.query;
+    const limitNum = Math.min(parseInt(limit, 10) || 6, 20);
+    const cacheKey = `events_featured_${limitNum}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
+
     const [rows] = await pool.execute(
       `SELECT e.*, u.name AS organizer_name,
               (SELECT MIN(price) FROM ticket_types WHERE event_id = e.id) AS min_price
@@ -547,9 +557,11 @@ export const getFeaturedEvents = async (req, res) => {
        WHERE e.status = 'published' AND e.is_featured = TRUE
          AND e.visibility = 'public' AND e.start_date >= CURRENT_DATE
        ORDER BY e.start_date ASC
-       LIMIT ${Math.min(parseInt(limit, 10) || 6, 20)}`,
+       LIMIT ${limitNum}`,
     );
-    res.json({ events: rows });
+    const result = { events: rows };
+    cache.set(cacheKey, result, 120_000); // 2 minutes
+    res.json(result);
   } catch (err) {
     console.error('[eventController.getFeaturedEvents]', err);
     res.status(500).json({ message: 'Server error' });
@@ -562,6 +574,11 @@ export const getFeaturedEvents = async (req, res) => {
 export const getTrendingEvents = async (req, res) => {
   try {
     const { limit = 8 } = req.query;
+    const limitNum = Math.min(parseInt(limit, 10) || 8, 20);
+    const cacheKey = `events_trending_${limitNum}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
+
     const [rows] = await pool.execute(
       `SELECT e.id, e.organizer_id, e.category_id, e.title, e.slug, e.description,
               e.category, e.venue, e.address, e.city, e.country, e.start_date, e.end_date,
@@ -581,9 +598,11 @@ export const getTrendingEvents = async (req, res) => {
                 e.start_time, e.end_time, e.capacity, e.banner_image, e.status, e.is_featured,
                 e.visibility, e.created_at, e.updated_at, u.name
        ORDER BY tickets_sold DESC, e.created_at DESC
-       LIMIT ${Math.min(parseInt(limit, 10) || 8, 20)}`,
+       LIMIT ${limitNum}`,
     );
-    res.json({ events: rows });
+    const result = { events: rows };
+    cache.set(cacheKey, result, 120_000); // 2 minutes
+    res.json(result);
   } catch (err) {
     console.error('[eventController.getTrendingEvents]', err);
     res.status(500).json({ message: 'Server error' });
@@ -767,6 +786,10 @@ export const getUserReminders = async (req, res) => {
 /* ------------------------------------------------------------------ */
 export const getCategories = async (_req, res) => {
   try {
+    const cacheKey = 'events_categories_all';
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
+
     const [rows] = await pool.execute(
       `SELECT c.id, c.name, c.slug, c.icon, c.description,
               COUNT(e.id)::int AS event_count
@@ -775,6 +798,7 @@ export const getCategories = async (_req, res) => {
        GROUP BY c.id, c.name, c.slug, c.icon, c.description
        ORDER BY c.name ASC`,
     );
+    cache.set(cacheKey, rows, 300_000); // 5 minutes
     res.json(rows);
   } catch (err) {
     console.error('[eventController.getCategories]', err);
@@ -788,6 +812,11 @@ export const getCategories = async (_req, res) => {
 export const getFeaturedOrganizers = async (req, res) => {
   try {
     const { limit = 6 } = req.query;
+    const limitNum = Math.min(parseInt(limit, 10) || 6, 20);
+    const cacheKey = `events_organizers_${limitNum}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
+
     const [rows] = await pool.execute(
       `SELECT u.id, u.name, COALESCE(u.avatar_url, u.avatar) AS avatar,
               COUNT(e.id) AS events_count,
@@ -799,8 +828,9 @@ export const getFeaturedOrganizers = async (req, res) => {
        WHERE u.role = 'organizer' AND u.is_approved = TRUE AND u.status = 'active'
        GROUP BY u.id, u.name, u.avatar_url, u.avatar, op.organization_name
        ORDER BY events_count DESC, u.name ASC
-       LIMIT ${Math.min(parseInt(limit, 10) || 6, 20)}`,
+       LIMIT ${limitNum}`,
     );
+    cache.set(cacheKey, rows, 300_000); // 5 minutes
     res.json(rows);
   } catch (err) {
     console.error('[eventController.getFeaturedOrganizers]', err);
