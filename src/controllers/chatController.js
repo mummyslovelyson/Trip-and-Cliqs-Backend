@@ -1,4 +1,3 @@
-import axios from 'axios';
 import pool from '../config/db.js';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
@@ -167,36 +166,43 @@ ${eventsSummary || 'No published events right now.'}
           parts: [{ text: rawMessage }],
         });
 
-        const geminiRes = await axios.post(
+        const geminiRes = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
           {
-            contents,
-            systemInstruction: {
-              parts: [{ text: systemInstruction }],
-            },
-            generationConfig: {
-              temperature: aiContext.temperature || 0.7,
-              maxOutputTokens: 250,
-            },
-          },
-          { timeout: 8000 }
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents,
+              systemInstruction: {
+                parts: [{ text: systemInstruction }],
+              },
+              generationConfig: {
+                temperature: Number(aiContext.temperature) || 0.7,
+                maxOutputTokens: 250,
+              },
+            }),
+            signal: AbortSignal.timeout(8000),
+          }
         );
 
-        const reply = geminiRes.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (reply) {
-          return res.json({
-            reply: reply.trim(),
-            events: mappedCards.length > 0 ? mappedCards : undefined,
-            suggestions: [
-              'What’s happening this weekend?',
-              'Concerts and live shows',
-              'How do I transfer a ticket?',
-              'How does resale work?',
-            ],
-          });
+        if (geminiRes.ok) {
+          const geminiData = await geminiRes.json();
+          const reply = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (reply) {
+            return res.json({
+              reply: reply.trim(),
+              events: mappedCards.length > 0 ? mappedCards : undefined,
+              suggestions: [
+                'What’s happening this weekend?',
+                'Concerts and live shows',
+                'How do I transfer a ticket?',
+                'How does resale work?',
+              ],
+            });
+          }
         }
       } catch (geminiError) {
-        console.error('[Gemini API Error, using local trained engine]:', geminiError.response?.data || geminiError.message);
+        console.error('[Gemini API Error, using local trained engine]:', geminiError.message);
       }
     }
 

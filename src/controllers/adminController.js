@@ -2052,26 +2052,32 @@ ${eventsSummary}
     const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
     if (GEMINI_API_KEY) {
       try {
-        const axios = (await import('axios')).default;
-        const geminiRes = await axios.post(
+        const geminiRes = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
           {
-            contents: [{ role: 'user', parts: [{ text: testQuery }] }],
-            systemInstruction: { parts: [{ text: prompt }] },
-            generationConfig: { temperature: Number(temperature), maxOutputTokens: 250 },
-          },
-          { timeout: 8000 }
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ role: 'user', parts: [{ text: testQuery }] }],
+              systemInstruction: { parts: [{ text: prompt }] },
+              generationConfig: { temperature: Number(temperature), maxOutputTokens: 250 },
+            }),
+            signal: AbortSignal.timeout(8000),
+          }
         );
 
-        const reply = geminiRes.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (reply) {
-          return res.json({
-            reply: reply.trim(),
-            contextUsed: { knowledgeCount: items?.length || 0, eventsCount: events?.length || 0 },
-          });
+        if (geminiRes.ok) {
+          const geminiData = await geminiRes.json();
+          const reply = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (reply) {
+            return res.json({
+              reply: reply.trim(),
+              contextUsed: { knowledgeCount: items?.length || 0, eventsCount: events?.length || 0 },
+            });
+          }
         }
       } catch (geminiError) {
-        console.warn('[testAIPrompt] Gemini API returned error, falling back to trained knowledge base:', geminiError.response?.data?.error?.message || geminiError.message);
+        console.warn('[testAIPrompt] Gemini API returned error, falling back to trained knowledge base:', geminiError.message);
       }
     }
 
