@@ -296,7 +296,7 @@ export const transferTicket = async (req, res) => {
 
       sendNotification({
         userId: recipient.id,
-        title: '🎟️ Ticket Received!',
+        title: 'Ticket Received!',
         message: `${senderName} just transferred a ticket for "${eventTitle}" to you. Access it now under My Tickets!`,
         type: 'ticket',
       }).catch(() => {});
@@ -309,7 +309,7 @@ export const transferTicket = async (req, res) => {
       }).catch(() => {});
 
       notifyAdmins({
-        title: '🤝 Ticket Transferred',
+        title: 'Ticket Transferred',
         message: `${senderName} transferred ticket #${ticket.id} (${eventTitle}) to ${recipient.email}.`,
         type: 'ticket',
         link: '/admin/events',

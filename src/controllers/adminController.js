@@ -478,7 +478,7 @@ export const approveOrganizer = async (req, res) => {
 
     await sendNotification({
       userId: Number(id),
-      title: 'Organizer Account Approved! 🎉',
+      title: 'Organizer Account Approved!',
       message: 'Congratulations! Your organizer account has been approved by the Admin. You now have full access to create events, sell tickets, and manage your dashboard.',
       type: 'account',
     });

@@ -25,7 +25,7 @@ export const createTicket = async (req, res) => {
     );
 
     notifyAdmins({
-      title: '🆘 New Support Request',
+      title: 'New Support Request',
       message: `Ticket from ${req.user.name || 'User'}: "${subject.slice(0, 80)}" (Priority: ${pri}).`,
       type: 'support',
       link: '/admin/support',

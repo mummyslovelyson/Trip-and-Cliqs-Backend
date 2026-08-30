@@ -42,7 +42,7 @@ async function initDb() {
         });
       }
       await connection.connect();
-      console.log('✅ Connected to PostgreSQL database.');
+      console.log('Connected to PostgreSQL database.');
       break;
     } catch (err) {
       console.error(`[initDb] connection attempt ${attempt}/${MAX_RETRIES} failed: ${err.code || err.message}`);
@@ -62,7 +62,7 @@ async function initDb() {
       console.log('Executing schema.sql...');
       const schemaSql = fs.readFileSync(schemaPath, 'utf8');
       await connection.query(schemaSql);
-      console.log('✅ Database schema created/updated successfully!');
+      console.log('Database schema created/updated successfully!');
 
       // Safe column widening migrations for existing tables
       const safeMigrations = [
@@ -159,10 +159,10 @@ async function initDb() {
             [title, category, keywords, instruction_or_answer],
           );
         }
-        console.log('✅ Default AI training knowledge items seeded.');
+        console.log('Default AI training knowledge items seeded.');
       }
     } else {
-      console.warn('⚠️ schema.sql not found at', schemaPath);
+      console.warn('schema.sql not found at', schemaPath);
     }
 
     const bcrypt = (await import('bcryptjs')).default;
@@ -175,7 +175,7 @@ async function initDb() {
     if (adminRows.length === 0) {
       const adminPass = process.env.ADMIN_PASSWORD || 'tribesandcliqs';
       if (!process.env.ADMIN_PASSWORD && process.env.NODE_ENV === 'production') {
-        console.warn('⚠️ ADMIN_PASSWORD is not set — the seed admin account uses the default password. Set ADMIN_PASSWORD before deploying.');
+        console.warn('ADMIN_PASSWORD is not set — the seed admin account uses the default password. Set ADMIN_PASSWORD before deploying.');
       }
       const adminHash = await bcrypt.hash(adminPass, 12);
       await connection.query(
@@ -184,9 +184,9 @@ async function initDb() {
          ON CONFLICT (email) DO UPDATE SET role = 'system_admin', status = 'active', email_verified = TRUE`,
         [adminEmail, adminHash],
       );
-      console.log('✅ Seed system admin account created.');
+      console.log('Seed system admin account created.');
     } else {
-      console.log('✅ System Admin account already exists — skipping seed (password untouched).');
+      console.log('System Admin account already exists — skipping seed (password untouched).');
     }
 
     // Seed default categories if none exist
@@ -213,16 +213,16 @@ async function initDb() {
           [name, slug, icon, description, i + 1],
         );
       }
-      console.log('✅ Default categories seeded.');
+      console.log('Default categories seeded.');
     }
   } catch (err) {
-    console.error('❌ Database initialization error:', err.message);
+    console.error('Database initialization error:', err.message);
   } finally {
     if (connection) await connection.end();
   }
 }
 
 initDb().catch((err) => {
-  console.error('⚠️ Database initialization failed — server will start but DB-dependent routes may error until the database is reachable.');
+  console.error('Database initialization failed — server will start but DB-dependent routes may error until the database is reachable.');
   console.error('   Error:', err.message);
 });

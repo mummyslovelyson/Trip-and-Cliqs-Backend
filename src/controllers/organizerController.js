@@ -676,7 +676,7 @@ export const requestWithdrawal = async (req, res) => {
     await logAudit({ userId: req.user.id, action: 'request_withdrawal', entityType: 'withdrawal', entityId: result.insertId });
 
     notifyAdmins({
-      title: '💰 New Withdrawal Request',
+      title: 'New Withdrawal Request',
       message: `Organizer "${req.user.name || 'Organizer'}" requested a payout of GHS ${Number(amount).toFixed(2)} (${bank_name || 'Mobile Money'}).`,
       type: 'withdrawal',
       link: '/admin/payments',

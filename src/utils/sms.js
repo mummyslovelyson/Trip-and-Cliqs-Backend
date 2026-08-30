@@ -41,14 +41,14 @@ export const sendSMS = async (recipients, message) => {
   const senderId = await getSmsSenderId();
 
   if (!apiKey) {
-    console.warn('⚠️ [sms] SMSOnlineGH API key is not configured (SMS_API_KEY in .env or system_settings). SMS not sent.');
+    console.warn('[sms] SMSOnlineGH API key is not configured (SMS_API_KEY in .env or system_settings). SMS not sent.');
     return { success: false, error: 'SMS provider not configured' };
   }
 
   const to = Array.isArray(recipients) ? recipients : [recipients];
   const numbers = to.map(normalisePhone).filter(Boolean);
   if (numbers.length === 0) {
-    console.warn('⚠️ [sms] No valid phone numbers found in recipient list:', recipients);
+    console.warn('[sms] No valid phone numbers found in recipient list:', recipients);
     return { success: false, error: 'No valid recipient numbers' };
   }
 
@@ -58,7 +58,7 @@ export const sendSMS = async (recipients, message) => {
   const destination = numbers.join(',');
 
   try {
-    console.log(`📡 [sms] Sending SMS via SMSOnlineGH to ${destination} (Sender: ${cleanSender})...`);
+    console.log(`[sms] Sending SMS via SMSOnlineGH to ${destination} (Sender: ${cleanSender})...`);
 
     const queryUrl = new URL(API_URL);
     queryUrl.searchParams.set('key', apiKey);
@@ -75,7 +75,7 @@ export const sendSMS = async (recipients, message) => {
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok || (data.handshake && data.handshake.id !== 0 && data.handshake.label !== 'HSHK_OK')) {
-      console.error(`❌ [sms] SMSOnlineGH error (${response.status}):`, JSON.stringify(data));
+      console.error(`[sms] SMSOnlineGH error (${response.status}):`, JSON.stringify(data));
       return { success: false, error: data?.message || data?.handshake?.label || `HTTP ${response.status}` };
     }
 
@@ -83,13 +83,13 @@ export const sendSMS = async (recipients, message) => {
     const destinations = data?.data?.destinations || [];
     const rejectedDest = destinations.find((d) => d.status?.label === 'DS_REJECTED_SENDER_UNREGISTERED' || d.status?.id === 2128);
     if (rejectedDest) {
-      console.warn(`⚠️ [sms] SMSOnlineGH: Sender ID "${cleanSender}" is not registered/approved on your SMSOnlineGH account. (Ghana telcos require approved Sender IDs).`);
+      console.warn(`[sms] SMSOnlineGH: Sender ID "${cleanSender}" is not registered/approved on your SMSOnlineGH account. (Ghana telcos require approved Sender IDs).`);
     }
 
-    console.log(`✅ [sms] SMS request accepted by SMSOnlineGH for ${destination}! (Batch: ${data?.data?.batch || 'OK'})`);
+    console.log(`[sms] SMS request accepted by SMSOnlineGH for ${destination}! (Batch: ${data?.data?.batch || 'OK'})`);
     return { success: true, data };
   } catch (err) {
-    console.error('❌ [sms] sendSMS failed:', err.message);
+    console.error('[sms] sendSMS failed:', err.message);
     return { success: false, error: err.message };
   }
 };

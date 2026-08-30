@@ -128,7 +128,7 @@ export const createResaleListing = async (req, res) => {
     });
 
     notifyAdmins({
-      title: '🏷️ New Ticket Resale Listed',
+      title: 'New Ticket Resale Listed',
       message: `User "${req.user.name || 'User'}" listed a ticket for "${ticket.event_title || 'Event'}" at GHS ${listPrice}.`,
       type: 'ticket',
       link: '/admin/events',
@@ -337,7 +337,7 @@ export const completeResaleOrder = async (orderId, reference) => {
     });
 
     notifyAdmins({
-      title: '💰 Resale Ticket Sold',
+      title: 'Resale Ticket Sold',
       message: `Resale ticket for "${listing.event_title || 'Event'}" was purchased for GHS ${Number(listing.price || 0).toFixed(2)}.`,
       type: 'ticket',
       link: '/admin/events',

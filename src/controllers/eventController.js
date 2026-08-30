@@ -340,7 +340,7 @@ export const createEvent = async (req, res) => {
     await logAudit({ userId: organizerId, action: 'create_event', entityType: 'event', entityId: Number(eventId) });
 
     notifyAdmins({
-      title: '🎉 New Event Created',
+      title: 'New Event Created',
       message: `Organizer "${req.user.name || 'Organizer'}" created "${title}" (${category || 'General'}) in ${city || 'Accra'}.`,
       type: 'system',
       link: '/admin/events',
@@ -710,7 +710,7 @@ export const toggleEventReminder = async (req, res) => {
 
     sendNotification({
       userId,
-      title: 'Event Reminder Set 🔔',
+      title: 'Event Reminder Set',
       message: `You'll be notified before ${event.title} begins!`,
       type: 'event',
     }).catch(() => {});

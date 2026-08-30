@@ -297,7 +297,7 @@ export const login = async (req, res) => {
     await pool.execute('UPDATE users SET last_login_at = NOW() WHERE id = ?', [user.id]);
     await sendNotification({
       userId: user.id,
-      title: 'Account Login 🔐',
+      title: 'Account Login',
       message: `Signed in successfully on ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}.`,
       type: 'account',
     });
@@ -369,7 +369,7 @@ export const adminLogin = async (req, res) => {
     await pool.execute('UPDATE users SET last_login_at = NOW() WHERE id = ?', [user.id]);
     await sendNotification({
       userId: user.id,
-      title: 'Admin Portal Login 🛡️',
+      title: 'Admin Portal Login',
       message: `Admin portal signed in on ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}.`,
       type: 'account',
     });
@@ -547,7 +547,7 @@ export const resetPassword = async (req, res) => {
 
     sendNotification({
       userId: resetRow.user_id,
-      title: 'Password Reset Successful 🔐',
+      title: 'Password Reset Successful',
       message: 'Your account password has been updated. Other active sessions have been signed out for security.',
       type: 'account',
     }).catch(() => {});
@@ -713,13 +713,13 @@ export const verifyEmail = async (req, res) => {
 
           sendNotification({
             userId,
-            title: 'Account Created & Verified 🎉',
+            title: 'Account Created & Verified',
             message: 'Your account has been successfully verified and activated. Welcome to Tribes & Cliqs!',
             type: 'account',
           }).catch(() => {});
 
           notifyAdmins({
-            title: pending.role === 'organizer' ? '🏢 New Organizer Application' : '👤 New Attendee Registered',
+            title: pending.role === 'organizer' ? 'New Organizer Application' : 'New Attendee Registered',
             message: `${pending.name} (${pending.email}) just verified their ${pending.role} account.${pending.role === 'organizer' ? ' Profile is awaiting approval.' : ''}`,
             type: 'account',
             link: pending.role === 'organizer' ? '/admin/organizers' : '/admin/users',
@@ -733,7 +733,7 @@ export const verifyEmail = async (req, res) => {
           const { rawToken: refreshToken } = await generateRefreshToken(payload, buildMeta(req, family));
 
           return res.json({
-            message: 'Account verified and created successfully! 🎉',
+            message: 'Account verified and created successfully!',
             user: sanitize({
               id: userId,
               name: pending.name,
@@ -795,7 +795,7 @@ export const verifyEmail = async (req, res) => {
 
     await sendNotification({
       userId: verification.user_id,
-      title: 'Account Verified ✅',
+      title: 'Account Verified',
       message: 'Your account has been successfully verified.',
       type: 'account',
     });

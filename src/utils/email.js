@@ -53,7 +53,7 @@ export const sendEmail = async ({ to, subject, html, text }) => {
           text,
         });
         if (error) throw error;
-        console.log(`✅ [email] Email sent via Resend to ${to} (${subject})`);
+        console.log(`[email] Email sent via Resend to ${to} (${subject})`);
         return true;
       }
     }
@@ -61,7 +61,7 @@ export const sendEmail = async ({ to, subject, html, text }) => {
     const transport = getSmtpTransport(cfg);
     if (transport) {
       await transport.sendMail({ from, to, subject, html, text });
-      console.log(`✅ [email] Email sent via SMTP to ${to} (${subject})`);
+      console.log(`[email] Email sent via SMTP to ${to} (${subject})`);
       return true;
     }
 
@@ -141,7 +141,7 @@ export const sendTicketConfirmationEmail = async (to, order) => {
     subject: `Your tickets for ${order.eventTitle || 'your event'} — Tribes & Cliqs`,
     html: `
       <div style="font-family:Arial,sans-serif;max-width:560px;margin:auto">
-        <h2>Order Confirmed 🎉</h2>
+        <h2>Order Confirmed</h2>
         <p>Thank you for your purchase. Your order reference is <strong>${order.reference}</strong>.</p>
         <h3>Items</h3>
         <ul>${lines}</ul>
@@ -178,7 +178,7 @@ export const sendEventApprovalEmail = async (to, event) => {
     subject: `Your event "${event.title}" is live — Tribes & Cliqs`,
     html: `
       <div style="font-family:Arial,sans-serif;max-width:560px;margin:auto">
-        <h2>Your event is live! 🎉</h2>
+        <h2>Your event is live!</h2>
         <p><strong>${title}</strong> has been approved and is now visible to everyone on Tribes & Cliqs.</p>
         <p><a href="${link}" style="display:inline-block;padding:10px 20px;background:#6d28d9;color:#fff;border-radius:6px;text-decoration:none">View Event</a></p>
         <p style="color:#666;font-size:13px">You can manage tickets and attendees from your organizer dashboard.</p>
