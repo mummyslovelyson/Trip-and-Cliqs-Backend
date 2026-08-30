@@ -29,22 +29,27 @@ export const initializeTransaction = async ({
   amount,
   reference,
   callback_url,
+  currency,
+  channels,
   metadata,
 }) => {
   const secretKey = await getPaystackSecretKey();
   if (!secretKey) {
-    return { status: false, error: 'Paystack secret key not configured' };
+    return { status: false, error: 'Paystack secret key not configured. Please set PAYSTACK_SECRET_KEY in system settings or .env' };
   }
 
   try {
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
     const response = await fetch(`${BASE_URL}/transaction/initialize`, {
       method: 'POST',
       headers: headers(secretKey),
       body: JSON.stringify({
         email,
-        amount: Math.round(amount * 100), // Paystack expects kobo
+        amount: Math.round(amount * 100), // Paystack expects minor units (pesewas/kobo)
         reference,
-        callback_url: callback_url || `${process.env.FRONTEND_URL}/payment/callback`,
+        currency: currency || process.env.PAYSTACK_CURRENCY || 'GHS',
+        channels: channels || ['card', 'mobile_money', 'bank', 'ussd', 'qr', 'eft'],
+        callback_url: callback_url || `${frontendUrl}/payment/callback`,
         metadata: metadata || {},
       }),
     });
