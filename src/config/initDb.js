@@ -76,6 +76,7 @@ async function initDb() {
         `ALTER TABLE organizer_profiles ADD COLUMN IF NOT EXISTS category VARCHAR(120)`,
         `ALTER TABLE organizer_profiles ADD COLUMN IF NOT EXISTS city VARCHAR(120)`,
         `ALTER TABLE organizer_profiles ADD COLUMN IF NOT EXISTS country VARCHAR(120)`,
+        `ALTER TABLE events ADD COLUMN IF NOT EXISTS ticket_template VARCHAR(500)`,
         `ALTER TABLE pending_registrations ADD COLUMN IF NOT EXISTS metadata JSONB`,
         `CREATE TABLE IF NOT EXISTS pending_registrations (
           id                BIGSERIAL PRIMARY KEY,

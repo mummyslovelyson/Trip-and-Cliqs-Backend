@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS events (
   contact_email  VARCHAR(190),
   contact_phone  VARCHAR(30),
   banner_image   VARCHAR(500),
+  ticket_template VARCHAR(500),
   images         jsonb,
   tags           jsonb,
   status         TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','pending','published','cancelled','completed','rejected','suspended')),

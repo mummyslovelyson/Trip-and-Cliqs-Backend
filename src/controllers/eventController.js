@@ -266,7 +266,7 @@ export const createEvent = async (req, res) => {
       title, description, category, venue, address, city, country,
       latitude, longitude, start_date, end_date, start_time, end_time,
       capacity, dress_code, contact_email, contact_phone,
-      banner_image, images, tags, visibility,
+      banner_image, ticket_template, ticketTemplate, images, tags, visibility,
     } = req.body;
 
     if (!title || !venue || !start_date || !end_date || !start_time || !end_time) {
@@ -294,19 +294,21 @@ export const createEvent = async (req, res) => {
       }
     }
 
+    const templateImg = ticket_template || ticketTemplate || null;
+
     const [result] = await conn.execute(
       `INSERT INTO events
         (organizer_id, title, description, category_id, category, venue, address,
          city, country, latitude, longitude, start_date, end_date, start_time,
          end_time, capacity, dress_code, contact_email, contact_phone,
-         banner_image, images, tags, visibility, status)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         banner_image, ticket_template, images, tags, visibility, status)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         organizerId, title, description || null, categoryId, category || null, venue, address || null,
         city || null, country || null, latitude || null, longitude || null,
         start_date, end_date, start_time, end_time, capacity || 0,
         dress_code || null, contact_email || null, contact_phone || null,
-        banner_image || null, images && Array.isArray(images) ? JSON.stringify(images) : null,
+        banner_image || null, templateImg, images && Array.isArray(images) ? JSON.stringify(images) : null,
         tags ? JSON.stringify(Array.isArray(tags) ? tags : []) : null,
         visibility === 'private' ? 'private' : 'public',
         status,
@@ -380,10 +382,14 @@ export const updateEvent = async (req, res) => {
       'title','description','category','venue','address','city','country',
       'latitude','longitude','start_date','end_date','start_time','end_time',
       'capacity','dress_code','contact_email','contact_phone','banner_image',
-      'images','tags','visibility',
+      'ticket_template','images','tags','visibility',
     ];
     if (req.user.role === 'admin') {
       allowed.push('status', 'is_featured');
+    }
+
+    if (req.body.ticketTemplate !== undefined && req.body.ticket_template === undefined) {
+      req.body.ticket_template = req.body.ticketTemplate;
     }
 
     const fields = [];

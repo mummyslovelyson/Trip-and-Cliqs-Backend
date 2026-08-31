@@ -141,11 +141,13 @@ export const deleteTicketType = async (req, res) => {
 export const getUserTickets = async (req, res) => {
   try {
     const [rows] = await pool.execute(
-      `SELECT t.*, tt.name AS ticket_type_name, e.title AS event_title,
-              e.venue AS event_venue, e.start_date, e.start_time, e.banner_image
+      `SELECT t.*, tt.name AS ticket_type_name, tt.price AS ticket_price, e.title AS event_title,
+              e.venue AS event_venue, e.city AS event_city, e.start_date, e.start_time,
+              e.banner_image, e.ticket_template, u.name AS attendee_name
        FROM tickets t
        JOIN ticket_types tt ON tt.id = t.ticket_type_id
        JOIN events e ON e.id = t.event_id
+       LEFT JOIN users u ON u.id = t.user_id
        WHERE t.user_id = ?
        ORDER BY t.created_at DESC`,
       [req.user.id],
@@ -164,12 +166,13 @@ export const getTicketById = async (req, res) => {
   try {
     const { id } = req.params;
     const [rows] = await pool.execute(
-      `SELECT t.*, tt.name AS ticket_type_name, e.title AS event_title,
+      `SELECT t.*, tt.name AS ticket_type_name, tt.price AS ticket_price, e.title AS event_title,
               e.venue, e.address, e.city, e.start_date, e.end_date, e.start_time, e.end_time,
-              e.banner_image, e.organizer_id
+              e.banner_image, e.ticket_template, e.organizer_id, u.name AS attendee_name
        FROM tickets t
        JOIN ticket_types tt ON tt.id = t.ticket_type_id
        JOIN events e ON e.id = t.event_id
+       LEFT JOIN users u ON u.id = t.user_id
        WHERE t.id = ?`,
       [id],
     );
