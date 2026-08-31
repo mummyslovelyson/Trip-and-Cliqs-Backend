@@ -198,41 +198,86 @@ export const getTicketById = async (req, res) => {
 /* ------------------------------------------------------------------ */
 export const checkInTicket = async (req, res) => {
   try {
-    const { id } = req.params;
+    let { id } = req.params;
+    if (!id) return res.status(400).json({ message: 'Ticket identifier is required' });
+
+    try {
+      id = decodeURIComponent(id).trim();
+    } catch {
+      id = String(id).trim();
+    }
+
+    // Extract ticket number or ID if JSON string was provided
+    if (id.startsWith('{') && id.endsWith('}')) {
+      try {
+        const parsed = JSON.parse(id);
+        id = parsed.ticketNumber || parsed.ticketId || parsed.id || id;
+      } catch {}
+    }
+
+    const isNumeric = /^\d+$/.test(String(id));
     const [rows] = await pool.execute(
-      `SELECT t.*, e.organizer_id
-       FROM tickets t
-       JOIN events e ON e.id = t.event_id
-       WHERE t.id = ?`,
-      [id],
+      isNumeric
+        ? `SELECT t.*, e.organizer_id, e.title AS event_title, u.name AS attendee_name, tt.name AS ticket_type
+           FROM tickets t
+           JOIN events e ON e.id = t.event_id
+           LEFT JOIN users u ON u.id = t.user_id
+           LEFT JOIN ticket_types tt ON tt.id = t.ticket_type_id
+           WHERE t.id = ? OR t.ticket_number = ? OR t.qr_code = ?`
+        : `SELECT t.*, e.organizer_id, e.title AS event_title, u.name AS attendee_name, tt.name AS ticket_type
+           FROM tickets t
+           JOIN events e ON e.id = t.event_id
+           LEFT JOIN users u ON u.id = t.user_id
+           LEFT JOIN ticket_types tt ON tt.id = t.ticket_type_id
+           WHERE t.ticket_number = ? OR t.qr_code = ?`,
+      isNumeric ? [Number(id), id, id] : [id, id],
     );
+
     const ticket = rows[0];
     if (!ticket) return res.status(404).json({ message: 'Ticket not found' });
 
-    const isOrganizer = ticket.organizer_id === req.user.id;
-    const isStaff = req.user.role === 'admin';
+    const isOrganizer = Number(ticket.organizer_id) === Number(req.user.id);
+    const isStaff = req.user.role === 'admin' || req.user.role === 'staff';
     if (!isOrganizer && !isStaff) {
-      return res.status(403).json({ message: 'Only the organizer or staff can check in tickets' });
+      return res.status(403).json({ message: 'Only the event organizer or authorized staff can check in tickets' });
     }
 
     if (ticket.status === 'used') {
-      return res.status(400).json({ message: 'Ticket already checked in' });
+      return res.status(400).json({
+        message: 'Ticket already checked in',
+        ticketId: ticket.id,
+        ticketNumber: ticket.ticket_number,
+        checkedInAt: ticket.checked_in_at,
+        attendeeName: ticket.attendee_name,
+      });
     }
+
     if (ticket.status !== 'active') {
       return res.status(400).json({ message: `Ticket is ${ticket.status} and cannot be checked in` });
     }
 
     await pool.execute(
       `UPDATE tickets SET status = 'used', checked_in_at = NOW() WHERE id = ?`,
-      [id],
+      [ticket.id],
     );
 
-    await logAudit({ userId: req.user.id, action: 'check_in_ticket', entityType: 'ticket', entityId: id });
+    await logAudit({ userId: req.user.id, action: 'check_in_ticket', entityType: 'ticket', entityId: ticket.id });
 
-    res.json({ message: 'Ticket checked in successfully' });
+    res.json({
+      message: 'Ticket checked in successfully',
+      ticket: {
+        id: ticket.id,
+        ticketNumber: ticket.ticket_number,
+        attendeeName: ticket.attendee_name,
+        ticketType: ticket.ticket_type,
+        eventTitle: ticket.event_title,
+        status: 'used',
+        checkedInAt: new Date().toISOString(),
+      },
+    });
   } catch (err) {
     console.error('[ticketController.checkInTicket]', err);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error during check-in' });
   }
 };
 
@@ -341,38 +386,85 @@ export const transferTicket = async (req, res) => {
 /* ------------------------------------------------------------------ */
 export const verifyTicketByCode = async (req, res) => {
   try {
-    const { code } = req.params;
+    let { code } = req.params;
     if (!code) return res.status(400).json({ message: 'Ticket code is required' });
+
+    try {
+      code = decodeURIComponent(code).trim();
+    } catch {
+      code = String(code).trim();
+    }
+
+    let parsedTicketNumber = code;
+    let parsedTicketId = null;
+    let parsedQrCode = code;
+
+    // 1. If QR data is a JSON string
+    if (code.startsWith('{') && code.endsWith('}')) {
+      try {
+        const obj = JSON.parse(code);
+        parsedTicketNumber = obj.ticketNumber || parsedTicketNumber;
+        parsedTicketId = obj.ticketId || obj.id || null;
+        parsedQrCode = obj.qrCode || obj.code || parsedQrCode;
+      } catch {}
+    }
+
+    // 2. If QR data is a URL
+    if (code.includes('/')) {
+      const parts = code.split('/');
+      parsedTicketNumber = parts[parts.length - 1] || parsedTicketNumber;
+    }
+
+    const isNumeric = /^\d+$/.test(parsedTicketNumber) || (parsedTicketId && /^\d+$/.test(String(parsedTicketId)));
+    const searchId = parsedTicketId ? Number(parsedTicketId) : (isNumeric ? Number(parsedTicketNumber) : null);
 
     const [rows] = await pool.execute(
       `SELECT t.id, t.user_id, t.ticket_number, t.qr_code, t.seat_number, t.status, t.checked_in_at,
-              tt.name AS ticket_type, u.name AS attendee_name, e.organizer_id, e.id AS event_id
+              t.created_at, tt.name AS ticket_type, tt.price AS ticket_price,
+              u.name AS attendee_name, u.email AS attendee_email,
+              e.id AS event_id, e.title AS event_title, e.venue AS event_venue, e.city AS event_city,
+              e.start_date, e.start_time, e.organizer_id, e.banner_image, e.ticket_template
        FROM tickets t
        JOIN ticket_types tt ON tt.id = t.ticket_type_id
        JOIN events e ON e.id = t.event_id
-       JOIN users u ON u.id = t.user_id
-       WHERE t.ticket_number = ? OR t.qr_code = ?`,
-      [code, code],
+       LEFT JOIN users u ON u.id = t.user_id
+       WHERE t.ticket_number = ? OR t.qr_code = ? OR t.ticket_number = ? OR (?::bigint IS NOT NULL AND t.id = ?)`,
+      [code, parsedQrCode, parsedTicketNumber, searchId, searchId || 0],
     );
     const ticket = rows[0];
-    if (!ticket) return res.status(404).json({ message: 'Ticket not found' });
+    if (!ticket) return res.status(404).json({ message: 'Ticket not found or invalid QR code' });
 
-    if (ticket.organizer_id !== req.user.id && req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Only the event organizer can verify tickets' });
-    }
+    const currentUserId = req.user?.id ? Number(req.user.id) : null;
+    const isOrganizer = currentUserId && (Number(ticket.organizer_id) === currentUserId);
+    const isStaff = req.user?.role === 'admin' || req.user?.role === 'staff';
 
     res.json({
+      valid: ticket.status === 'active' || ticket.status === 'used',
+      canCheckIn: (isOrganizer || isStaff) && ticket.status === 'active',
+      isOrganizerOrStaff: !!(isOrganizer || isStaff),
       ticket: {
         id: ticket.id,
         ticketId: ticket.id,
         ticketNumber: ticket.ticket_number,
-        eventId: ticket.event_id,
-        attendeeName: ticket.attendee_name,
-        ticketType: ticket.ticket_type,
-        seatNumber: ticket.seat_number,
+        qrCode: ticket.qr_code,
         status: ticket.status,
         checkedIn: ticket.status === 'used',
-        checkInStatus: ticket.status,
+        checkedInAt: ticket.checked_in_at,
+        attendeeName: ticket.attendee_name || 'Attendee',
+        ticketType: ticket.ticket_type,
+        price: ticket.ticket_price,
+        seatNumber: ticket.seat_number || 'General Admission',
+        createdAt: ticket.created_at,
+        event: {
+          id: ticket.event_id,
+          title: ticket.event_title,
+          venue: ticket.event_venue,
+          city: ticket.event_city,
+          startDate: ticket.start_date,
+          startTime: ticket.start_time,
+          bannerImage: ticket.banner_image,
+          ticketTemplate: ticket.ticket_template,
+        },
       },
     });
   } catch (err) {

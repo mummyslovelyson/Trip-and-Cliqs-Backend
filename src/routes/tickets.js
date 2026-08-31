@@ -4,7 +4,7 @@ import {
   getUserTickets, getTicketById, checkInTicket, transferTicket, getTickets,
   verifyTicketByCode, bulkCheckIn, downloadTicket,
 } from '../controllers/ticketController.js';
-import { authenticate, authorize } from '../middleware/auth.js';
+import { authenticate, authorize, optionalAuth } from '../middleware/auth.js';
 import { rateLimit } from '../middleware/rateLimit.js';
 
 const router = Router();
@@ -27,9 +27,10 @@ router.get('/:id', authenticate, getTicketById);
 router.get('/:id/download', authenticate, downloadTicket);
 router.post('/:id/transfer', authenticate, transferLimiter, transferTicket);
 
-// Organizer / staff — check-in
+// Verification & Check-in
+router.get('/verify/:code', optionalAuth, verifyTicketByCode);
+router.post('/verify/:code/check-in', authenticate, authorize('organizer', 'admin', 'staff'), writeLimiter, checkInTicket);
 router.post('/check-in/bulk', authenticate, authorize('organizer', 'admin'), writeLimiter, bulkCheckIn);
-router.get('/verify/:code', authenticate, authorize('organizer', 'admin'), verifyTicketByCode);
 router.post('/:id/check-in', authenticate, authorize('organizer', 'admin', 'staff'), writeLimiter, checkInTicket);
 
 export default router;
