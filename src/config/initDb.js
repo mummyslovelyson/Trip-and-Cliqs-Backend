@@ -111,6 +111,8 @@ async function initDb() {
         `ALTER TABLE ticket_types ADD COLUMN IF NOT EXISTS section_type VARCHAR(50) DEFAULT 'general'`,
         `ALTER TABLE ticket_types ADD COLUMN IF NOT EXISTS perks JSONB`,
         `ALTER TABLE orders ADD COLUMN IF NOT EXISTS invoice_number VARCHAR(64)`,
+        `ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS rejection_reason VARCHAR(255)`,
+        `ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS notes TEXT`,
         `CREATE TABLE IF NOT EXISTS event_discussions (
           id                BIGSERIAL PRIMARY KEY,
           event_id          BIGINT NOT NULL,

@@ -240,7 +240,7 @@ export const purchaseResaleListing = async (req, res) => {
       metadata: { orderId, eventId: listing.event_id, userId: req.user.id, resaleListingId: id },
     });
 
-    if (!payResult.status && payResult.error === 'Paystack secret key not configured') {
+    if (!payResult.status && payResult.error.includes('Paystack secret key not configured')) {
       await completeResaleOrder(orderId, reference);
       return res.status(201).json({
         message: 'Resale ticket purchased',

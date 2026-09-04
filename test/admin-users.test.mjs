@@ -57,7 +57,7 @@ before(async () => {
     },
     {
       id: 3, name: 'Bob Pending Org', email: 'bob@test.com', password: 'x',
-      role: 'organizer', status: 'active', is_approved: 0, email_verified: 1,
+      role: 'organizer', status: 'pending', is_approved: 0, email_verified: 1,
       phone: null, created_at: at(2),
     },
     {
@@ -140,7 +140,7 @@ test('"active" status includes attendees, approved organizers, and admins', asyn
   const r = await api('GET', '/api/admin/users?status=active&limit=100', { token: adminToken });
   assert.equal(r.status, 200);
   const emails = r.json.users.map((u) => u.email).sort();
-  assert.deepEqual(emails, ['admin2@test.com', 'admin@tribesandcliqs.com', 'alice@test.com', 'bob@test.com', 'carol@test.com']);
+  assert.deepEqual(emails, ['admin2@test.com', 'admin@tribesandcliqs.com', 'alice@test.com', 'carol@test.com']);
 });
 
 test('"approved" status only lists approved organizers', async () => {

@@ -25,6 +25,8 @@ process.env.PORT = '0'; // random port
 process.env.RESEND_API_KEY = '';
 delete process.env.SMTP_HOST;
 delete process.env.SMTP_USER;
+delete process.env.PAYSTACK_SECRET_KEY;
+delete process.env.PAYSTACK_PUBLIC_KEY;
 
 let base;
 let server;
@@ -86,6 +88,8 @@ before(async () => {
   ({ server } = await import('../src/server.js'));
   await new Promise((resolve) => server.once('listening', resolve));
   base = `http://127.0.0.1:${server.address().port}`;
+  process.env.PAYSTACK_SECRET_KEY = '';
+  process.env.PAYSTACK_PUBLIC_KEY = '';
 });
 
 after(() => {

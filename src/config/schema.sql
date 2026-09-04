@@ -354,6 +354,8 @@ CREATE TABLE IF NOT EXISTS withdrawals (
   account_number VARCHAR(40),
   account_name   VARCHAR(150),
   reference      VARCHAR(80),
+  rejection_reason VARCHAR(255),
+  notes          TEXT,
   processed_at   TIMESTAMPTZ,
   created_at     TIMESTAMPTZ DEFAULT NOW(),
   CONSTRAINT fk_wd_org FOREIGN KEY (organizer_id) REFERENCES users(id) ON DELETE CASCADE

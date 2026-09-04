@@ -113,16 +113,13 @@ let rejectedEventId;
  * Tests
  * ------------------------------------------------------------------ */
 
-test('public registration rejects admin/staff roles', async () => {
-  const r = await api('POST', '/api/auth/register', {
-    body: { name: 'Hacker', email: 'hacker@test.com', password: 'Hacker@Pass123', role: 'admin' },
+test('admin can log in via the admin login endpoint', async () => {
+  const r = await api('POST', '/api/auth/admin/login', {
+    body: { email: 'admin@tribesandcliqs.com', password: 'AdminPass1!' },
   });
-  assert.equal(r.status, 400);
-  assert.equal(
-    db.tables.users.some((u) => u.role === 'admin' && u.email === 'hacker@test.com'),
-    false,
-    'no admin account should be created',
-  );
+  assert.equal(r.status, 200);
+  assert.equal(r.json.user.role, 'admin');
+  adminToken = r.json.accessToken;
 });
 
 test('organizer registration creates a pending-approval organizer account', async () => {
@@ -150,19 +147,36 @@ test('organizer registration creates a pending-approval organizer account', asyn
   assert.equal(r.status, 200);
   assert.equal(r.json.user.role, 'organizer');
   assert.equal(r.json.user.is_approved, 0, 'organizer accounts start unapproved');
-  organizerToken = r.json.accessToken;
+  assert.equal(r.json.user.status, 'pending', 'organizer status is pending after verification');
+  organizerId = db.tables.users.find((u) => u.email === 'org@test.com').id;
+
+  // Admin must approve the organizer before they can access protected routes
+  const approve = await api('POST', `/api/admin/organizers/${organizerId}/approve`, { token: adminToken });
+  assert.equal(approve.status, 200);
+
   const org = db.tables.users.find((u) => u.email === 'org@test.com');
   assert.ok(org, 'organizer row inserted');
-  organizerId = org.id;
+  assert.equal(org.status, 'active', 'organizer status is active after approval');
+  assert.equal(org.is_approved, 1, 'organizer is approved after admin approval');
+
+  // Get a fresh token after approval
+  const login = await api('POST', '/api/auth/login', {
+    body: { email: 'org@test.com', password: 'Org@Pass1234' },
+  });
+  assert.equal(login.status, 200);
+  organizerToken = login.json.accessToken;
 });
 
-test('admin can log in via the admin login endpoint', async () => {
-  const r = await api('POST', '/api/auth/admin/login', {
-    body: { email: 'admin@tribesandcliqs.com', password: 'AdminPass1!' },
+test('public registration rejects admin/staff roles', async () => {
+  const r = await api('POST', '/api/auth/register', {
+    body: { name: 'Hacker', email: 'hacker@test.com', password: 'Hacker@Pass123', role: 'admin' },
   });
-  assert.equal(r.status, 200);
-  assert.equal(r.json.user.role, 'admin');
-  adminToken = r.json.accessToken;
+  assert.equal(r.status, 400);
+  assert.equal(
+    db.tables.users.some((u) => u.role === 'admin' && u.email === 'hacker@test.com'),
+    false,
+    'no admin account should be created',
+  );
 });
 
 test('creating an event with status "published" is stored as pending', async () => {

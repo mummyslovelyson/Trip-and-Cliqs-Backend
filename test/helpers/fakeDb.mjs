@@ -19,7 +19,7 @@ export function createFakeDb() {
     resale_listings: 1, orders: 1, order_items: 1,
     refresh_tokens: 1, password_history: 1,
     admin_user_notes: 1, user_activity_log: 1,
-    pending_registrations: 1,
+    pending_registrations: 1, system_settings: 1,
   };
   const tables = {
     users: [], events: [], ticket_types: [], notifications: [],
@@ -30,7 +30,7 @@ export function createFakeDb() {
     resale_listings: [], orders: [], order_items: [],
     refresh_tokens: [], password_history: [],
     admin_user_notes: [], user_activity_log: [],
-    pending_registrations: [],
+    pending_registrations: [], system_settings: [],
   };
 
   const nowIso = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
@@ -234,14 +234,17 @@ export function createFakeDb() {
     const whereIdx = topLevelIndex(sql, 'WHERE');
     const orderIdx = topLevelIndex(sql, 'ORDER BY');
     const limitIdx = topLevelIndex(sql, 'LIMIT');
-    let whereClause = '';
-    if (whereIdx >= 0) {
-      const end = [orderIdx, limitIdx, sql.length].filter((x) => x > whereIdx).sort((a, b) => a - b)[0];
-      whereClause = sql.slice(whereIdx + 5, end);
-    }
-    const conditions = whereClause ? splitTop(whereClause, 'AND') : [];
-    const conds = conditions.map((c) => resolveCond(parseCond(c), params, cursor));
-    let rows = tables[table].filter((row) => conds.every((c) => matches(c, row)));
+    const end = [orderIdx, limitIdx, sql.length].filter((x) => x > whereIdx).sort((a, b) => a - b)[0];
+    const whereClause = whereIdx >= 0 ? sql.slice(whereIdx + 5, end) : '';
+    // Split top-level OR groups, then each group into AND conditions.
+    const orGroups = whereClause ? splitTop(whereClause, ' OR ') : [];
+    const parsedOrGroups = orGroups.map((group) => {
+      const andConditions = splitTop(group, 'AND');
+      return andConditions.map((c) => resolveCond(parseCond(c), params, cursor));
+    });
+    let rows = tables[table].filter((row) =>
+      parsedOrGroups.some((group) => group.every((c) => matches(c, row)))
+    );
 
     // JOIN users → merge organizer fields.
     if (/JOIN\s+users\s+\w+\s+ON\s+u\.id\s*=\s*e\.organizer_id/i.test(sql)) {

@@ -630,10 +630,28 @@ export const getEventAnalytics = async (req, res) => {
 export const getWithdrawals = async (req, res) => {
   try {
     const [rows] = await pool.execute(
-      `SELECT * FROM withdrawals WHERE organizer_id = ? ORDER BY created_at DESC`,
+      `SELECT id, amount, status, bank_name, account_number, account_name,
+              reference, notes, rejection_reason, processed_at, created_at
+       FROM withdrawals WHERE organizer_id = ? ORDER BY created_at DESC`,
       [req.user.id],
     );
-    res.json({ withdrawals: rows });
+    res.json({
+      withdrawals: rows.map((r) => ({
+        id: r.id,
+        amount: Number(r.amount),
+        status: r.status,
+        bankName: r.bank_name,
+        bank: r.bank_name,
+        accountNumber: r.account_number,
+        accountName: r.account_name,
+        reference: r.reference,
+        notes: r.notes,
+        rejectionReason: r.rejection_reason,
+        processedAt: r.processed_at,
+        createdAt: r.created_at,
+        requestedAt: r.created_at,
+      })),
+    });
   } catch (err) {
     console.error('[organizerController.getWithdrawals]', err);
     res.status(500).json({ message: 'Server error' });
@@ -642,12 +660,17 @@ export const getWithdrawals = async (req, res) => {
 
 export const requestWithdrawal = async (req, res) => {
   try {
-    const { amount, bank_name, account_number, account_name } = req.body;
-    if (!amount || !bank_name || !account_number || !account_name) {
-      return res.status(400).json({ message: 'amount, bank_name, account_number and account_name are required' });
+    const bank_name = req.body.bank_name || req.body.bankName;
+    const account_number = req.body.account_number || req.body.accountNumber;
+    const account_name = req.body.account_name || req.body.accountName;
+    const amount = Number(req.body.amount);
+    const saveAsDefault = req.body.saveAsDefault;
+
+    if (!amount || amount <= 0 || !bank_name || !account_number || !account_name) {
+      return res.status(400).json({ message: 'Amount, bank/MoMo name, account number, and account name are required' });
     }
 
-    // Check available balance.
+    // Check available balance (including pending, approved, and paid)
     const [[revenueRow]] = await pool.execute(
       `SELECT COALESCE(SUM(o.total_amount - o.discount_amount), 0) AS revenue
        FROM orders o
@@ -658,12 +681,12 @@ export const requestWithdrawal = async (req, res) => {
     const [[withdrawnRow]] = await pool.execute(
       `SELECT COALESCE(SUM(w.amount), 0) AS withdrawn
        FROM withdrawals w
-       WHERE w.organizer_id = ? AND w.status IN ('pending','approved')`,
+       WHERE w.organizer_id = ? AND w.status IN ('pending','approved','paid')`,
       [req.user.id],
     );
     const available = Number(revenueRow.revenue) - Number(withdrawnRow.withdrawn);
-    if (Number(amount) > available) {
-      return res.status(400).json({ message: `Insufficient balance. Available: ${available}` });
+    if (amount > available) {
+      return res.status(400).json({ message: `Insufficient balance. Available: GHS ${available.toFixed(2)}` });
     }
 
     const reference = `WD-${uuidv4().split('-')[0].toUpperCase()}`;
@@ -673,11 +696,21 @@ export const requestWithdrawal = async (req, res) => {
       [req.user.id, amount, bank_name, account_number, account_name, reference],
     );
 
+    // Save as default in organizer profile if requested
+    if (saveAsDefault) {
+      await pool.execute(
+        `UPDATE organizer_profiles
+         SET bank_name = ?, account_number = ?, account_name = ?, updated_at = NOW()
+         WHERE user_id = ?`,
+        [bank_name, account_number, account_name, req.user.id],
+      );
+    }
+
     await logAudit({ userId: req.user.id, action: 'request_withdrawal', entityType: 'withdrawal', entityId: result.insertId });
 
     notifyAdmins({
       title: 'New Withdrawal Request',
-      message: `Organizer "${req.user.name || 'Organizer'}" requested a payout of GHS ${Number(amount).toFixed(2)} (${bank_name || 'Mobile Money'}).`,
+      message: `Organizer "${req.user.name || 'Organizer'}" requested a payout of GHS ${amount.toFixed(2)} (${bank_name}).`,
       type: 'withdrawal',
       link: '/admin/payments',
     }).catch(() => {});
@@ -1511,23 +1544,39 @@ export const getWalletBalance = async (req, res) => {
       [organizerId],
     );
 
-    const [[wdRow]] = await pool.execute(
-      `SELECT COALESCE(SUM(w.amount), 0) AS withdrawn
+    const [[pendingRow]] = await pool.execute(
+      `SELECT COALESCE(SUM(w.amount), 0) AS pendingAmount
        FROM withdrawals w
-       WHERE w.organizer_id = ? AND w.status IN ('pending', 'approved')`,
+       WHERE w.organizer_id = ? AND w.status = 'pending'`,
+      [organizerId],
+    );
+
+    const [[paidRow]] = await pool.execute(
+      `SELECT COALESCE(SUM(w.amount), 0) AS paidAmount
+       FROM withdrawals w
+       WHERE w.organizer_id = ? AND w.status IN ('approved', 'paid')`,
+      [organizerId],
+    );
+
+    const [profileRows] = await pool.execute(
+      `SELECT bank_name, account_number, account_name, mobile_money, payout_method
+       FROM organizer_profiles WHERE user_id = ?`,
       [organizerId],
     );
 
     const totalEarned = Number(revRow.totalEarned || 0);
-    const withdrawn = Number(wdRow.withdrawn || 0);
-    const available = Math.max(totalEarned - withdrawn, 0);
+    const pending = Number(pendingRow.pendingAmount || 0);
+    const paid = Number(paidRow.paidAmount || 0);
+    const available = Math.max(totalEarned - (pending + paid), 0);
 
     res.json({
       balance: {
         available,
-        pending: 0,
+        pending,
+        paid,
         totalEarned,
       },
+      savedPayoutAccount: profileRows[0] || null,
     });
   } catch (err) {
     console.error('[organizerController.getWalletBalance]', err);
@@ -1541,9 +1590,11 @@ export const getTransactions = async (req, res) => {
     const { limit = 50 } = req.query;
     const limitNum = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
 
-    const [rows] = await pool.execute(
-      `SELECT o.id, o.payment_reference AS reference, 'Ticket Sale' AS description,
-              (o.total_amount - o.discount_amount) AS amount, 'credit' AS type, 'completed' AS status,
+    const [orderRows] = await pool.execute(
+      `SELECT o.id, o.payment_reference AS reference,
+              CONCAT('Ticket Sale: ', e.title) AS description,
+              (o.total_amount - o.discount_amount) AS amount,
+              'credit' AS type, 'completed' AS status,
               o.created_at AS date
        FROM orders o
        JOIN events e ON e.id = o.event_id
@@ -1553,7 +1604,24 @@ export const getTransactions = async (req, res) => {
       [organizerId],
     );
 
-    res.json({ transactions: rows });
+    const [wdRows] = await pool.execute(
+      `SELECT w.id, w.reference,
+              CONCAT('Payout: ', w.bank_name) AS description,
+              w.amount,
+              'withdrawal' AS type, w.status,
+              w.created_at AS date
+       FROM withdrawals w
+       WHERE w.organizer_id = ?
+       ORDER BY w.created_at DESC
+       LIMIT ${limitNum}`,
+      [organizerId],
+    );
+
+    const combined = [...orderRows, ...wdRows]
+      .sort((a, b) => new Date(b.date) - new Date(a.date))
+      .slice(0, limitNum);
+
+    res.json({ transactions: combined });
   } catch (err) {
     console.error('[organizerController.getTransactions]', err);
     res.status(500).json({ message: 'Server error' });

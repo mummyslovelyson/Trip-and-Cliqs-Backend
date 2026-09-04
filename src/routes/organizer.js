@@ -74,7 +74,7 @@ router.get('/flash-sales', getFlashSales);
 router.post('/flash-sales', writeLimiter, createFlashSale);
 router.delete('/flash-sales/:id', writeLimiter, deleteFlashSale);
 
-// Withdrawals & Wallet
+// Withdrawals & Wallet / Payments
 router.get('/withdrawals', getWithdrawals);
 router.post('/withdrawals', withdrawLimiter, requestWithdrawal);
 router.get('/wallet/balance', getWalletBalance);
@@ -82,6 +82,12 @@ router.get('/wallet/transactions', getTransactions);
 router.get('/wallet/withdrawals', getWithdrawals);
 router.post('/wallet/withdrawals', withdrawLimiter, requestWithdrawal);
 router.get('/wallet/earnings', getWalletEarnings);
+
+router.get('/payments/balance', getWalletBalance);
+router.get('/payments/transactions', getTransactions);
+router.get('/payments/withdrawals', getWithdrawals);
+router.post('/payments/withdrawals', withdrawLimiter, requestWithdrawal);
+router.get('/payments/earnings', getWalletEarnings);
 
 // Team & Invites
 router.get('/team', getTeamMembers);

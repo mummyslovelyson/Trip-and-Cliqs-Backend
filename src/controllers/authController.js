@@ -277,16 +277,23 @@ export const login = async (req, res) => {
       return res.status(403).json({ message: 'Your account has been suspended' });
     }
 
-    if (user.role !== 'admin' && (user.email_verified === false || user.email_verified === 0)) {
-      return res.status(403).json({
-        message: 'Please verify your account before logging in. A 6-digit code was sent to your SMS and email.',
-        requiresVerification: true,
-        email: user.email,
-        phone: user.phone,
-      });
-    }
+     if (user.role !== 'admin' && (user.email_verified === false || user.email_verified === 0)) {
+       return res.status(403).json({
+         message: 'Please verify your account before logging in. A 6-digit code was sent to your SMS and email.',
+         requiresVerification: true,
+         email: user.email,
+         phone: user.phone,
+       });
+     }
 
-    // Success — reset lockout, issue tokens
+     if (user.role === 'organizer' && (user.is_approved === false || user.is_approved === 0 || user.status === 'pending')) {
+       return res.status(403).json({
+         message: 'Your organizer account is pending admin approval. You cannot log in until approved.',
+         requiresApproval: true,
+       });
+     }
+
+     // Success — reset lockout, issue tokens
     await resetFailedAttempts(user.id);
 
     const family = uuidv4();
@@ -442,8 +449,11 @@ export const forgotPassword = async (req, res) => {
 
       // Clean up older unused reset tokens
       await pool.execute(
-        'DELETE FROM password_reset_tokens WHERE user_id = ? OR expires_at < NOW()',
+        'DELETE FROM password_reset_tokens WHERE user_id = ?',
         [user.id],
+      );
+      await pool.execute(
+        'DELETE FROM password_reset_tokens WHERE expires_at < NOW()',
       );
 
       // Insert new 6-digit reset code with 15 minutes validity
@@ -660,25 +670,26 @@ export const verifyEmail = async (req, res) => {
             return res.status(409).json({ message: 'An account with this email is already registered.' });
           }
 
-          const isApproved = pending.role === 'organizer' ? 0 : 1;
-          const meta = pending.metadata
-            ? (typeof pending.metadata === 'string' ? JSON.parse(pending.metadata) : pending.metadata)
-            : {};
+           const isApproved = pending.role === 'organizer' ? 0 : 1;
+           const meta = pending.metadata
+             ? (typeof pending.metadata === 'string' ? JSON.parse(pending.metadata) : pending.metadata)
+             : {};
 
-          const [result] = await pool.execute(
-            `INSERT INTO users (name, email, password, role, phone, status, is_approved, email_verified, location, bio)
-             VALUES (?, ?, ?, ?, ?, 'active', ?, TRUE, ?, ?)`,
-            [
-              pending.name,
-              pending.email,
-              pending.password_hash,
-              pending.role,
-              pending.phone || null,
-              isApproved === 1,
-              meta.city || meta.location || null,
-              meta.description || null,
-            ],
-          );
+           const [result] = await pool.execute(
+             `INSERT INTO users (name, email, password, role, phone, status, is_approved, email_verified, location, bio)
+              VALUES (?, ?, ?, ?, ?, ?, ?, TRUE, ?, ?)`,
+             [
+               pending.name,
+               pending.email,
+               pending.password_hash,
+               pending.role,
+               pending.phone || null,
+               pending.role === 'organizer' ? 'pending' : 'active',
+               isApproved === 1,
+               meta.city || meta.location || null,
+               meta.description || null,
+             ],
+           );
 
           const userId = result.insertId;
 
@@ -732,18 +743,18 @@ export const verifyEmail = async (req, res) => {
           const accessToken = generateToken(payload);
           const { rawToken: refreshToken } = await generateRefreshToken(payload, buildMeta(req, family));
 
-          return res.json({
-            message: 'Account verified and created successfully!',
-            user: sanitize({
-              id: userId,
-              name: pending.name,
-              email: pending.email,
-              role: pending.role,
-              phone: pending.phone,
-              status: 'active',
-              is_approved: isApproved,
-              email_verified: 1,
-            }),
+           return res.json({
+             message: 'Account verified and created successfully!',
+             user: sanitize({
+               id: userId,
+               name: pending.name,
+               email: pending.email,
+               role: pending.role,
+               phone: pending.phone,
+               status: pending.role === 'organizer' ? 'pending' : 'active',
+               is_approved: isApproved,
+               email_verified: 1,
+             }),
             accessToken,
             refreshToken,
           });

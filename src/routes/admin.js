@@ -5,7 +5,7 @@ import {
   exportUsers, bulkRoleChange, bulkDeleteUsers, getUserStats,
   getEvents, approveEvent, rejectEvent, featureEvent, suspendEvent, unsuspendEvent, adminDeleteEvent,
   getCategories, createCategory, updateCategory, deleteCategory,
-  getPayments, getPayment, refundPayment, getWithdrawals, approveWithdrawal,
+  getPayments, getPayment, refundPayment, getWithdrawals, approveWithdrawal, rejectWithdrawal,
   getReports, getRevenueReport, getGrowthReport,
   getSupportTickets, getSupportTicket, respondToSupportTicket, closeSupportTicket, resolveSupportTicket,
   sendAnnouncement, getAdminNotifications, markAdminNotificationsRead, getAuditLogs, getSystemSettings, updateSystemSettings,
@@ -80,6 +80,7 @@ router.get('/payments/:id', getPayment);
 router.post('/payments/:id/refund', destructiveLimiter, refundPayment);
 router.get('/withdrawals', getWithdrawals);
 router.put('/withdrawals/:id/approve', writeLimiter, approveWithdrawal);
+router.put('/withdrawals/:id/reject', writeLimiter, rejectWithdrawal);
 
 // Reports
 router.get('/reports', getReports);

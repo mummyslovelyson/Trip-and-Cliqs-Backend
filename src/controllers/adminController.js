@@ -9,6 +9,7 @@ import { sendSMS } from '../utils/sms.js';
 import { getSmsApiKey, getPaystackSecretKey, clearSettingsCache } from '../utils/settings.js';
 import { logAudit } from '../utils/audit.js';
 import { validatePassword } from '../utils/password.js';
+import { refundTransaction } from '../utils/paystack.js';
 
 /* ------------------------------------------------------------------ */
 /* Dashboard stats                                                     */
@@ -48,7 +49,7 @@ export const getDashboardStats = async (_req, res) => {
       `SELECT COUNT(*) AS total FROM tickets WHERE DATE(created_at) = CURRENT_DATE`,
     );
     const [[pendingOrgsRow]] = await pool.execute(
-      `SELECT COUNT(*) AS total FROM users WHERE role = 'organizer' AND is_approved = FALSE AND status = 'active'`,
+      `SELECT COUNT(*) AS total FROM users WHERE role = 'organizer' AND is_approved = FALSE AND status = 'pending'`,
     );
     const [[pendingWithdrawalsRow]] = await pool.execute(`SELECT COUNT(*) AS total FROM withdrawals WHERE status = 'pending'`);
     const [[pendingEventsRow]] = await pool.execute(`SELECT COUNT(*) AS total FROM events WHERE status = 'pending'`);
@@ -161,7 +162,7 @@ export const getUsers = async (req, res) => {
     if (status && status !== 'all') {
       if (status === 'pending') {
         conditions.push('u.role = ?', 'u.is_approved = ?', 'u.status = ?');
-        params.push('organizer', 0, 'active');
+        params.push('organizer', 0, 'pending');
       } else if (status === 'active') {
         conditions.push('u.status = ?');
         params.push('active');
@@ -750,62 +751,182 @@ export const deleteCategory = async (req, res) => {
 };
 
 /* ------------------------------------------------------------------ */
-/* Payments                                                            */
+/* Payments & Settlements (Admin)                                      */
 /* ------------------------------------------------------------------ */
 export const getPayments = async (req, res) => {
   try {
-    const { status, page = 1, limit = 20 } = req.query;
+    const { type, status, method, search, from, to, page = 1, limit = 20 } = req.query;
+
+    // Handle legacy calls requesting withdrawals through /payments?type=withdrawal
+    if (type === 'withdrawal') {
+      return getWithdrawals(req, res);
+    }
+
     const conditions = [];
     const params = [];
-    if (status && status !== 'all') { conditions.push('o.payment_status = ?'); params.push(status); }
+
+    // If legacy /payments?type=refund is passed
+    const activeStatus = type === 'refund' ? 'refunded' : status;
+
+    if (activeStatus && activeStatus !== 'all') {
+      conditions.push('o.payment_status = ?');
+      params.push(activeStatus);
+    }
+    if (method && method !== 'all') {
+      conditions.push('o.payment_method = ?');
+      params.push(method);
+    }
+    if (search && search.trim()) {
+      const q = `%${search.trim()}%`;
+      conditions.push('(e.title ILIKE ? OR u.name ILIKE ? OR u.email ILIKE ? OR o.payment_reference ILIKE ? OR CAST(o.id AS TEXT) ILIKE ?)');
+      params.push(q, q, q, q, q);
+    }
+    if (from && to) {
+      conditions.push('o.created_at BETWEEN ? AND ?');
+      params.push(from, to);
+    }
+
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const pageNum = Math.max(parseInt(page, 10) || 1, 1);
     const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
     const offset = (pageNum - 1) * limitNum;
 
-    const [countRows] = await pool.execute(`SELECT COUNT(*) AS total FROM orders o ${where}`, params);
-    const [rows] = await pool.execute(
-      `SELECT o.*, e.title AS event_title, u.name AS buyer_name, u.email AS buyer_email
+    const [countRows] = await pool.execute(
+      `SELECT COUNT(*) AS total
        FROM orders o
-       JOIN events e ON e.id = o.event_id
-       JOIN users u ON u.id = o.user_id
+       LEFT JOIN events e ON e.id = o.event_id
+       LEFT JOIN users u ON u.id = o.user_id
+       ${where}`,
+      params,
+    );
+
+    const [rows] = await pool.execute(
+      `SELECT o.id, o.payment_reference AS reference, o.total_amount AS amount,
+              o.discount_amount, o.payment_method, o.payment_status AS status,
+              o.created_at, o.updated_at,
+              e.id AS event_id, e.title AS event_title,
+              u.id AS user_id, u.name AS buyer_name, u.email AS buyer_email, u.phone AS buyer_phone
+       FROM orders o
+       LEFT JOIN events e ON e.id = o.event_id
+       LEFT JOIN users u ON u.id = o.user_id
        ${where}
        ORDER BY o.created_at DESC
        LIMIT ${limitNum} OFFSET ${offset}`,
       params,
     );
 
+    // Summary metrics (wrapped in try-catch to guarantee no 500)
+    let summary = {
+      totalTransactions: 0,
+      grossVolume: 0,
+      platformRevenue: 0,
+      pendingWithdrawals: 0,
+      refunds: 0,
+      refundsCount: 0,
+    };
+
+    try {
+      const [[summaryRow]] = await pool.execute(
+        `SELECT
+           COUNT(CASE WHEN payment_status = 'completed' THEN 1 END) AS total_transactions,
+           COALESCE(SUM(CASE WHEN payment_status = 'completed' THEN (total_amount - discount_amount) ELSE 0 END), 0) AS gross_volume,
+           COALESCE(SUM(CASE WHEN payment_status = 'completed' THEN (total_amount - discount_amount) * 0.05 ELSE 0 END), 0) AS platform_revenue,
+           COUNT(CASE WHEN payment_status = 'refunded' THEN 1 END) AS total_refunds_count,
+           COALESCE(SUM(CASE WHEN payment_status = 'refunded' THEN total_amount ELSE 0 END), 0) AS total_refunds_amount
+         FROM orders`,
+      );
+
+      const [[wdRow]] = await pool.execute(
+        `SELECT COALESCE(SUM(amount), 0) AS pending_withdrawals FROM withdrawals WHERE status = 'pending'`,
+      );
+
+      summary = {
+        totalTransactions: Number(summaryRow?.total_transactions || 0),
+        grossVolume: Number(summaryRow?.gross_volume || 0),
+        platformRevenue: Number(summaryRow?.platform_revenue || 0),
+        pendingWithdrawals: Number(wdRow?.pending_withdrawals || 0),
+        refunds: Number(summaryRow?.total_refunds_amount || 0),
+        refundsCount: Number(summaryRow?.total_refunds_count || 0),
+      };
+    } catch (metricErr) {
+      console.warn('[adminController.getPayments] summary metrics note:', metricErr.message);
+    }
+
+    const formatted = rows.map((r) => ({
+      id: r.id,
+      reference: r.reference || `#${r.id}`,
+      amount: Number(r.amount),
+      discountAmount: Number(r.discount_amount || 0),
+      netAmount: Number(r.amount) - Number(r.discount_amount || 0),
+      method: r.payment_method || 'card',
+      paymentMethod: r.payment_method || 'card',
+      status: r.status,
+      currency: 'GHS',
+      createdAt: r.created_at,
+      date: r.created_at,
+      eventId: r.event_id,
+      eventTitle: r.event_title || '—',
+      userId: r.user_id,
+      userName: r.buyer_name || 'Guest',
+      userEmail: r.buyer_email || '—',
+      userPhone: r.buyer_phone || '',
+      user: { name: r.buyer_name || 'Guest', email: r.buyer_email || '—' },
+      event: { title: r.event_title || '—' },
+    }));
+
     res.json({
-      payments: rows,
-      pagination: { page: pageNum, limit: limitNum, total: countRows[0].total, totalPages: Math.ceil(countRows[0].total / limitNum) },
+      payments: formatted,
+      transactions: formatted,
+      refunds: type === 'refund' ? formatted : undefined,
+      summary,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: Number(countRows[0]?.total || 0),
+        totalPages: Math.ceil(Number(countRows[0]?.total || 0) / limitNum) || 1,
+      },
     });
   } catch (err) {
     console.error('[adminController.getPayments]', err);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: err.message });
   }
 };
 
 /* ------------------------------------------------------------------ */
-/* Withdrawals (admin)                                                 */
+/* Withdrawals & Payouts (Admin)                                       */
 /* ------------------------------------------------------------------ */
 export const getWithdrawals = async (req, res) => {
   try {
-    const { status, page = 1, limit = 20 } = req.query;
+    const { status, search, page = 1, limit = 20 } = req.query;
     const conditions = [];
     const params = [];
-    if (status && status !== 'all') { conditions.push('w.status = ?'); params.push(status); }
+
+    if (status && status !== 'all') {
+      conditions.push('w.status = ?');
+      params.push(status);
+    }
+    if (search && search.trim()) {
+      const q = `%${search.trim()}%`;
+      conditions.push('(u.name ILIKE ? OR u.email ILIKE ? OR w.reference ILIKE ? OR w.account_number ILIKE ? OR w.account_name ILIKE ?)');
+      params.push(q, q, q, q, q);
+    }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const pageNum = Math.max(parseInt(page, 10) || 1, 1);
     const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
     const offset = (pageNum - 1) * limitNum;
 
-    const [countRows] = await pool.execute(`SELECT COUNT(*) AS total FROM withdrawals w ${where}`, params);
+    const [countRows] = await pool.execute(
+      `SELECT COUNT(*) AS total FROM withdrawals w JOIN users u ON u.id = w.organizer_id ${where}`,
+      params,
+    );
     const [rows] = await pool.execute(
-      `SELECT w.*, u.name AS organizer_name, u.email AS organizer_email
+      `SELECT w.*, u.name AS organizer_name, u.email AS organizer_email, u.phone AS organizer_phone,
+              op.organization_name, op.payout_method, op.mobile_money
        FROM withdrawals w
        JOIN users u ON u.id = w.organizer_id
+       LEFT JOIN organizer_profiles op ON op.user_id = w.organizer_id
        ${where}
        ORDER BY w.created_at DESC
        LIMIT ${limitNum} OFFSET ${offset}`,
@@ -813,8 +934,31 @@ export const getWithdrawals = async (req, res) => {
     );
 
     res.json({
-      withdrawals: rows,
-      pagination: { page: pageNum, limit: limitNum, total: countRows[0].total, totalPages: Math.ceil(countRows[0].total / limitNum) },
+      withdrawals: rows.map((w) => ({
+        id: w.id,
+        organizerId: w.organizer_id,
+        organizerName: w.organization_name || w.organizer_name || 'Organizer',
+        organizerEmail: w.organizer_email,
+        organizerPhone: w.organizer_phone,
+        amount: Number(w.amount),
+        status: w.status,
+        bank: w.bank_name || 'Bank Transfer',
+        bankName: w.bank_name || 'Bank Transfer',
+        accountNumber: w.account_number,
+        accountName: w.account_name,
+        reference: w.reference,
+        notes: w.notes,
+        rejectionReason: w.rejection_reason,
+        processedAt: w.processed_at,
+        createdAt: w.created_at,
+        requestedAt: w.created_at,
+      })),
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: Number(countRows[0].total),
+        totalPages: Math.ceil(Number(countRows[0].total) / limitNum),
+      },
     });
   } catch (err) {
     console.error('[adminController.getWithdrawals]', err);
@@ -825,20 +969,93 @@ export const getWithdrawals = async (req, res) => {
 export const approveWithdrawal = async (req, res) => {
   try {
     const { id } = req.params;
-    await pool.execute(`UPDATE withdrawals SET status = 'approved', processed_at = NOW() WHERE id = ?`, [id]);
-    const [rows] = await pool.execute('SELECT organizer_id, amount FROM withdrawals WHERE id = ?', [id]);
-    if (rows[0]) {
-      sendNotification({
-        userId: rows[0].organizer_id,
-        title: 'Withdrawal approved',
-        message: `Your withdrawal request of ${rows[0].amount} has been approved and processed.`,
-        type: 'withdrawal',
-      });
+    const { reference, notes } = req.body || {};
+
+    const [wRows] = await pool.execute('SELECT * FROM withdrawals WHERE id = ?', [id]);
+    if (!wRows[0]) {
+      return res.status(404).json({ message: 'Withdrawal request not found' });
     }
-    await logAudit({ userId: req.user.id, action: 'approve_withdrawal', entityType: 'withdrawal', entityId: Number(id) });
-    res.json({ message: 'Withdrawal approved' });
+    const withdrawal = wRows[0];
+    if (withdrawal.status === 'approved' || withdrawal.status === 'paid') {
+      return res.status(400).json({ message: 'Withdrawal has already been approved' });
+    }
+
+    const finalRef = reference || withdrawal.reference || `WD-${Date.now().toString().slice(-6)}`;
+    await pool.execute(
+      `UPDATE withdrawals
+       SET status = 'approved', reference = COALESCE(?, reference), notes = COALESCE(?, notes), processed_at = NOW()
+       WHERE id = ?`,
+      [finalRef, notes || null, id],
+    );
+
+    // Record in wallet transactions
+    await pool.execute(
+      `INSERT INTO wallet_transactions (organizer_id, type, description, amount, status, reference)
+       VALUES (?, 'withdrawal', ?, ?, 'completed', ?)`,
+      [withdrawal.organizer_id, `Withdrawal to ${withdrawal.bank_name || 'Payout Account'}`, withdrawal.amount, finalRef],
+    );
+
+    await sendNotification({
+      userId: withdrawal.organizer_id,
+      title: 'Withdrawal Approved & Disbursed',
+      message: `Your payout of GHS ${Number(withdrawal.amount).toFixed(2)} (${withdrawal.bank_name || 'Bank/MoMo'}) has been approved and processed. Ref: ${finalRef}`,
+      type: 'withdrawal',
+    });
+
+    await logAudit({
+      userId: req.user.id,
+      action: 'approve_withdrawal',
+      entityType: 'withdrawal',
+      entityId: Number(id),
+      details: { amount: withdrawal.amount, reference: finalRef, notes },
+    });
+
+    res.json({ message: 'Withdrawal approved successfully' });
   } catch (err) {
     console.error('[adminController.approveWithdrawal]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const rejectWithdrawal = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason = 'Payout details could not be verified' } = req.body || {};
+
+    const [wRows] = await pool.execute('SELECT * FROM withdrawals WHERE id = ?', [id]);
+    if (!wRows[0]) {
+      return res.status(404).json({ message: 'Withdrawal request not found' });
+    }
+    const withdrawal = wRows[0];
+    if (withdrawal.status === 'approved' || withdrawal.status === 'paid') {
+      return res.status(400).json({ message: 'Cannot reject an already approved withdrawal' });
+    }
+
+    await pool.execute(
+      `UPDATE withdrawals
+       SET status = 'rejected', rejection_reason = ?, processed_at = NOW()
+       WHERE id = ?`,
+      [reason, id],
+    );
+
+    await sendNotification({
+      userId: withdrawal.organizer_id,
+      title: 'Withdrawal Request Rejected',
+      message: `Your withdrawal request of GHS ${Number(withdrawal.amount).toFixed(2)} was rejected. Reason: ${reason}. The funds remain available in your wallet.`,
+      type: 'withdrawal',
+    });
+
+    await logAudit({
+      userId: req.user.id,
+      action: 'reject_withdrawal',
+      entityType: 'withdrawal',
+      entityId: Number(id),
+      details: { amount: withdrawal.amount, reason },
+    });
+
+    res.json({ message: 'Withdrawal rejected' });
+  } catch (err) {
+    console.error('[adminController.rejectWithdrawal]', err);
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -1446,9 +1663,26 @@ export const adminDeleteEvent = async (req, res) => {
 export const getPayment = async (req, res) => {
   try {
     const { id } = req.params;
-    const [rows] = await pool.execute('SELECT * FROM payments WHERE id = ?', [id]);
+    const [rows] = await pool.execute(
+      `SELECT o.*, e.title AS event_title, e.venue AS event_venue,
+              u.name AS buyer_name, u.email AS buyer_email, u.phone AS buyer_phone
+       FROM orders o
+       LEFT JOIN events e ON e.id = o.event_id
+       LEFT JOIN users u ON u.id = o.user_id
+       WHERE CAST(o.id AS TEXT) = ? OR o.payment_reference = ?`,
+      [String(id), String(id)],
+    );
     if (!rows.length) return res.status(404).json({ message: 'Payment not found' });
-    res.json({ payment: rows[0] });
+
+    const [items] = await pool.execute(
+      `SELECT oi.*, tt.name AS ticket_name, tt.price AS unit_price
+       FROM order_items oi
+       LEFT JOIN ticket_types tt ON tt.id = oi.ticket_type_id
+       WHERE oi.order_id = ?`,
+      [rows[0].id],
+    );
+
+    res.json({ payment: { ...rows[0], items } });
   } catch (err) {
     console.error('[adminController.getPayment]', err);
     res.status(500).json({ message: 'Server error' });
@@ -1458,8 +1692,54 @@ export const getPayment = async (req, res) => {
 export const refundPayment = async (req, res) => {
   try {
     const { id } = req.params;
-    await pool.execute("UPDATE payments SET status = 'refunded' WHERE id = ?", [id]);
-    res.json({ message: 'Payment refunded' });
+    const { reason } = req.body || {};
+
+    const [rows] = await pool.execute(
+      `SELECT o.*, u.name AS buyer_name, u.email AS buyer_email
+       FROM orders o
+       LEFT JOIN users u ON u.id = o.user_id
+       WHERE CAST(o.id AS TEXT) = ? OR o.payment_reference = ?`,
+      [String(id), String(id)],
+    );
+    const order = rows[0];
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+
+    if (order.payment_status === 'refunded') {
+      return res.status(400).json({ message: 'Order has already been refunded' });
+    }
+    if (order.payment_status !== 'completed') {
+      return res.status(400).json({ message: 'Only completed orders can be refunded' });
+    }
+
+    if (order.payment_reference) {
+      const refundResult = await refundTransaction(order.payment_reference, Number(order.total_amount));
+      if (!refundResult.status) {
+        console.warn('[adminController.refundPayment] Paystack refund notice:', refundResult.error);
+      }
+    }
+
+    await pool.execute(`UPDATE orders SET payment_status = 'refunded', updated_at = NOW() WHERE id = ?`, [id]);
+    await pool.execute(
+      `UPDATE tickets SET status = 'cancelled' WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)`,
+      [id],
+    );
+
+    await sendNotification({
+      userId: order.user_id,
+      title: 'Order Refunded',
+      message: `Your order #${id} has been refunded. Reason: ${reason || 'Admin processed'}.`,
+      type: 'refund',
+    });
+
+    await logAudit({
+      userId: req.user.id,
+      action: 'admin_refund_order',
+      entityType: 'order',
+      entityId: Number(id),
+      details: { amount: order.total_amount, reason },
+    });
+
+    res.json({ message: 'Payment refunded successfully' });
   } catch (err) {
     console.error('[adminController.refundPayment]', err);
     res.status(500).json({ message: 'Server error' });
@@ -1601,7 +1881,7 @@ export const exportUsers = async (req, res) => {
 
     if (role && role !== 'all') conditions.push('u.role = ?') && params.push(role);
     if (status && status !== 'all') {
-      if (status === 'pending') conditions.push("u.role = 'organizer' AND u.is_approved = FALSE AND u.status = 'active'");
+      if (status === 'pending') conditions.push("u.role = 'organizer' AND u.is_approved = FALSE AND u.status = 'pending'");
       else if (status === 'active') conditions.push("u.status = 'active'");
       else if (status === 'suspended') conditions.push('u.status = "suspended"');
     }
@@ -2127,7 +2407,7 @@ export default {
   getUserManagementStats, getUserActivity, getUserSessions, getUserStats, forceLogoutUser, addAdminNote, getAdminNotes, deleteAdminNote, exportUsers, bulkRoleChange, bulkDeleteUsers,
   getEvents, approveEvent, rejectEvent, featureEvent, suspendEvent, unsuspendEvent, adminDeleteEvent,
   getCategories, createCategory, updateCategory, deleteCategory,
-  getPayments, getPayment, refundPayment, getWithdrawals, approveWithdrawal,
+  getPayments, getPayment, refundPayment, getWithdrawals, approveWithdrawal, rejectWithdrawal,
   getReports, getRevenueReport, getGrowthReport,
   getSupportTickets, getSupportTicket, respondToSupportTicket, closeSupportTicket, resolveSupportTicket,
   sendAnnouncement, getAdminNotifications, getAuditLogs, getSystemSettings, updateSystemSettings,

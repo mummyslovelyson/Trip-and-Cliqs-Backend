@@ -64,6 +64,8 @@ const getPoolConfig = () => {
       max: parseInt(process.env.DB_POOL_MAX, 10) || 20,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: parseInt(process.env.DB_ACQUIRE_TIMEOUT, 10) || 10000,
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10000,
       ssl: process.env.DB_SSL === 'false'
         ? false
         : { rejectUnauthorized: false },
@@ -82,6 +84,8 @@ const getPoolConfig = () => {
     max: parseInt(process.env.DB_POOL_MAX, 10) || 20,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: parseInt(process.env.DB_ACQUIRE_TIMEOUT, 10) || 10000,
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10000,
     ssl: useSsl ? { rejectUnauthorized: false } : false,
   };
 };
@@ -100,14 +104,56 @@ pool.on('connect', () => {
 
 const originalQuery = pool.query.bind(pool);
 
+const isTransientError = (err) => {
+  if (!err) return false;
+  const msg = (err.message || '').toLowerCase();
+  const code = (err.code || '').toLowerCase();
+  return (
+    msg.includes('connection terminated') ||
+    msg.includes('connection timeout') ||
+    msg.includes('timeout') ||
+    msg.includes('closed') ||
+    msg.includes('econnreset') ||
+    msg.includes('etimedout') ||
+    msg.includes('broken pipe') ||
+    code === '57p01' ||
+    code === '57p02' ||
+    code === '57p03' ||
+    code === '08006' ||
+    code === '08001' ||
+    code === '08004'
+  );
+};
+
+const executeWithRetry = async (fn, maxRetries = MAX_RETRIES) => {
+  let lastErr;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < maxRetries && isTransientError(err)) {
+        const delay = Math.min(attempt * 250, 1000);
+        console.warn(`[db] Transient connection issue: "${err.message}". Retrying (${attempt}/${maxRetries}) in ${delay}ms...`);
+        await new Promise((r) => setTimeout(r, delay));
+      } else {
+        throw err;
+      }
+    }
+  }
+  throw lastErr;
+};
+
 /**
  * MySQL2-compatible wrapper: pool.execute(sql, params)
  * Returns [rows, fields] or [header, fields] like mysql2.
  */
 pool.execute = async (sql, params) => {
   const { sql: pgSql, params: pgParams } = convertParams(sql, params);
-  const result = await originalQuery(pgSql, pgParams);
-  return formatResult(result);
+  return executeWithRetry(async () => {
+    const result = await originalQuery(pgSql, pgParams);
+    return formatResult(result);
+  });
 };
 
 /**
@@ -117,10 +163,12 @@ pool.execute = async (sql, params) => {
 pool.query = async (sql, params) => {
   if (typeof sql === 'string') {
     const { sql: pgSql, params: pgParams } = convertParams(sql, params);
-    const result = await originalQuery(pgSql, pgParams);
-    return formatResult(result);
+    return executeWithRetry(async () => {
+      const result = await originalQuery(pgSql, pgParams);
+      return formatResult(result);
+    });
   }
-  return originalQuery(sql, params);
+  return executeWithRetry(() => originalQuery(sql, params));
 };
 
 /**

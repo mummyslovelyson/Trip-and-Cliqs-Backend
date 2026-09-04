@@ -41,9 +41,16 @@ export const authenticate = async (req, res, next) => {
       });
     }
 
+    if (dbUser.role === 'organizer' && (dbUser.is_approved === false || dbUser.is_approved === 0 || dbUser.status === 'pending')) {
+      return res.status(403).json({
+        message: 'Your organizer account is pending admin approval.',
+        requiresApproval: true,
+      });
+    }
+
     req.user = {
-      ...decoded,
       ...dbUser,
+      ...decoded,
       id: Number(dbUser.id),
       is_approved: dbUser.is_approved === 1 || dbUser.is_approved === true,
     };

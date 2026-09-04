@@ -413,17 +413,23 @@ export const getOrder = async (req, res) => {
   try {
     const { id } = req.params;
     const [rows] = await pool.execute(
-      `SELECT o.*, e.title AS event_title, e.banner_image
+      `SELECT o.*, e.title AS event_title, e.banner_image, e.organizer_id,
+              u.name AS buyer_name, u.email AS buyer_email, u.phone AS buyer_phone
        FROM orders o
        JOIN events e ON e.id = o.event_id
+       JOIN users u ON u.id = o.user_id
        WHERE o.id = ?`,
       [id],
     );
     const order = rows[0];
     if (!order) return res.status(404).json({ message: 'Order not found' });
 
-    if (order.user_id !== req.user.id && req.user.role !== 'admin' && req.user.role !== 'organizer') {
-      return res.status(403).json({ message: 'Forbidden' });
+    if (order.user_id !== req.user.id && req.user.role !== 'admin') {
+      if (req.user.role === 'organizer' && Number(order.organizer_id) === Number(req.user.id)) {
+        // Authorized
+      } else {
+        return res.status(403).json({ message: 'Forbidden' });
+      }
     }
 
     const [items] = await pool.execute(
@@ -517,30 +523,77 @@ export const getOrders = async (req, res) => {
 /* ------------------------------------------------------------------ */
 export const getOrganizerOrders = async (req, res) => {
   try {
-    const { page = 1, limit = 20 } = req.query;
+    const { status, method, search, page = 1, limit = 20 } = req.query;
     const pageNum = Math.max(parseInt(page, 10) || 1, 1);
     const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
     const offset = (pageNum - 1) * limitNum;
 
+    const conditions = ['e.organizer_id = ?'];
+    const params = [req.user.id];
+
+    if (status && status !== 'all') {
+      conditions.push('o.payment_status = ?');
+      params.push(status);
+    }
+    if (method && method !== 'all') {
+      conditions.push('o.payment_method = ?');
+      params.push(method);
+    }
+    if (search && search.trim()) {
+      const q = `%${search.trim()}%`;
+      conditions.push('(e.title ILIKE ? OR u.name ILIKE ? OR u.email ILIKE ? OR o.payment_reference ILIKE ? OR CAST(o.id AS TEXT) ILIKE ?)');
+      params.push(q, q, q, q, q);
+    }
+    const where = `WHERE ${conditions.join(' AND ')}`;
+
+    const [countRows] = await pool.execute(
+      `SELECT COUNT(*) AS total FROM orders o JOIN events e ON e.id = o.event_id JOIN users u ON u.id = o.user_id ${where}`,
+      params,
+    );
+
     const [rows] = await pool.execute(
-      `SELECT o.*, e.title AS event_title, u.name AS buyer_name, u.email AS buyer_email
+      `SELECT o.*, e.title AS event_title, u.name AS buyer_name, u.email AS buyer_email, u.phone AS buyer_phone,
+              (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id) AS item_count,
+              (SELECT STRING_AGG(CONCAT(tt.name, ' (x', oi.quantity, ')'), ', ')
+               FROM order_items oi
+               LEFT JOIN ticket_types tt ON tt.id = oi.ticket_type_id
+               WHERE oi.order_id = o.id) AS ticket_summary
        FROM orders o
        JOIN events e ON e.id = o.event_id
        JOIN users u ON u.id = o.user_id
-       WHERE e.organizer_id = ?
+       ${where}
        ORDER BY o.created_at DESC
        LIMIT ${limitNum} OFFSET ${offset}`,
-      [req.user.id],
-    );
-
-    const [countRows] = await pool.execute(
-      `SELECT COUNT(*) AS total FROM orders o JOIN events e ON e.id = o.event_id WHERE e.organizer_id = ?`,
-      [req.user.id],
+      params,
     );
 
     res.json({
-      orders: rows,
-      pagination: { page: pageNum, limit: limitNum, total: countRows[0].total, totalPages: Math.ceil(countRows[0].total / limitNum) },
+      orders: rows.map((r) => ({
+        id: r.id,
+        reference: r.payment_reference || `#${r.id}`,
+        amount: Number(r.total_amount),
+        discountAmount: Number(r.discount_amount || 0),
+        netAmount: Number(r.total_amount) - Number(r.discount_amount || 0),
+        status: r.payment_status,
+        paymentMethod: r.payment_method || 'card',
+        currency: r.currency || 'GHS',
+        createdAt: r.created_at,
+        customerName: r.buyer_name,
+        customerEmail: r.buyer_email,
+        customerPhone: r.buyer_phone,
+        eventTitle: r.event_title,
+        ticketType: r.ticket_summary || 'General Admission',
+        ticketCount: Number(r.item_count || 1),
+        quantity: Number(r.item_count || 1),
+        user: { name: r.buyer_name, email: r.buyer_email },
+        event: { title: r.event_title },
+      })),
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: Number(countRows[0].total),
+        totalPages: Math.ceil(Number(countRows[0].total) / limitNum),
+      },
     });
   } catch (err) {
     console.error('[orderController.getOrganizerOrders]', err);
@@ -598,23 +651,38 @@ export const cancelOrder = async (req, res) => {
 export const requestRefund = async (req, res) => {
   try {
     const { id } = req.params;
-    const { reason } = req.body;
+    const { reason } = req.body || {};
     const [rows] = await pool.execute('SELECT * FROM orders WHERE id = ?', [id]);
     const order = rows[0];
     if (!order) return res.status(404).json({ message: 'Order not found' });
-    if (order.user_id !== req.user.id && req.user.role !== 'admin') {
+
+    // Authorization: Buyer, Admin, or Organizer who owns the event
+    let isAuthorized = order.user_id === req.user.id || req.user.role === 'admin';
+    if (!isAuthorized && req.user.role === 'organizer') {
+      const [eventRows] = await pool.execute('SELECT organizer_id FROM events WHERE id = ?', [order.event_id]);
+      if (eventRows[0] && Number(eventRows[0].organizer_id) === Number(req.user.id)) {
+        isAuthorized = true;
+      }
+    }
+    if (!isAuthorized) {
       return res.status(403).json({ message: 'Forbidden' });
+    }
+
+    if (order.payment_status === 'refunded') {
+      return res.status(400).json({ message: 'Order has already been refunded' });
     }
     if (order.payment_status !== 'completed') {
       return res.status(400).json({ message: 'Only completed orders can be refunded' });
     }
 
-    const refundResult = await refundTransaction(order.payment_reference, Number(order.total_amount));
-    if (!refundResult.status) {
-      return res.status(400).json({ message: 'Refund could not be processed', error: refundResult.error });
+    if (order.payment_reference) {
+      const refundResult = await refundTransaction(order.payment_reference, Number(order.total_amount));
+      if (!refundResult.status) {
+        console.warn('[orderController.requestRefund] Paystack refund note:', refundResult.error);
+      }
     }
 
-    await pool.execute(`UPDATE orders SET payment_status = 'refunded' WHERE id = ?`, [id]);
+    await pool.execute(`UPDATE orders SET payment_status = 'refunded', updated_at = NOW() WHERE id = ?`, [id]);
     await pool.execute(`UPDATE tickets SET status = 'cancelled' WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)`, [id]);
 
     await sendNotification({
