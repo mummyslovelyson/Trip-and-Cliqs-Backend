@@ -437,7 +437,12 @@ export const exportAttendees = async (req, res) => {
 /* ------------------------------------------------------------------ */
 export const createCoupon = async (req, res) => {
   try {
-    const { eventId, code, discount_type, discount_value, max_uses, valid_from, valid_to } = req.body;
+    const fieldMap = { type: 'discount_type', value: 'discount_value', maxUses: 'max_uses', validFrom: 'valid_from', validTo: 'valid_to', eventId: 'event_id' };
+    const body = { ...req.body };
+    for (const [key, column] of Object.entries(fieldMap)) {
+      if (body[key] !== undefined) { body[column] = body[key]; delete body[key]; }
+    }
+    const { eventId, code, discount_type, discount_value, max_uses, valid_from, valid_to } = body;
     if (!eventId || !code || !discount_type || discount_value === undefined) {
       return res.status(400).json({ message: 'eventId, code, discount_type and discount_value are required' });
     }
