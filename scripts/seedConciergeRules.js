@@ -27,83 +27,139 @@ const clientConfig = process.env.DATABASE_URL
 
 const client = new pg.Client(clientConfig);
 
-const RULES = [
+const COMPREHENSIVE_RULES = [
+  // ── 1. TICKETING & PASSES ──
   {
-    title: 'Ticket Resale & P2P Marketplace',
+    title: 'Accessing Purchased Tickets & QR Passes',
     category: 'ticketing',
-    keywords: 'resale, sell ticket, cant attend, transfer ticket, resell, p2p, marketplace',
-    instruction_or_answer: 'You can resell verified tickets directly through your account! Go to My Tickets, select your ticket, tap "List for Resale", and set your price (up to the original face value). Once purchased by another fan, your funds are credited to your account.',
+    keywords: 'my tickets, view ticket, show ticket, where is ticket, qr pass, barcode, entry code, offline ticket',
+    instruction_or_answer: 'All purchased tickets are stored permanently under **My Tickets** (/attendee/tickets). Each ticket features an encrypted QR code and unique reference (#TC-xxxx) that can be scanned directly from your phone screen even without active internet.',
   },
   {
-    title: 'Ticket Transfer to Friend',
+    title: 'Ticket Transfer to Friend or Family',
     category: 'ticketing',
-    keywords: 'send ticket, transfer to friend, gift ticket, give ticket, share pass',
-    instruction_or_answer: 'To transfer a ticket to a friend, open My Tickets, tap "Transfer", and enter their email address. They will receive an instant confirmation with their new unique QR code.',
+    keywords: 'transfer ticket, send ticket to friend, gift pass, share ticket, change name on ticket, handover',
+    instruction_or_answer: 'To transfer a ticket, navigate to **My Tickets**, find your pass, and click **Transfer**. Enter the recipient’s email address or phone. Our system instantly invalidates your old QR code and issues a brand-new encrypted pass to the recipient for total security.',
   },
   {
-    title: 'Payment Options (Mobile Money & Cards)',
+    title: 'Ticket Resale Marketplace Rules & Payouts',
+    category: 'ticketing',
+    keywords: 'resale, sell ticket, resale marketplace, p2p, cant attend, list ticket, scalp, ticket price cap',
+    instruction_or_answer: 'Can’t attend an event? Head to **My Tickets**, select your pass, and click **List for Resale**. You can set any price up to the original face value (scalping above face value is strictly blocked). Once purchased by another attendee, funds are credited directly to your account wallet.',
+  },
+  {
+    title: 'Seating Maps & Section Reservations',
+    category: 'ticketing',
+    keywords: 'seating, seat map, table booking, vip booth, front row, reserved seating, table reservation',
+    instruction_or_answer: 'For seated concerts, comedy specials, and VIP table reservations, you can preview the interactive seat map on the event page, review row/table availability, and choose your exact section before checkout.',
+  },
+  {
+    title: 'Early-Bird Tiers & Flash Sales',
+    category: 'ticketing',
+    keywords: 'early bird, discount tier, ticket price jump, deadline, vip vs regular, flash sale',
+    instruction_or_answer: 'Early-Bird tickets offer limited discount pricing until the cutoff date or allocated quantity sells out. Once sold out, pricing shifts automatically to Regular and VIP tiers.',
+  },
+
+  // ── 2. PAYMENTS & TRANSACTIONS ──
+  {
+    title: 'Supported Ghanaian & International Payment Methods',
     category: 'payments',
-    keywords: 'payment, momo, mtn, vodafone, telecel, airteltigo, visa, mastercard, how to pay, checkout',
-    instruction_or_answer: 'We support all major Ghanaian Mobile Money providers (MTN MoMo, Telecel Cash, AirtelTigo Money) as well as Visa and Mastercard via Paystack secure checkout.',
+    keywords: 'payment methods, momo, mtn mobile money, telecel cash, airteltigo money, visa, mastercard, how to pay',
+    instruction_or_answer: 'We support all Ghanaian Mobile Money networks (MTN MoMo, Telecel Cash, AirtelTigo Money) as well as local and international Visa and Mastercard cards, powered securely by Paystack.',
   },
   {
-    title: 'Official Invoices & Tax Receipts',
+    title: 'Downloading Tax Invoices & PDF Receipts',
     category: 'payments',
-    keywords: 'receipt, invoice, proof of payment, tax receipt, vat receipt, download receipt, pdf receipt',
-    instruction_or_answer: 'Official tax receipts and order invoices are automatically generated after checkout. You can download or print your PDF receipt anytime under My Tickets by clicking the "Receipt" button on any completed order.',
+    keywords: 'receipt, invoice, proof of purchase, vat receipt, download receipt, tax receipt',
+    instruction_or_answer: 'Official order invoices and receipts are generated automatically upon purchase. In **My Tickets**, click the **Receipt** button on any completed booking to download or print your PDF receipt with VAT breakdown.',
   },
   {
-    title: 'Interactive Seating & Section Reservations',
-    category: 'venue_policy',
-    keywords: 'seat map, seating, table reservation, vip booth, front row, interactive map, tier layout',
-    instruction_or_answer: 'For seated events and table reservations, you can preview the interactive seating map on the event page, check row numbers, table layouts, and select your exact tier before checkout.',
+    title: 'Handling Deductions Without Ticket Generated',
+    category: 'payments',
+    keywords: 'charged twice, money deducted no ticket, payment pending, debited but no ticket, momo prompt failed',
+    instruction_or_answer: 'If your Mobile Money or card was debited but the ticket hasn’t appeared, check **My Bookings** for your Paystack reference. If still pending after 5 minutes, head to **Support** (/attendee/support) to open a high-priority ticket with your transaction ID for instant manual verification.',
   },
   {
-    title: 'Early-Bird Pricing & Tier Cutoffs',
-    category: 'venue_policy',
-    keywords: 'early bird, discounts, tier, regular, vip, ticket types, price jump, deadline',
-    instruction_or_answer: 'Early-Bird tiers offer discounted rates until their sales cutoff date or until allocated tickets sell out. Once sold out, pricing automatically transitions to standard Regular and VIP tiers.',
+    title: 'Refund Policy & Event Cancellations',
+    category: 'payments',
+    keywords: 'refund, money back, event cancelled, postponed, rain out, refund policy',
+    instruction_or_answer: 'If an event is cancelled or indefinitely postponed by the organizer, 100% full refunds are issued automatically back to your original payment method. For change-of-mind, tickets can be resold on the verified Resale Marketplace.',
   },
+
+  // ── 3. ORGANIZER CAPABILITIES & TOOLS ──
   {
-    title: 'How to Host & Create an Event',
+    title: 'Creating & Publishing Live Events',
     category: 'organizer',
-    keywords: 'create event, host event, organizer, publish event, sell tickets, become organizer',
-    instruction_or_answer: 'Anyone can apply to become an organizer! Click "Create Event" in the top navigation, set up your event details, ticket tiers, and interactive seating, then submit for instant admin verification.',
+    keywords: 'create event, host event, publish event, sell tickets, organizer dashboard, become organizer',
+    instruction_or_answer: 'To host an event, tap **Create Event** (/organizer/events/create) to upload high-res banners, define ticket tiers, set capacity, configure promo coupons, and submit for quick administrative approval.',
   },
   {
-    title: 'Payouts & Organizer Revenue',
+    title: 'Gate Check-In Scanner for Door Staff',
     category: 'organizer',
-    keywords: 'payout, withdraw money, revenue, earnings, bank transfer, momo payout',
-    instruction_or_answer: 'Organizer payouts are processed securely through direct bank transfers and verified Mobile Money merchant wallets within 24 to 48 hours after event completion.',
+    keywords: 'scanner, check in guests, door scan, validate ticket, gate check, camera scanner, staff check in',
+    instruction_or_answer: 'Organizers and staff can validate passes at the gate using the in-app QR scanner at **/organizer/check-in**. It supports high-speed camera scanning, manual 6-digit code entry, and bulk check-ins.',
   },
   {
-    title: 'Lost Tickets & QR Code Help',
-    category: 'faq',
-    keywords: 'lost ticket, lost qr, cant find ticket, email not received, where is my ticket',
-    instruction_or_answer: 'All purchased tickets remain permanently saved in your My Tickets tab. You can view offline QR codes anytime from your mobile device without needing to check your email.',
+    title: 'Organizer Revenue Payouts & Settlement Time',
+    category: 'organizer',
+    keywords: 'payout, withdraw money, revenue withdrawal, bank payout, momo payout, settlement time',
+    instruction_or_answer: 'Organizer revenue can be withdrawn directly to your verified Ghanaian Bank Account or Mobile Money merchant wallet from the **Organizer Wallet** tab (/organizer/wallet). Payouts are reviewed and settled within 24 to 48 hours.',
   },
   {
-    title: 'Live Human Support Escalation',
-    category: 'faq',
-    keywords: 'contact human, talk to agent, support team, phone number, helpdesk, customer service',
-    instruction_or_answer: 'If you need direct assistance from our customer care team, you can visit the Support page or email us at support@tribesandcliqs.com.',
+    title: 'Coupons, Promo Codes & Flash Discounts',
+    category: 'organizer',
+    keywords: 'promo code, coupon, discount, flash sale, promotional code, special offer',
+    instruction_or_answer: 'Organizers can generate custom promo codes and time-limited flash sales from the **Promotions** tab (/organizer/promotions) to offer percentage or fixed discounts to select attendee tribes.',
+  },
+
+  // ── 4. MACHINE LEARNING & PERSONALIZATION ──
+  {
+    title: 'AI & Machine Learning Event Recommendations',
+    category: 'ai_ml',
+    keywords: 'ml match, recommend events, personalized picks, match score, taste profile, how does it recommend',
+    instruction_or_answer: 'Our Machine Learning engine uses TF-IDF and Cosine Similarity vector matching to calculate taste compatibility between your past ticket choices, favorite categories, and live upcoming events, displaying an intuitive Match Score (e.g. 96% ML Match).',
+  },
+  {
+    title: 'Voice Agent Capabilities & Hands-Free Interaction',
+    category: 'ai_ml',
+    keywords: 'voice agent, hands free, voice mode, audio assistant, speak to bot, voice search',
+    instruction_or_answer: 'The Hands-Free Voice Agent lets you discover events and check passes by speaking naturally. The neural visualizer orb reacts in real-time as it listens and responds via natural speech synthesis. Tap the orb at any time to pause or interrupt.',
+  },
+
+  // ── 5. SAFETY, VERIFICATION & COMMUNITY ──
+  {
+    title: 'Verifying Official Ticket Authenticity',
+    category: 'safety',
+    keywords: 'verify ticket, is ticket real, authentic ticket, check fake ticket, anti counterfeit',
+    instruction_or_answer: 'Anyone can verify ticket validity before purchasing off-platform by visiting **/verify** and entering the unique 6-digit verification code or scanning the QR code.',
+  },
+  {
+    title: 'Ghanaian Nightlife Hubs & Safety Tips',
+    category: 'safety',
+    keywords: 'nightlife accra, osu, labadi, cantonments, east legon, kumasi, dress code, parking, safety',
+    instruction_or_answer: 'Major Accra events take place across Osu, Cantonments, Labadi Beach, and East Legon. Check individual event cards for venue parking instructions, age restrictions (e.g., 18+ for club nights), and recommended dress codes.',
+  },
+  {
+    title: 'Contacting Human Customer Support',
+    category: 'support',
+    keywords: 'talk to human, customer care, support team, phone number, email support, complaints',
+    instruction_or_answer: 'Need personal help from a human representative? Visit our **Support Desk** (/attendee/support) to submit a ticket or reach us directly at support@tribesandcliqs.com.',
   },
 ];
 
-const VOICE_GUIDELINES = `You are Cliq Concierge, the official digital host and event guide for Tribes & Cliqs in Ghana.
+const COMPREHENSIVE_SYSTEM_PROMPT = `You are Cliq Concierge, the official autonomous AI & Voice Agent for Tribes & Cliqs (Ghana's premier live ticketing, festival, and nightlife platform).
 
-Core Persona & Communication Rules:
-1. Voice: Warm, energetic, knowledgeable, and hospitable. Speak naturally like an insider host in Accra.
-2. Brevity: Keep responses punchy and concise (1 to 3 sentences maximum). Avoid long walls of text.
-3. Clarity: Provide direct answers first, followed by clear next steps (e.g. "Head to My Tickets to initiate a resale").
-4. No Jargon & No Emoji Spam: Never mention models, prompts, databases, or AI. Avoid emoji clutter.
-5. Local Currency & Context: Use Ghana Cedis (GHS ₵) as default.
-6. Safety & Directness: Never guess ticket prices or venue details if not listed. Refer users to the official event page or support team.`;
+Tone & Communication Principles:
+1. Warm, Insider Host: Speak with hospitality, high intelligence, and local cultural fluency (familiar with Accra, Kumasi, Detty December, Afrobeats, Amapiano, MoMo).
+2. Concise & Punchy: Deliver direct answers in 1 to 3 sentences. Avoid robotic preamble, corporate clichés, and markdown header spam.
+3. Action-Driven: Always pair recommendations or guidance with direct navigation action chips (e.g., [🎟️ View My Tickets], [🔍 Explore Events], [📲 Open Check-In Scanner], [🚨 Contact Priority Support]).
+4. Machine Learning Explanations: When presenting recommended events, reference ML taste compatibility (e.g., "Matched 96% with your taste in live music").
+5. Safety & Accuracy: If an event detail is not in the live database or context, politely guide the user to check the event page or ask support. Never invent fake venues or ticket prices.`;
 
 async function seed() {
   try {
     await client.connect();
-    console.log('Connected to database');
+    console.log('Connected to PostgreSQL database');
 
     // 1. Ensure table exists
     await client.query(`
@@ -119,8 +175,8 @@ async function seed() {
       )
     `);
 
-    // 2. Insert or update the training rules
-    for (const r of RULES) {
+    // 2. Insert or update the comprehensive training rules
+    for (const r of COMPREHENSIVE_RULES) {
       const { rows } = await client.query(
         'SELECT id FROM ai_training_knowledge WHERE title = $1',
         [r.title]
@@ -131,7 +187,7 @@ async function seed() {
            VALUES ($1, $2, $3, $4, TRUE)`,
           [r.title, r.category, r.keywords, r.instruction_or_answer]
         );
-        console.log(`+ Added rule: "${r.title}"`);
+        console.log(`+ Added training rule: "${r.title}"`);
       } else {
         await client.query(
           `UPDATE ai_training_knowledge
@@ -139,25 +195,19 @@ async function seed() {
            WHERE id = $4`,
           [r.category, r.keywords, r.instruction_or_answer, rows[0].id]
         );
-        console.log(`~ Updated rule: "${r.title}"`);
+        console.log(`~ Updated training rule: "${r.title}"`);
       }
     }
 
-    // 3. Insert system voice guidelines and settings
+    // 3. Save comprehensive system instructions
     await client.query(`
       INSERT INTO system_settings (setting_key, setting_value)
       VALUES ('ai_custom_instructions', $1)
       ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = NOW()
-    `, [VOICE_GUIDELINES]);
+    `, [COMPREHENSIVE_SYSTEM_PROMPT]);
 
-    await client.query(`
-      INSERT INTO system_settings (setting_key, setting_value)
-      VALUES ('ai_temperature', '0.7')
-      ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = NOW()
-    `);
-
-    console.log('Concierge voice guidelines & temperature settings saved.');
-    console.log('All concierge training rules successfully active in the database!');
+    console.log('Successfully updated AI system training instructions in system_settings.');
+    console.log(`Successfully seeded all ${COMPREHENSIVE_RULES.length} domain training rules!`);
   } catch (err) {
     console.error('Seeding error:', err.message);
   } finally {
