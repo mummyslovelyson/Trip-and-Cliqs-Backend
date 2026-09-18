@@ -383,7 +383,8 @@ export const handleChatMessage = async (req, res) => {
         isFree: isFree,
       });
 
-      candidateEvents = searchResults.length > 0 ? searchResults : liveEvents;
+      // If user had specific filters, use only matching search results; otherwise consider live events
+      candidateEvents = searchResults.length > 0 ? searchResults : (!cat && !city ? liveEvents : []);
     }
 
     // Build user taste profile for ML ranking
@@ -394,16 +395,9 @@ export const handleChatMessage = async (req, res) => {
       query: rawMessage,
     };
 
-    let mlRankedEvents = isEventQuery ? rankEventsWithML(candidateEvents, userTaste).slice(0, 3) : [];
-
-    // If user asked for a surprise, give extra highlight
-    if (lower.includes('surprise') && mlRankedEvents.length > 0) {
-      mlRankedEvents[0] = {
-        ...mlRankedEvents[0],
-        matchScore: 99,
-        matchReason: '🔮 AI Secret Pick: Highest trending gem in Accra',
-      };
-    }
+    let mlRankedEvents = isEventQuery && candidateEvents.length > 0
+      ? rankEventsWithML(candidateEvents, userTaste).slice(0, 3)
+      : [];
 
     // Query active ticket tiers for recommended events
     const eventIds = mlRankedEvents.map((e) => e.id);
@@ -442,9 +436,9 @@ export const handleChatMessage = async (req, res) => {
       city: ev.city,
       category: ev.category,
       minPrice: Number(ev.min_price || 0),
-      matchScore: ev.matchScore || 88,
-      matchReason: ev.matchReason || 'Curated ML recommendation',
-      demandBadge: ev.demandBadge || predictEventDemand(ev).badge,
+      matchScore: ev.matchScore || null,
+      matchReason: ev.matchReason || null,
+      demandBadge: ev.demandBadge || null,
       ticketTiers: tiersMap[ev.id] || [],
     }));
 

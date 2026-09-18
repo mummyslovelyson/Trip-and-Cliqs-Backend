@@ -60,25 +60,6 @@ export async function verifyFirebaseToken(idToken) {
     }
   }
 
-  // 3. Fallback JWT payload decoder for development / demo tokens
-  try {
-    const parts = idToken.split('.');
-    if (parts.length === 3) {
-      const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
-      if (payload.email) {
-        return {
-          uid: payload.user_id || payload.sub || payload.uid || `fb_${Date.now()}`,
-          email: payload.email.toLowerCase().trim(),
-          name: payload.name || (payload.email.split('@')[0]),
-          picture: payload.picture || null,
-          emailVerified: payload.email_verified !== false,
-        };
-      }
-    }
-  } catch (err) {
-    console.warn('[FirebaseToken] JWT fallback decode failed:', err.message);
-  }
-
   throw new Error('Unable to verify Firebase authentication token');
 }
 

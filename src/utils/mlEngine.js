@@ -152,37 +152,36 @@ export function rankEventsWithML(candidates = [], userHistory = {}) {
     }
   }
 
-  // Calculate ML Match Score for each event
+  // Calculate ML Match Score for each event using genuine cosine similarity
   const ranked = eventVectors.map(({ event, vector }) => {
     let rawScore = 0;
-    let matchPercentage = 75; // Baseline popular event score
+    let matchPercentage = null;
+    let matchReason = null;
 
     if (userVector) {
       rawScore = cosineSimilarity(userVector, vector);
 
-      // Category and city affinity boosts
+      // Category, attendance, and city affinity boosts
       let boost = 0;
-      if (userHistory.favoriteCategories?.includes(event.category)) boost += 0.18;
-      if (userHistory.attendedCategories?.includes(event.category)) boost += 0.12;
-      if (userHistory.userCity && event.city?.toLowerCase() === userHistory.userCity.toLowerCase()) boost += 0.08;
+      if (userHistory.favoriteCategories?.includes(event.category)) boost += 0.25;
+      if (userHistory.attendedCategories?.includes(event.category)) boost += 0.15;
+      if (userHistory.userCity && event.city?.toLowerCase() === userHistory.userCity.toLowerCase()) boost += 0.15;
 
       const combinedScore = Math.min(1.0, rawScore + boost);
-      matchPercentage = Math.min(99, Math.round(65 + combinedScore * 34));
-    } else if (event.is_featured) {
-      matchPercentage = 95;
+
+      if (combinedScore > 0.05) {
+        matchPercentage = Math.min(99, Math.max(30, Math.round(combinedScore * 100)));
+        if (userHistory.favoriteCategories?.includes(event.category)) {
+          matchReason = `Matches your preference for ${event.category}`;
+        } else if (userHistory.userCity && event.city?.toLowerCase() === userHistory.userCity.toLowerCase()) {
+          matchReason = `Happening near you in ${event.city}`;
+        } else if (rawScore > 0.1) {
+          matchReason = `Recommended based on your query`;
+        }
+      }
     }
 
-    // Determine primary matching factor for explainable recommendations
-    let matchReason = 'Matches popular events in Ghana';
-    if (userHistory.favoriteCategories?.includes(event.category)) {
-      matchReason = `Based on your interest in ${event.category}`;
-    } else if (userHistory.userCity && event.city?.toLowerCase() === userHistory.userCity.toLowerCase()) {
-      matchReason = `Happening near you in ${event.city}`;
-    } else if (event.category) {
-      matchReason = `Trending in ${event.category}`;
-    }
-
-    // Predict demand and sell-out velocity
+    // Predict demand and sell-out velocity based strictly on real event data
     const demandPrediction = predictEventDemand(event);
 
     return {
@@ -194,42 +193,53 @@ export function rankEventsWithML(candidates = [], userHistory = {}) {
     };
   });
 
-  // Sort by match score descending, then by date ascending
-  return ranked.sort((a, b) => b.matchScore - a.matchScore || new Date(a.start_date) - new Date(b.start_date));
+  // Sort by match score descending (if matched), then by date ascending
+  return ranked.sort((a, b) => {
+    if ((b.matchScore || 0) !== (a.matchScore || 0)) {
+      return (b.matchScore || 0) - (a.matchScore || 0);
+    }
+    return new Date(a.start_date || 0) - new Date(b.start_date || 0);
+  });
 }
 
 /**
  * Predictive Event Demand & Sell-Out Velocity
+ * Strictly calculates velocity from real capacity and actual tickets sold.
  */
 export function predictEventDemand(event) {
-  const capacity = Number(event.capacity) || 100;
-  const sold = Number(event.quantity_sold || event.view_count || 0);
+  const capacity = Number(event?.capacity);
+  const sold = Number(event?.quantity_sold || 0);
 
-  const now = new Date();
-  const eventDate = event.start_date ? new Date(event.start_date) : new Date(now.getTime() + 7 * 86400000);
-  const diffDays = Math.max(1, Math.ceil((eventDate - now) / (1000 * 60 * 60 * 24)));
+  if (capacity > 0 && sold > 0) {
+    const fillRatio = Math.min(1, sold / capacity);
+    if (fillRatio >= 0.85) {
+      return {
+        badge: '🔥 High Demand - Almost Sold Out',
+        risk: 'CRITICAL',
+        soldPercentage: Math.round(fillRatio * 100),
+      };
+    }
+    if (fillRatio >= 0.5) {
+      return {
+        badge: '⚡ Selling Fast',
+        risk: 'HIGH',
+        soldPercentage: Math.round(fillRatio * 100),
+      };
+    }
+  }
 
-  const fillRatio = Math.min(1, sold / Math.max(1, capacity));
-
-  // High velocity if fill ratio is high or date is approaching fast
-  if (fillRatio >= 0.85 || (fillRatio >= 0.6 && diffDays <= 3)) {
+  if (capacity > 0) {
     return {
-      badge: '🔥 High Demand - Almost Sold Out',
-      risk: 'CRITICAL',
-      soldPercentage: Math.round(fillRatio * 100),
+      badge: '🎟️ Tickets Available',
+      risk: 'NORMAL',
+      soldPercentage: capacity > 0 && sold > 0 ? Math.round((sold / capacity) * 100) : 0,
     };
   }
-  if (fillRatio >= 0.5 || diffDays <= 5) {
-    return {
-      badge: '⚡ Selling Fast',
-      risk: 'HIGH',
-      soldPercentage: Math.round(fillRatio * 100),
-    };
-  }
+
   return {
-    badge: '🎟️ Tickets Available',
+    badge: null,
     risk: 'NORMAL',
-    soldPercentage: Math.round(fillRatio * 100),
+    soldPercentage: 0,
   };
 }
 
