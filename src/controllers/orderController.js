@@ -194,23 +194,64 @@ export const createOrder = async (req, res) => {
 };
 
 /* ------------------------------------------------------------------ */
-/* Internal: generate tickets for a completed order                    */
+/* Internal / Exported: generate tickets for a completed order        */
 /* ------------------------------------------------------------------ */
-const generateTicketsForOrder = async (orderId) => {
+export const generateTicketsForOrder = async (orderId) => {
   const [items] = await pool.execute('SELECT * FROM order_items WHERE order_id = ?', [orderId]);
   const [orderRows] = await pool.execute('SELECT * FROM orders WHERE id = ?', [orderId]);
   const order = orderRows[0];
   if (!order) return;
 
+  // Guard against duplicate ticket minting
+  const [existing] = await pool.execute(
+    `SELECT id FROM tickets WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)`,
+    [orderId],
+  );
+  if (existing && existing.length > 0) return;
+
   for (const oi of items) {
     for (let i = 0; i < oi.quantity; i++) {
-      const ticketNumber = `TC-${uuidv4().split('-')[0].toUpperCase()}`;
-      await pool.execute(
-        `INSERT INTO tickets (order_item_id, user_id, event_id, ticket_type_id, ticket_number, qr_code, status)
-         SELECT ?, ?, ?, ?, ?, ?, 'active'
-         FROM dual`,
-        [oi.id, order.user_id, order.event_id, oi.ticket_type_id, ticketNumber, ticketNumber],
-      );
+      let ticketNumber = `TC-${uuidv4().split('-')[0].toUpperCase()}`;
+      let seatNumber = null;
+      let ticketFileUrl = null;
+      let ticketFileName = null;
+
+      try {
+        const [utRows] = await pool.execute(
+          `SELECT id, file_url, file_name, barcode, seat_number
+           FROM uploaded_tickets
+           WHERE ticket_type_id = ? AND is_assigned = FALSE
+           ORDER BY id ASC LIMIT 1`,
+          [oi.ticket_type_id],
+        );
+        const ut = utRows?.[0];
+        if (ut) {
+          if (ut.barcode) ticketNumber = ut.barcode;
+          if (ut.seat_number) seatNumber = ut.seat_number;
+          ticketFileUrl = ut.file_url || null;
+          ticketFileName = ut.file_name || null;
+        }
+
+        const [tResult] = await pool.execute(
+          `INSERT INTO tickets (order_item_id, user_id, event_id, ticket_type_id, ticket_number, qr_code, seat_number, ticket_file_url, ticket_file_name, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+          [oi.id, order.user_id, order.event_id, oi.ticket_type_id, ticketNumber, ticketNumber, seatNumber, ticketFileUrl, ticketFileName],
+        );
+
+        if (ut) {
+          await pool.execute(
+            `UPDATE uploaded_tickets SET is_assigned = TRUE, assigned_ticket_id = ?, assigned_at = NOW() WHERE id = ?`,
+            [tResult.insertId, ut.id],
+          );
+        }
+      } catch {
+        // Safe fallback if uploaded_tickets columns are not present
+        await pool.execute(
+          `INSERT INTO tickets (order_item_id, user_id, event_id, ticket_type_id, ticket_number, qr_code, status)
+           VALUES (?, ?, ?, ?, ?, ?, 'active')`,
+          [oi.id, order.user_id, order.event_id, oi.ticket_type_id, ticketNumber, ticketNumber],
+        );
+      }
     }
   }
 };
@@ -312,7 +353,7 @@ export const initiateOrderPayment = async (req, res) => {
     const order = rows[0];
     if (!order) return res.status(404).json({ message: 'Order not found' });
 
-    if (order.user_id !== req.user.id && req.user.role !== 'admin') {
+    if (Number(order.user_id) !== Number(req.user.id) && req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Forbidden' });
     }
 
@@ -362,7 +403,7 @@ export const getOrderInvoice = async (req, res) => {
     if (!order) return res.status(404).json({ message: 'Order not found' });
 
     const isAllowedAdmin = ['admin', 'system_admin', 'superadmin', 'staff'].includes(req.user.role);
-    if (order.user_id !== req.user.id && !isAllowedAdmin && req.user.role !== 'organizer') {
+    if (Number(order.user_id) !== Number(req.user.id) && !isAllowedAdmin && req.user.role !== 'organizer') {
       return res.status(403).json({ message: 'Forbidden' });
     }
 
@@ -379,21 +420,32 @@ export const getOrderInvoice = async (req, res) => {
     );
     const subtotal = items.reduce((sum, i) => sum + Number(i.subtotal), 0);
 
+    const formattedDate = order.created_at ? new Date(order.created_at).toLocaleDateString('en-US', {
+      year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+    }) : '—';
+
     const pdf = textPdf({
-      title: 'INVOICE',
+      title: 'TAX INVOICE & OFFICIAL RECEIPT',
       lines: [
-        `Order #${order.id}`,
-        `Reference: ${order.payment_reference}`,
-        `Buyer: ${order.buyer_name || ''} (${order.buyer_email || ''})`,
+        `Invoice #: ${order.invoice_number || `INV-${order.id}`}`,
+        `Order ID: #${order.id}`,
+        `Transaction Ref: ${order.payment_reference}`,
+        `Date Issued: ${formattedDate}`,
+        `Billed To: ${order.buyer_name || 'Event Attendee'} (${order.buyer_email || '—'})`,
         `Event: ${order.event_title || ''}`,
-        `Status: ${order.payment_status}`,
+        `Payment Method: ${order.payment_method || 'Paystack (Card / MoMo)'}`,
+        `Payment Status: ${(order.payment_status || 'paid').toUpperCase()} (VERIFIED)`,
         '',
-        'Items:',
+        'Itemized Breakdown:',
         ...itemLines,
         '',
         `Subtotal: GHS ${subtotal.toFixed(2)}`,
-        `Discount: GHS ${Number(order.discount_amount || 0).toFixed(2)}`,
-        `Total: GHS ${Number(order.total_amount).toFixed(2)}`,
+        ...(Number(order.discount_amount) > 0 ? [`Discount Applied: -GHS ${Number(order.discount_amount).toFixed(2)}`] : []),
+        `Total Amount Paid: GHS ${Number(order.total_amount).toFixed(2)}`,
+        '',
+        'Thank you for booking with Tribes & Cliqs.',
+        'This receipt is an official proof of payment and ticket fulfillment.',
+        `Verification Link: https://tribesandcliqs.com/verify/${order.payment_reference}`,
       ],
     });
 
@@ -413,7 +465,8 @@ export const getOrder = async (req, res) => {
   try {
     const { id } = req.params;
     const [rows] = await pool.execute(
-      `SELECT o.*, e.title AS event_title, e.banner_image, e.organizer_id,
+      `SELECT o.*, e.title AS event_title, e.venue AS event_venue, e.start_date AS event_date, e.start_time AS event_time,
+              e.banner_image, e.organizer_id,
               u.name AS buyer_name, u.email AS buyer_email, u.phone AS buyer_phone
        FROM orders o
        JOIN events e ON e.id = o.event_id
@@ -424,7 +477,7 @@ export const getOrder = async (req, res) => {
     const order = rows[0];
     if (!order) return res.status(404).json({ message: 'Order not found' });
 
-    if (order.user_id !== req.user.id && req.user.role !== 'admin') {
+    if (Number(order.user_id) !== Number(req.user.id) && req.user.role !== 'admin') {
       if (req.user.role === 'organizer' && Number(order.organizer_id) === Number(req.user.id)) {
         // Authorized
       } else {
@@ -433,9 +486,9 @@ export const getOrder = async (req, res) => {
     }
 
     const [items] = await pool.execute(
-      `SELECT oi.*, tt.name AS ticket_type_name
+      `SELECT oi.*, COALESCE(tt.name, 'General Admission') AS ticket_type_name
        FROM order_items oi
-       JOIN ticket_types tt ON tt.id = oi.ticket_type_id
+       LEFT JOIN ticket_types tt ON tt.id = oi.ticket_type_id
        WHERE oi.order_id = ?`,
       [id],
     );
@@ -612,7 +665,7 @@ export const cancelOrder = async (req, res) => {
     const order = rows[0];
     if (!order) { conn.release(); return res.status(404).json({ message: 'Order not found' }); }
 
-    if (order.user_id !== req.user.id && req.user.role !== 'admin') {
+    if (Number(order.user_id) !== Number(req.user.id) && req.user.role !== 'admin') {
       conn.release();
       return res.status(403).json({ message: 'Forbidden' });
     }
@@ -773,7 +826,88 @@ export const verifyPayment = async (req, res) => {
       await completeOrder(order.id, reference);
     }
 
-    res.json({ message: 'Payment verified', status: verifyResult.data.status, orderId: order.id });
+    // Fetch tickets and event data for the completed order so the attendee can view them immediately
+    let tickets = [];
+    let eventInfo = null;
+
+    try {
+      const [ticketRows] = await pool.execute(
+        `SELECT t.id, t.ticket_number, t.qr_code, t.status, t.seat_number, t.created_at,
+                t.ticket_file_url, t.ticket_file_name,
+                tt.name AS ticket_type_name, COALESCE(oi.unit_price, tt.price, 0) AS price,
+                COALESCE(oi.unit_price, tt.price, 0) AS unit_price,
+                e.id AS event_id, e.title AS event_title, e.venue AS event_venue, e.location AS event_location,
+                e.start_date, e.end_date, e.start_time, e.banner_image, e.ticket_template,
+                u.name AS attendee_name, u.email AS attendee_email
+         FROM tickets t
+         LEFT JOIN ticket_types tt ON tt.id = t.ticket_type_id
+         LEFT JOIN events e ON e.id = t.event_id
+         LEFT JOIN users u ON u.id = t.user_id
+         LEFT JOIN order_items oi ON oi.id = t.order_item_id
+         WHERE oi.order_id = ? OR t.order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)
+         ORDER BY t.id ASC`,
+        [order.id, order.id],
+      );
+
+      tickets = (ticketRows || []).map((t) => ({
+        id: t.id,
+        ticketNumber: t.ticket_number,
+        qrCode: t.qr_code,
+        status: t.status || 'active',
+        ticketType: t.ticket_type_name || 'Standard Admission',
+        price: Number(t.price || t.unit_price || 0),
+        unitPrice: Number(t.unit_price || t.price || 0),
+        attendeeName: t.attendee_name || 'Attendee',
+        seat: t.seat_number,
+        ticketFileUrl: t.ticket_file_url || null,
+        ticketFileName: t.ticket_file_name || null,
+        event: {
+          id: t.event_id,
+          title: t.event_title || 'Event',
+          venue: t.event_venue || 'Venue TBA',
+          location: t.event_location || '',
+          startDate: t.start_date,
+          startTime: t.start_time,
+          image: t.banner_image,
+          ticketTemplate: t.ticket_template,
+        },
+      }));
+
+      if (tickets.length > 0) {
+        eventInfo = tickets[0].event;
+      } else if (order.event_id) {
+        const [eventRows] = await pool.execute('SELECT * FROM events WHERE id = ?', [order.event_id]);
+        if (eventRows[0]) {
+          eventInfo = {
+            id: eventRows[0].id,
+            title: eventRows[0].title,
+            venue: eventRows[0].venue,
+            location: eventRows[0].location,
+            startDate: eventRows[0].start_date,
+            startTime: eventRows[0].start_time,
+            image: eventRows[0].banner_image,
+            ticketTemplate: eventRows[0].ticket_template,
+          };
+        }
+      }
+    } catch (ticketErr) {
+      console.warn('[orderController.verifyPayment] Tickets fetch note:', ticketErr.message);
+    }
+
+    res.json({
+      message: 'Payment verified',
+      status: verifyResult.data.status,
+      orderId: order.id,
+      order: {
+        id: order.id,
+        reference: order.payment_reference,
+        total: Number(order.total_amount || 0),
+        currency: order.currency || 'GHS',
+        paymentMethod: order.payment_method,
+      },
+      event: eventInfo,
+      tickets,
+    });
   } catch (err) {
     console.error('[orderController.verifyPayment]', err);
     res.status(500).json({ message: 'Server error verifying payment' });

@@ -14,7 +14,7 @@ const hashToken = (token) => crypto.createHash('sha256').update(String(token)).d
  * Build a short-lived JWT access token (default 15 minutes).
  */
 export const generateToken = (payload) =>
-  jwt.sign(payload, JWT_SECRET, { expiresIn: ACCESS_TOKEN_TTL });
+  jwt.sign(payload, JWT_SECRET, { expiresIn: ACCESS_TOKEN_TTL, algorithm: 'HS256' });
 
 /**
  * Build a refresh token, store it server-side, and return the raw token.
@@ -132,7 +132,7 @@ export const revokeSession = async (sessionId, userId) => {
  */
 export const verifyToken = (token) => {
   try {
-    return jwt.verify(token, JWT_SECRET);
+    return jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
   } catch {
     return null;
   }
@@ -143,7 +143,7 @@ export const verifyToken = (token) => {
  */
 export const verifyRefreshToken = (token) => {
   try {
-    return jwt.verify(token, JWT_REFRESH_SECRET);
+    return jwt.verify(token, JWT_REFRESH_SECRET, { algorithms: ['HS256'] });
   } catch {
     return null;
   }

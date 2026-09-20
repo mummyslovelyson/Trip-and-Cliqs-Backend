@@ -20,6 +20,7 @@ export function createFakeDb() {
     refresh_tokens: 1, password_history: 1,
     admin_user_notes: 1, user_activity_log: 1,
     pending_registrations: 1, system_settings: 1,
+    uploaded_tickets: 1,
   };
   const tables = {
     users: [], events: [], ticket_types: [], notifications: [],
@@ -31,6 +32,7 @@ export function createFakeDb() {
     refresh_tokens: [], password_history: [],
     admin_user_notes: [], user_activity_log: [],
     pending_registrations: [], system_settings: [],
+    uploaded_tickets: [],
   };
 
   const nowIso = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
@@ -170,6 +172,10 @@ export function createFakeDb() {
     }
     if (table === 'resale_listings') {
       if (row.status === undefined) row.status = 'active';
+      if (row.created_at === undefined) row.created_at = nowIso();
+    }
+    if (table === 'uploaded_tickets') {
+      if (row.is_assigned === undefined) row.is_assigned = 0;
       if (row.created_at === undefined) row.created_at = nowIso();
     }
     tables[table].push(row);

@@ -17,7 +17,7 @@ export const authenticate = async (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
     const userId = decoded.id || decoded.userId || decoded.sub;
     if (!userId) {
       return res.status(401).json({ message: 'Invalid session payload' });
@@ -69,7 +69,7 @@ export const optionalAuth = (req, res, next) => {
   const token = authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
   if (token) {
     try {
-      req.user = jwt.verify(token, JWT_SECRET);
+      req.user = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
     } catch {
       /* ignore — treated as anonymous */
     }

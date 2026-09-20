@@ -179,7 +179,7 @@ test('public registration rejects admin/staff roles', async () => {
   );
 });
 
-test('creating an event with status "published" is stored as pending', async () => {
+test('creating an event with status "published" publishes it immediately with ticket types', async () => {
   const r = await api('POST', '/api/events', {
     token: organizerToken,
     body: eventPayload({
@@ -189,7 +189,24 @@ test('creating an event with status "published" is stored as pending', async () 
   });
   assert.equal(r.status, 201);
   pendingEventId = r.json.eventId;
-  assert.equal(db.tables.events.find((e) => e.id === pendingEventId).status, 'pending');
+  const ev = db.tables.events.find((e) => e.id === pendingEventId);
+  assert.equal(ev.status, 'published', 'event is published immediately');
+  assert.equal(ev.approval_status, 'approved', 'event is approved immediately');
+});
+
+test('published events are immediately visible to the public with tickets ready for sale', async () => {
+  const list = await api('GET', '/api/events');
+  assert.equal(list.status, 200);
+  assert.ok(
+    list.json.events.some((e) => e.id === pendingEventId),
+    'published event must appear in the public list immediately',
+  );
+  const single = await api('GET', `/api/events/${pendingEventId}`);
+  assert.equal(single.status, 200);
+  assert.equal(single.json.status, 'published');
+  assert.equal(single.json.ticket_types.length, 1);
+  assert.equal(single.json.ticket_types[0].name, 'General');
+  assert.equal(Number(single.json.ticket_types[0].price), 100);
 });
 
 test('creating an event with status "draft" stays a draft', async () => {
@@ -202,65 +219,73 @@ test('creating an event with status "draft" stays a draft', async () => {
   assert.equal(db.tables.events.find((e) => e.id === rejectedEventId).status, 'draft');
 });
 
-test('organizer "publish" submits for review — status pending, never published', async () => {
-  const r = await api('PATCH', `/api/events/${rejectedEventId}/publish`, { token: organizerToken });
-  assert.equal(r.status, 200);
-  assert.equal(r.json.status, 'pending');
-  assert.equal(db.tables.events.find((e) => e.id === rejectedEventId).status, 'pending');
-  const audit = db.tables.audit_logs.find(
-    (a) => a.action === 'submit_event_for_review' && a.entity_id === rejectedEventId,
-  );
-  assert.ok(audit, 'expected a submit_event_for_review audit entry');
-});
-
-test('pending events are hidden from anonymous users', async () => {
+test('draft events are hidden from anonymous users but visible to owner and admins', async () => {
   const list = await api('GET', '/api/events');
   assert.equal(list.status, 200);
   assert.ok(
-    !list.json.events.some((e) => e.id === pendingEventId),
-    'pending event must not appear in the public list',
+    !list.json.events.some((e) => e.id === rejectedEventId),
+    'draft event must not appear in public list',
   );
-  const single = await api('GET', `/api/events/${pendingEventId}`);
-  assert.equal(single.status, 404, 'pending event must 404 for anonymous GET /:id');
-});
+  const single = await api('GET', `/api/events/${rejectedEventId}`);
+  assert.equal(single.status, 404, 'draft event must 404 for anonymous GET /:id');
 
-test('pending events are visible to their owner and to admins', async () => {
-  const asOwner = await api('GET', `/api/events/${pendingEventId}`, { token: organizerToken });
+  const asOwner = await api('GET', `/api/events/${rejectedEventId}`, { token: organizerToken });
   assert.equal(asOwner.status, 200);
-  assert.equal(asOwner.json.status, 'pending');
-  const asAdmin = await api('GET', `/api/events/${pendingEventId}`, { token: adminToken });
+  assert.equal(asOwner.json.status, 'draft');
+
+  const asAdmin = await api('GET', `/api/events/${rejectedEventId}`, { token: adminToken });
   assert.equal(asAdmin.status, 200);
 });
 
+test('organizer can publish a draft event directly — goes live for ticket sales', async () => {
+  const r = await api('PATCH', `/api/events/${rejectedEventId}/publish`, { token: organizerToken });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.status, 'published');
+  assert.equal(db.tables.events.find((e) => e.id === rejectedEventId).status, 'published');
+  const audit = db.tables.audit_logs.find(
+    (a) => a.action === 'publish_event' && a.entity_id === rejectedEventId,
+  );
+  assert.ok(audit, 'expected a publish_event audit entry');
+
+  // Verify it is now publicly visible
+  const single = await api('GET', `/api/events/${rejectedEventId}`);
+  assert.equal(single.status, 200);
+  assert.equal(single.json.status, 'published');
+});
+
+test('organizer can unpublish an event back to draft', async () => {
+  const r = await api('PATCH', `/api/events/${rejectedEventId}/unpublish`, { token: organizerToken });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.status, 'draft');
+  assert.equal(db.tables.events.find((e) => e.id === rejectedEventId).status, 'draft');
+  const audit = db.tables.audit_logs.find(
+    (a) => a.action === 'unpublish_event' && a.entity_id === rejectedEventId,
+  );
+  assert.ok(audit, 'expected an unpublish_event audit entry');
+
+  const single = await api('GET', `/api/events/${rejectedEventId}`);
+  assert.equal(single.status, 404);
+});
+
 test('approve/reject endpoints are admin-only', async () => {
-  const r = await api('POST', `/api/admin/events/${pendingEventId}/approve`, { token: organizerToken });
+  const r = await api('POST', `/api/admin/events/${rejectedEventId}/approve`, { token: organizerToken });
   assert.equal(r.status, 403, 'organizers must not reach admin moderation');
-  assert.equal(db.tables.events.find((e) => e.id === pendingEventId).status, 'pending');
 });
 
 test('admin approval publishes the event and notifies the organizer', async () => {
-  const r = await api('POST', `/api/admin/events/${pendingEventId}/approve`, { token: adminToken });
+  const r = await api('POST', `/api/admin/events/${rejectedEventId}/approve`, { token: adminToken });
   assert.equal(r.status, 200);
-  assert.equal(db.tables.events.find((e) => e.id === pendingEventId).status, 'published');
+  assert.equal(db.tables.events.find((e) => e.id === rejectedEventId).status, 'published');
   await sleep(50); // notification insert is fire-and-forget
   const notif = db.tables.notifications.find(
     (n) => n.user_id === organizerId && n.title.includes('approved'),
   );
   assert.ok(notif, 'organizer should get an in-app approval notification');
-  assert.ok(notif.message.includes('Afrobeat Night'), 'notification names the event');
+  assert.ok(notif.message.includes('Draft Gala'), 'notification names the event');
   const audit = db.tables.audit_logs.find(
-    (a) => a.action === 'approve_event' && a.entity_id === pendingEventId,
+    (a) => a.action === 'approve_event' && a.entity_id === rejectedEventId,
   );
   assert.ok(audit, 'expected an approve_event audit entry');
-});
-
-test('approved events become publicly visible with their ticket types', async () => {
-  const list = await api('GET', '/api/events');
-  assert.ok(list.json.events.some((e) => e.id === pendingEventId), 'published event in public list');
-  const single = await api('GET', `/api/events/${pendingEventId}`);
-  assert.equal(single.status, 200);
-  assert.equal(single.json.status, 'published');
-  assert.equal(single.json.ticket_types.length, 1);
 });
 
 test('admin rejection marks the event rejected and notifies with the reason', async () => {
@@ -291,7 +316,7 @@ test('rejected events stay hidden from the public but visible to their owner', a
   assert.equal(asOwner.json.status, 'rejected');
 });
 
-test('organizer can edit a rejected event and resubmit for review', async () => {
+test('organizer can edit a rejected event and publish directly', async () => {
   const edit = await api('PUT', `/api/events/${rejectedEventId}`, {
     token: organizerToken,
     body: { title: 'Draft Gala (Revised)', capacity: 800 },
@@ -305,7 +330,7 @@ test('organizer can edit a rejected event and resubmit for review', async () => 
   assert.equal(resubmit.status, 200);
   assert.equal(
     db.tables.events.find((e) => e.id === rejectedEventId).status,
-    'pending',
-    'resubmission returns the event to the review queue',
+    'published',
+    'organizer direct publish puts event live',
   );
 });

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import {
   getTicketTypes, createTicketType, updateTicketType, deleteTicketType,
   getUserTickets, getTicketById, checkInTicket, transferTicket, getTickets,
-  verifyTicketByCode, bulkCheckIn, downloadTicket,
+  verifyTicketByCode, bulkCheckIn, downloadTicket, getUploadedTickets,
 } from '../controllers/ticketController.js';
 import { authenticate, authorize, optionalAuth } from '../middleware/auth.js';
 import { rateLimit } from '../middleware/rateLimit.js';
@@ -18,6 +18,7 @@ router.get('/:eventId/types', getTicketTypes);
 // Organizer / admin manage ticket types
 router.post('/:eventId/types', authenticate, authorize('organizer', 'admin'), writeLimiter, createTicketType);
 router.put('/types/:id', authenticate, authorize('organizer', 'admin'), writeLimiter, updateTicketType);
+router.get('/types/:id/inventory', authenticate, authorize('organizer', 'admin'), getUploadedTickets);
 router.delete('/types/:id', authenticate, authorize('organizer', 'admin'), writeLimiter, deleteTicketType);
 
 // Attendee — tickets

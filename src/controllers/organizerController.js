@@ -340,7 +340,7 @@ export const getAttendees = async (req, res) => {
 
     const [eventRows] = await pool.execute('SELECT organizer_id FROM events WHERE id = ?', [eventId]);
     if (!eventRows[0]) return res.status(404).json({ message: 'Event not found' });
-    if (eventRows[0].organizer_id !== req.user.id && req.user.role !== 'admin') {
+    if (Number(eventRows[0]?.organizer_id) !== Number(req.user.id) && req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Forbidden' });
     }
 
@@ -350,10 +350,14 @@ export const getAttendees = async (req, res) => {
 
     const [rows] = await pool.execute(
       `SELECT t.id, t.ticket_number, t.status, t.seat_number, t.checked_in_at, t.created_at,
-              tt.name AS ticket_type, u.name AS attendee_name, u.email, u.phone
+              tt.name AS ticket_type, u.name AS attendee_name, u.email, u.phone,
+              o.id AS order_id, o.payment_reference AS order_reference,
+              CASE WHEN t.status = 'used' OR t.checked_in_at IS NOT NULL THEN TRUE ELSE FALSE END AS checked_in
        FROM tickets t
        JOIN ticket_types tt ON tt.id = t.ticket_type_id
        JOIN users u ON u.id = t.user_id
+       LEFT JOIN order_items oi ON oi.id = t.order_item_id
+       LEFT JOIN orders o ON o.id = oi.order_id
        WHERE t.event_id = ?
        ORDER BY t.created_at DESC
        LIMIT ${limitNum} OFFSET ${offset}`,
@@ -383,7 +387,7 @@ export const exportAttendees = async (req, res) => {
     const { eventId } = req.params;
     const [eventRows] = await pool.execute('SELECT organizer_id, title FROM events WHERE id = ?', [eventId]);
     if (!eventRows[0]) return res.status(404).json({ message: 'Event not found' });
-    if (eventRows[0].organizer_id !== req.user.id && req.user.role !== 'admin') {
+    if (Number(eventRows[0]?.organizer_id) !== Number(req.user.id) && req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Forbidden' });
     }
 
@@ -449,7 +453,7 @@ export const createCoupon = async (req, res) => {
 
     const [eventRows] = await pool.execute('SELECT organizer_id FROM events WHERE id = ?', [eventId]);
     if (!eventRows[0]) return res.status(404).json({ message: 'Event not found' });
-    if (eventRows[0].organizer_id !== req.user.id && req.user.role !== 'admin') {
+    if (Number(eventRows[0]?.organizer_id) !== Number(req.user.id) && req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Forbidden' });
     }
 
@@ -552,7 +556,7 @@ export const getEventAnalytics = async (req, res) => {
     const [eventRows] = await pool.execute('SELECT * FROM events WHERE id = ?', [eventId]);
     const event = eventRows[0];
     if (!event) return res.status(404).json({ message: 'Event not found' });
-    if (event.organizer_id !== req.user.id && req.user.role !== 'admin') {
+    if (Number(event.organizer_id) !== Number(req.user.id) && req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Forbidden' });
     }
 
@@ -799,7 +803,7 @@ export const sendMarketingEmail = async (req, res) => {
     if (eventId) {
       const [eventRows] = await pool.execute('SELECT organizer_id FROM events WHERE id = ?', [eventId]);
       if (!eventRows[0]) return res.status(404).json({ message: 'Event not found' });
-      if (eventRows[0].organizer_id !== req.user.id) {
+      if (Number(eventRows[0]?.organizer_id) !== Number(req.user.id) && req.user.role !== 'admin') {
         return res.status(403).json({ message: 'Forbidden' });
       }
       const [rows] = await pool.execute(

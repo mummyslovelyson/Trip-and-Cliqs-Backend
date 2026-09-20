@@ -220,7 +220,8 @@ CREATE TABLE IF NOT EXISTS tickets (
   ticket_type_id  BIGINT NOT NULL,
   ticket_number   VARCHAR(60) NOT NULL UNIQUE,
   qr_code         TEXT,
-  seat_number     VARCHAR(50),
+  ticket_file_url TEXT,
+  ticket_file_name VARCHAR(255),
   status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','used','cancelled','transferred')),
   transferred_to  BIGINT,
   checked_in_at   TIMESTAMPTZ,
@@ -235,6 +236,25 @@ CREATE TABLE IF NOT EXISTS tickets (
 CREATE INDEX IF NOT EXISTS idx_t_user ON tickets(user_id);
 CREATE INDEX IF NOT EXISTS idx_t_event ON tickets(event_id);
 CREATE INDEX IF NOT EXISTS idx_t_number ON tickets(ticket_number);
+
+-- ────────────────  UPLOADED TICKETS (Pre-generated organizer ticket assets)  ────────────────
+CREATE TABLE IF NOT EXISTS uploaded_tickets (
+  id                  BIGSERIAL PRIMARY KEY,
+  event_id            BIGINT NOT NULL,
+  ticket_type_id      BIGINT NOT NULL,
+  file_url            TEXT NOT NULL,
+  file_name           VARCHAR(255),
+  barcode             VARCHAR(100),
+  seat_number         VARCHAR(50),
+  is_assigned         BOOLEAN NOT NULL DEFAULT FALSE,
+  assigned_ticket_id  BIGINT,
+  assigned_at         TIMESTAMPTZ,
+  created_at          TIMESTAMPTZ DEFAULT NOW(),
+  CONSTRAINT fk_ut_event FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
+  CONSTRAINT fk_ut_tt FOREIGN KEY (ticket_type_id) REFERENCES ticket_types(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_ut_tt_unassigned ON uploaded_tickets(ticket_type_id, is_assigned);
 
 -- ────────────────  FAVORITES  ────────────────
 CREATE TABLE IF NOT EXISTS favorites (

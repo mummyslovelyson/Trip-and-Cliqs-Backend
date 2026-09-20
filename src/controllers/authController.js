@@ -24,6 +24,10 @@ const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_MINUTES = 15;
 const MAX_PASSWORD_HISTORY = 5;
 
+// Pre-computed bcrypt hash used for constant-time comparisons when user is not found
+// Prevents response timing analysis from revealing whether an email is registered (anti-user enumeration)
+const DUMMY_BCRYPT_HASH = '$2a$12$e8h1Y3bX9U9YV7lF8G7Z0e9v9q5w6x7y8z9a0b1c2d3e4f5g6h7i8';
+
 const sanitize = (u) => {
   if (!u) return null;
   const { password, ...rest } = u;
@@ -243,7 +247,12 @@ export const login = async (req, res) => {
 
     const [rows] = await pool.execute('SELECT * FROM users WHERE email = ?', [email]);
     const user = rows[0];
-    if (!user) { recordAuthFailure(req); return res.status(401).json({ message: 'Invalid credentials' }); }
+    if (!user) {
+      // Execute dummy compare to equalize response latency with existing user path
+      await bcrypt.compare(password, DUMMY_BCRYPT_HASH);
+      recordAuthFailure(req);
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
 
     // Per-account lockout check
     if (isLocked(user)) {
@@ -344,7 +353,11 @@ export const adminLogin = async (req, res) => {
       [email],
     );
     const user = rows[0];
-    if (!user) { recordAuthFailure(req); return res.status(401).json({ message: 'Invalid admin credentials' }); }
+    if (!user) {
+      await bcrypt.compare(password, DUMMY_BCRYPT_HASH);
+      recordAuthFailure(req);
+      return res.status(401).json({ message: 'Invalid admin credentials' });
+    }
 
     // Per-account lockout
     if (isLocked(user)) {

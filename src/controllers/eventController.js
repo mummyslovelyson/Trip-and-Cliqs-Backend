@@ -198,14 +198,31 @@ export const getEvent = async (req, res) => {
 
     // Only published events are publicly visible. Drafts / pending / rejected
     // events are visible to their owner and to admins.
-    const isOwner = event.organizer_id === req.user?.id;
+    const isOwner = Boolean(req.user?.id && Number(event.organizer_id) === Number(req.user.id));
     const isAdmin = req.user?.role === 'admin';
     if (event.status !== 'published' && !isOwner && !isAdmin) {
       return res.status(404).json({ message: 'Event not found' });
-    }    const [tickets] = await pool.execute(
+    }
+    const [tickets] = await pool.execute(
       `SELECT * FROM ticket_types WHERE event_id = ? ORDER BY price ASC`,
       [id],
     );
+
+    // Attach uploaded pre-generated ticket files to each ticket type
+    for (const tt of tickets) {
+      try {
+        const [utRows] = await pool.execute(
+          `SELECT id, file_url, file_name, barcode, seat_number, is_assigned
+           FROM uploaded_tickets WHERE ticket_type_id = ? ORDER BY id ASC`,
+          [tt.id],
+        );
+        tt.uploaded_tickets = utRows || [];
+        tt.uploadedTickets = utRows || [];
+      } catch {
+        tt.uploaded_tickets = [];
+        tt.uploadedTickets = [];
+      }
+    }
     const [reviews] = await pool.execute(
       `SELECT r.*, u.name AS user_name, u.avatar AS user_avatar
        FROM reviews r
@@ -274,10 +291,9 @@ export const createEvent = async (req, res) => {
       return res.status(400).json({ message: 'Missing required event fields' });
     }
 
-    // The server decides the status: organizers may save a draft, but any
-    // "publish" request becomes 'pending' and needs admin approval. A client
-    // can never set 'published' directly.
-    const status = req.body.status === 'draft' ? 'draft' : 'pending';
+    // Organizers can save a draft, or publish directly for instant ticket sales.
+    const status = req.body.status === 'draft' ? 'draft' : 'published';
+    const approval_status = status === 'published' ? 'approved' : 'pending';
 
     // The wizard submits the category name; resolve it to its id so both the
     // display column and the FK are populated.
@@ -301,8 +317,8 @@ export const createEvent = async (req, res) => {
         (organizer_id, title, description, category_id, category, venue, address,
          city, country, latitude, longitude, start_date, end_date, start_time,
          end_time, capacity, dress_code, contact_email, contact_phone,
-         banner_image, ticket_template, images, tags, visibility, status)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         banner_image, ticket_template, images, tags, visibility, status, approval_status)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         organizerId, title, description || null, categoryId, category || null, venue, address || null,
         city || null, country || null, latitude || null, longitude || null,
@@ -312,6 +328,7 @@ export const createEvent = async (req, res) => {
         tags ? JSON.stringify(Array.isArray(tags) ? tags : []) : null,
         visibility === 'private' ? 'private' : 'public',
         status,
+        approval_status,
       ],
     );
 
@@ -323,20 +340,53 @@ export const createEvent = async (req, res) => {
       : [];
     if (ticketTypes.length) {
       for (const tt of ticketTypes) {
-        if (!tt.name || tt.price === undefined || tt.quantity === undefined) continue;
-        await conn.execute(
-          `INSERT INTO ticket_types (event_id, name, price, quantity, quantity_sold, sale_start, sale_end, description)
-           VALUES (?, ?, ?, ?, 0, ?, ?, ?)`,
+        const utList = Array.isArray(tt.uploadedTickets) || Array.isArray(tt.uploaded_tickets)
+          ? (tt.uploadedTickets || tt.uploaded_tickets)
+          : [];
+        const finalQuantity = utList.length > 0 ? utList.length : Math.max(Number(tt.quantity) || 0, 0);
+        const finalPrice = (tt.price === '' || tt.price === null || tt.price === undefined) ? 0 : Number(tt.price) || 0;
+        if (!tt.name || (finalQuantity === 0 && utList.length === 0 && tt.quantity === undefined)) continue;
+
+        const [ttRes] = await conn.execute(
+          `INSERT INTO ticket_types (
+             event_id, name, price, quantity, quantity_sold, sale_start, sale_end, description,
+             early_bird_price, early_bird_deadline, early_bird_max_qty, section_type, perks
+           )
+           VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             eventId,
             tt.name,
-            Number(tt.price) || 0,
-            Math.max(Number(tt.quantity) || 0, 0),
+            finalPrice,
+            finalQuantity,
             tt.saleStartDate || tt.sale_start || null,
             tt.saleEndDate || tt.sale_end || null,
             tt.description || null,
+            tt.earlyBirdPrice || tt.early_bird_price ? Number(tt.earlyBirdPrice || tt.early_bird_price) : null,
+            tt.earlyBirdDeadline || tt.early_bird_deadline || null,
+            tt.earlyBirdMaxQty || tt.early_bird_max_qty ? Number(tt.earlyBirdMaxQty || tt.early_bird_max_qty) : null,
+            tt.sectionType || tt.section_type || 'general',
+            tt.perks ? JSON.stringify(Array.isArray(tt.perks) ? tt.perks : [tt.perks]) : null,
           ],
         );
+
+        if (utList.length > 0) {
+          const ttId = ttRes.insertId;
+          for (const ut of utList) {
+            if (!ut.file_url && !ut.url) continue;
+            await conn.execute(
+              `INSERT INTO uploaded_tickets (event_id, ticket_type_id, file_url, file_name, barcode, seat_number)
+               VALUES (?, ?, ?, ?, ?, ?)`,
+              [
+                eventId,
+                ttId,
+                ut.file_url || ut.url,
+                ut.file_name || ut.fileName || ut.originalName || null,
+                ut.barcode || null,
+                ut.seat_number || ut.seatNumber || null,
+              ],
+            );
+          }
+        }
       }
     }
 
@@ -371,7 +421,7 @@ export const updateEvent = async (req, res) => {
     const event = rows[0];
     if (!event) return res.status(404).json({ message: 'Event not found' });
 
-    if (event.organizer_id !== organizerId && req.user.role !== 'admin') {
+    if (Number(event.organizer_id) !== Number(organizerId) && req.user.role !== 'admin') {
       return res.status(403).json({ message: 'You can only update your own events' });
     }
 
@@ -430,6 +480,145 @@ export const updateEvent = async (req, res) => {
     values.push(id);
     await pool.execute(`UPDATE events SET ${fields.join(', ')} WHERE id = ?`, values);
 
+    // Persist ticket types update if supplied
+    const ticketTypes = Array.isArray(req.body.ticket_types) || Array.isArray(req.body.ticketTypes)
+      ? (req.body.ticket_types || req.body.ticketTypes)
+      : null;
+
+    if (ticketTypes) {
+      for (const tt of ticketTypes) {
+        const hasUtList = Array.isArray(tt.uploadedTickets) || Array.isArray(tt.uploaded_tickets);
+        const utList = hasUtList
+          ? (tt.uploadedTickets || tt.uploaded_tickets)
+          : [];
+        const finalQuantity = utList.length > 0 ? utList.length : Math.max(Number(tt.quantity) || 0, 0);
+        const finalPrice = (tt.price === '' || tt.price === null || tt.price === undefined) ? 0 : Number(tt.price) || 0;
+        if (!tt.name || (finalQuantity === 0 && utList.length === 0 && tt.quantity === undefined)) continue;
+
+        if (tt.id) {
+          // Synchronize uploaded_tickets if provided
+          if (hasUtList) {
+            const [existingUploaded] = await pool.execute(
+              'SELECT id, file_url, is_assigned FROM uploaded_tickets WHERE ticket_type_id = ?',
+              [tt.id]
+            );
+
+            // Remove unassigned tickets that are no longer in utList
+            for (const ex of existingUploaded) {
+              const stillExists = utList.some(
+                (u) => (u.id && Number(u.id) === Number(ex.id)) || (u.file_url === ex.file_url || u.url === ex.file_url)
+              );
+              if (!stillExists && !ex.is_assigned) {
+                await pool.execute('DELETE FROM uploaded_tickets WHERE id = ?', [ex.id]);
+              }
+            }
+
+            // Insert newly added tickets
+            for (const ut of utList) {
+              const url = ut.file_url || ut.url;
+              if (!url) continue;
+              const exists = existingUploaded.some(
+                (ex) => (ut.id && Number(ut.id) === Number(ex.id)) || ex.file_url === url
+              );
+              if (!exists) {
+                await pool.execute(
+                  `INSERT INTO uploaded_tickets (event_id, ticket_type_id, file_url, file_name, barcode, seat_number)
+                   VALUES (?, ?, ?, ?, ?, ?)`,
+                  [
+                    id,
+                    tt.id,
+                    url,
+                    ut.file_name || ut.fileName || ut.originalName || null,
+                    ut.barcode || null,
+                    ut.seat_number || ut.seatNumber || null,
+                  ],
+                );
+              }
+            }
+          }
+
+          // Count remaining uploaded tickets to ensure accurate quantity
+          let updateQty = Math.max(Number(tt.quantity) || 0, 0);
+          if (hasUtList) {
+            const [[{ countUploaded }]] = await pool.execute(
+              'SELECT COUNT(*) AS countUploaded FROM uploaded_tickets WHERE ticket_type_id = ?',
+              [tt.id]
+            );
+            if (countUploaded > 0 || utList.length > 0) {
+              updateQty = countUploaded;
+            }
+          }
+
+          await pool.execute(
+            `UPDATE ticket_types SET
+               name = ?, price = ?, quantity = ?, description = ?,
+               sale_start = ?, sale_end = ?,
+               early_bird_price = ?, early_bird_deadline = ?, early_bird_max_qty = ?,
+               section_type = ?, perks = ?
+             WHERE id = ? AND event_id = ?`,
+            [
+              tt.name,
+              finalPrice,
+              updateQty,
+              tt.description || null,
+              tt.saleStartDate || tt.sale_start || null,
+              tt.saleEndDate || tt.sale_end || null,
+              tt.earlyBirdPrice || tt.early_bird_price ? Number(tt.earlyBirdPrice || tt.early_bird_price) : null,
+              tt.earlyBirdDeadline || tt.early_bird_deadline || null,
+              tt.earlyBirdMaxQty || tt.early_bird_max_qty ? Number(tt.earlyBirdMaxQty || tt.early_bird_max_qty) : null,
+              tt.sectionType || tt.section_type || 'general',
+              tt.perks ? JSON.stringify(Array.isArray(tt.perks) ? tt.perks : [tt.perks]) : null,
+              tt.id,
+              id,
+            ],
+          );
+        } else {
+          // Insert new ticket type for this event
+          const [insRes] = await pool.execute(
+            `INSERT INTO ticket_types (
+               event_id, name, price, quantity, quantity_sold, sale_start, sale_end, description,
+               early_bird_price, early_bird_deadline, early_bird_max_qty, section_type, perks
+             )
+             VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              id,
+              tt.name,
+              finalPrice,
+              finalQuantity,
+              tt.saleStartDate || tt.sale_start || null,
+              tt.saleEndDate || tt.sale_end || null,
+              tt.description || null,
+              tt.earlyBirdPrice || tt.early_bird_price ? Number(tt.earlyBirdPrice || tt.early_bird_price) : null,
+              tt.earlyBirdDeadline || tt.early_bird_deadline || null,
+              tt.earlyBirdMaxQty || tt.early_bird_max_qty ? Number(tt.earlyBirdMaxQty || tt.early_bird_max_qty) : null,
+              tt.sectionType || tt.section_type || 'general',
+              tt.perks ? JSON.stringify(Array.isArray(tt.perks) ? tt.perks : [tt.perks]) : null,
+            ],
+          );
+
+          if (utList.length > 0) {
+            const newTtId = insRes.insertId;
+            for (const ut of utList) {
+              const url = ut.file_url || ut.url;
+              if (!url) continue;
+              await pool.execute(
+                `INSERT INTO uploaded_tickets (event_id, ticket_type_id, file_url, file_name, barcode, seat_number)
+                 VALUES (?, ?, ?, ?, ?, ?)`,
+                [
+                  id,
+                  newTtId,
+                  url,
+                  ut.file_name || ut.fileName || ut.originalName || null,
+                  ut.barcode || null,
+                  ut.seat_number || ut.seatNumber || null,
+                ],
+              );
+            }
+          }
+        }
+      }
+    }
+
     await logAudit({ userId: organizerId, action: 'update_event', entityType: 'event', entityId: Number(id) });
     cache.clearPrefix('events');
 
@@ -479,7 +668,7 @@ export const deleteEvent = async (req, res) => {
 };
 
 /* ------------------------------------------------------------------ */
-/* Submit for review / unpublish                                       */
+/* Publish / unpublish event                                          */
 /* ------------------------------------------------------------------ */
 const setEventStatus = async (req, res, status) => {
   try {
@@ -488,30 +677,32 @@ const setEventStatus = async (req, res, status) => {
     const event = rows[0];
     if (!event) return res.status(404).json({ message: 'Event not found' });
 
-    if (event.organizer_id !== req.user.id && req.user.role !== 'admin') {
+    if (Number(event.organizer_id) !== Number(req.user.id) && req.user.role !== 'admin') {
       return res.status(403).json({ message: 'You can only manage your own events' });
     }
 
-    await pool.execute(`UPDATE events SET status = ?, approval_status = 'pending' WHERE id = ?`, [status, id]);
+    const approval_status = status === 'published' ? 'approved' : 'pending';
+    await pool.execute(`UPDATE events SET status = ?, approval_status = ? WHERE id = ?`, [status, approval_status, id]);
     await logAudit({
       userId: req.user.id,
-      action: status === 'pending' ? 'submit_event_for_review' : 'unpublish_event',
+      action: status === 'published' ? 'publish_event' : (status === 'draft' ? 'unpublish_event' : 'submit_event_for_review'),
       entityType: 'event',
       entityId: Number(id),
     });
     cache.clearPrefix('events');
 
-    res.json({ message: status === 'pending' ? 'Event submitted for review' : 'Event unpublished', status });
+    res.json({
+      message: status === 'published' ? 'Event published and live for ticket sales' : (status === 'draft' ? 'Event unpublished' : 'Event submitted for review'),
+      status,
+    });
   } catch (err) {
     console.error('[eventController.setEventStatus]', err);
     res.status(500).json({ message: 'Server error updating event status' });
   }
 };
 
-// Organizers cannot publish directly — PATCH /:id/publish submits the event
-// for admin review (status becomes 'pending'). Admins approve via the admin
-// routes (approveEvent), which sets 'published'.
-export const publishEvent = (req, res) => setEventStatus(req, res, 'pending');
+// Organizers can directly publish their event for instant ticket sales, or save as draft
+export const publishEvent = (req, res) => setEventStatus(req, res, 'published');
 export const unpublishEvent = (req, res) => setEventStatus(req, res, 'draft');
 
 /* ------------------------------------------------------------------ */

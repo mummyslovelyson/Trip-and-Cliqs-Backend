@@ -27,6 +27,8 @@ import { blockBannedIps } from './middleware/abuse.js';
 import pool from './config/db.js';
 import './config/initDb.js';
 import { queueStats } from './utils/jobQueue.js';
+import { errorHandler } from './middleware/errorHandler.js';
+import { sanitizeRequest } from './middleware/sanitize.js';
 
 dotenv.config();
 
@@ -46,6 +48,9 @@ app.use(
     hsts: { maxAge: 15552000, includeSubDomains: true, preload: true },
     contentSecurityPolicy: process.env.NODE_ENV === 'production' ? undefined : false,
     referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+    frameguard: { action: 'deny' },
+    noSniff: true,
+    xssFilter: true,
   }),
 );
 
@@ -103,6 +108,7 @@ app.use('/api/orders/verify-payment', express.raw({ type: 'application/json' }))
 // Tighter body-size limits per content type.
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+app.use(sanitizeRequest);
 
 // HTTP request logging.
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
@@ -201,26 +207,7 @@ app.use((req, res) => {
 /* ------------------------------------------------------------------ */
 /* Centralised error handler                                           */
 /* ------------------------------------------------------------------ */
-app.use((err, _req, res, _next) => {
-  if (res.headersSent) return;
-  console.error('[error]', err.message);
-
-  if (err.code === 'LIMIT_FILE_SIZE') {
-    return res.status(413).json({ message: 'File too large. Maximum size is 5 MB.' });
-  }
-  if (err.message?.includes('Only image files')) {
-    return res.status(400).json({ message: err.message });
-  }
-  if (err.message?.includes('not allowed by CORS')) {
-    return res.status(403).json({ message: err.message });
-  }
-
-  const status = err.status || 500;
-  res.status(status).json({
-    message: err.message || 'Internal server error',
-    ...(process.env.NODE_ENV !== 'production' && { stack: err.stack }),
-  });
-});
+app.use(errorHandler);
 
 /* ------------------------------------------------------------------ */
 /* Database schema sync                                                 */

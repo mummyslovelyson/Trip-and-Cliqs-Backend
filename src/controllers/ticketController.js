@@ -14,6 +14,22 @@ export const getTicketTypes = async (req, res) => {
       `SELECT * FROM ticket_types WHERE event_id = ? ORDER BY price ASC`,
       [eventId],
     );
+
+    for (const tt of rows) {
+      try {
+        const [utRows] = await pool.execute(
+          `SELECT id, file_url, file_name, barcode, seat_number, is_assigned
+           FROM uploaded_tickets WHERE ticket_type_id = ? ORDER BY id ASC`,
+          [tt.id],
+        );
+        tt.uploaded_tickets = utRows || [];
+        tt.uploadedTickets = utRows || [];
+      } catch {
+        tt.uploaded_tickets = [];
+        tt.uploadedTickets = [];
+      }
+    }
+
     res.json(rows);
   } catch (err) {
     console.error('[ticketController.getTicketTypes]', err);
@@ -32,15 +48,26 @@ export const createTicketType = async (req, res) => {
       early_bird_price, early_bird_deadline, early_bird_max_qty, section_type, perks,
     } = req.body;
 
-    if (!name || price === undefined || quantity === undefined) {
-      return res.status(400).json({ message: 'Name, price and quantity are required' });
+    const uploadedList = Array.isArray(req.body.uploadedTickets) || Array.isArray(req.body.uploaded_tickets)
+      ? (req.body.uploadedTickets || req.body.uploaded_tickets)
+      : [];
+
+    let finalQuantity = Number(quantity);
+    if (uploadedList.length > 0) {
+      finalQuantity = uploadedList.length;
+    }
+
+    const finalPrice = (price === '' || price === null || price === undefined) ? 0 : Number(price);
+
+    if (!name || (!finalQuantity && finalQuantity !== 0 && uploadedList.length === 0)) {
+      return res.status(400).json({ message: 'Name and quantity (or uploaded tickets) are required' });
     }
 
     const [eventRows] = await pool.execute('SELECT * FROM events WHERE id = ?', [eventId]);
     const event = eventRows[0];
     if (!event) return res.status(404).json({ message: 'Event not found' });
 
-    if (event.organizer_id !== req.user.id && req.user.role !== 'admin') {
+    if (Number(event.organizer_id) !== Number(req.user.id) && req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Only the event organizer can add ticket types' });
     }
 
@@ -50,9 +77,9 @@ export const createTicketType = async (req, res) => {
         early_bird_price, early_bird_deadline, early_bird_max_qty, section_type, perks
       ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        eventId, name, price, quantity,
+        eventId, name, finalPrice, finalQuantity,
         sale_start || null, sale_end || null, description || null,
-        early_bird_price !== undefined ? early_bird_price : null,
+        early_bird_price !== undefined && early_bird_price !== '' ? early_bird_price : null,
         early_bird_deadline || null,
         early_bird_max_qty || null,
         section_type || 'general',
@@ -60,9 +87,29 @@ export const createTicketType = async (req, res) => {
       ],
     );
 
-    await logAudit({ userId: req.user.id, action: 'create_ticket_type', entityType: 'ticket_type', entityId: result.insertId });
+    const ticketTypeId = result.insertId;
 
-    res.status(201).json({ message: 'Ticket type created', ticketTypeId: result.insertId });
+    if (uploadedList.length > 0) {
+      for (const ut of uploadedList) {
+        if (!ut.file_url && !ut.url) continue;
+        await pool.execute(
+          `INSERT INTO uploaded_tickets (event_id, ticket_type_id, file_url, file_name, barcode, seat_number)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [
+            eventId,
+            ticketTypeId,
+            ut.file_url || ut.url,
+            ut.file_name || ut.fileName || ut.originalName || null,
+            ut.barcode || null,
+            ut.seat_number || ut.seatNumber || null,
+          ],
+        );
+      }
+    }
+
+    await logAudit({ userId: req.user.id, action: 'create_ticket_type', entityType: 'ticket_type', entityId: ticketTypeId });
+
+    res.status(201).json({ message: 'Ticket type created', ticketTypeId });
   } catch (err) {
     console.error('[ticketController.createTicketType]', err);
     res.status(500).json({ message: 'Server error' });
@@ -80,8 +127,54 @@ export const updateTicketType = async (req, res) => {
     if (!tt) return res.status(404).json({ message: 'Ticket type not found' });
 
     const [eventRows] = await pool.execute('SELECT organizer_id FROM events WHERE id = ?', [tt.event_id]);
-    if (eventRows[0].organizer_id !== req.user.id && req.user.role !== 'admin') {
+    if (Number(eventRows[0]?.organizer_id) !== Number(req.user.id) && req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Forbidden' });
+    }
+
+    const hasUploadedList = Array.isArray(req.body.uploadedTickets) || Array.isArray(req.body.uploaded_tickets);
+    const uploadedList = hasUploadedList
+      ? (req.body.uploadedTickets || req.body.uploaded_tickets)
+      : [];
+
+    if (hasUploadedList) {
+      // Fetch existing uploaded tickets for this ticket type
+      const [existingUploaded] = await pool.execute(
+        'SELECT id, file_url, is_assigned FROM uploaded_tickets WHERE ticket_type_id = ?',
+        [id]
+      );
+
+      // Remove unassigned tickets that are not in the new uploadedList
+      for (const ex of existingUploaded) {
+        const stillExists = uploadedList.some(
+          (u) => (u.id && Number(u.id) === Number(ex.id)) || (u.file_url === ex.file_url || u.url === ex.file_url)
+        );
+        if (!stillExists && !ex.is_assigned) {
+          await pool.execute('DELETE FROM uploaded_tickets WHERE id = ?', [ex.id]);
+        }
+      }
+
+      // Insert new tickets that don't already exist
+      for (const ut of uploadedList) {
+        const url = ut.file_url || ut.url;
+        if (!url) continue;
+        const exists = existingUploaded.some(
+          (ex) => (ut.id && Number(ut.id) === Number(ex.id)) || ex.file_url === url
+        );
+        if (!exists) {
+          await pool.execute(
+            `INSERT INTO uploaded_tickets (event_id, ticket_type_id, file_url, file_name, barcode, seat_number)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [
+              tt.event_id,
+              id,
+              url,
+              ut.file_name || ut.fileName || ut.originalName || null,
+              ut.barcode || null,
+              ut.seat_number || ut.seatNumber || null,
+            ],
+          );
+        }
+      }
     }
 
     const allowed = [
@@ -93,17 +186,67 @@ export const updateTicketType = async (req, res) => {
     for (const key of allowed) {
       if (req.body[key] !== undefined) {
         fields.push(`${key} = ?`);
-        values.push(key === 'perks' && typeof req.body[key] === 'object' ? JSON.stringify(req.body[key]) : req.body[key]);
+        if (key === 'price') {
+          values.push((req.body[key] === '' || req.body[key] === null) ? 0 : Number(req.body[key]));
+        } else if (key === 'perks' && typeof req.body[key] === 'object') {
+          values.push(JSON.stringify(req.body[key]));
+        } else {
+          values.push(req.body[key]);
+        }
       }
     }
-    if (!fields.length) return res.status(400).json({ message: 'No fields to update' });
 
-    values.push(id);
-    await pool.execute(`UPDATE ticket_types SET ${fields.join(', ')} WHERE id = ?`, values);
+    // If uploaded passes were provided, ensure quantity reflects total uploaded tickets
+    if (hasUploadedList) {
+      const [[{ countUploaded }]] = await pool.execute(
+        'SELECT COUNT(*) AS countUploaded FROM uploaded_tickets WHERE ticket_type_id = ?',
+        [id]
+      );
+      if (countUploaded > 0 || uploadedList.length > 0) {
+        // Only override if quantity wasn't explicitly provided or if syncing to uploaded count
+        if (req.body.quantity === undefined) {
+          fields.push('quantity = ?');
+          values.push(countUploaded);
+        }
+      }
+    }
+
+    if (!fields.length && !hasUploadedList) return res.status(400).json({ message: 'No fields to update' });
+
+    if (fields.length > 0) {
+      values.push(id);
+      await pool.execute(`UPDATE ticket_types SET ${fields.join(', ')} WHERE id = ?`, values);
+    }
 
     res.json({ message: 'Ticket type updated' });
   } catch (err) {
     console.error('[ticketController.updateTicketType]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+/* ------------------------------------------------------------------ */
+/* Get uploaded tickets for a ticket type (organizer only)             */
+/* ------------------------------------------------------------------ */
+export const getUploadedTickets = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [ttRows] = await pool.execute('SELECT * FROM ticket_types WHERE id = ?', [id]);
+    const tt = ttRows[0];
+    if (!tt) return res.status(404).json({ message: 'Ticket type not found' });
+
+    const [eventRows] = await pool.execute('SELECT organizer_id FROM events WHERE id = ?', [tt.event_id]);
+    if (Number(eventRows[0]?.organizer_id) !== Number(req.user.id) && req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
+
+    const [rows] = await pool.execute(
+      `SELECT * FROM uploaded_tickets WHERE ticket_type_id = ? ORDER BY id ASC`,
+      [id],
+    );
+    res.json({ tickets: rows, uploadedTickets: rows, count: rows.length });
+  } catch (err) {
+    console.error('[ticketController.getUploadedTickets]', err);
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -119,7 +262,7 @@ export const deleteTicketType = async (req, res) => {
     if (!tt) return res.status(404).json({ message: 'Ticket type not found' });
 
     const [eventRows] = await pool.execute('SELECT organizer_id FROM events WHERE id = ?', [tt.event_id]);
-    if (eventRows[0].organizer_id !== req.user.id && req.user.role !== 'admin') {
+    if (Number(eventRows[0]?.organizer_id) !== Number(req.user.id) && req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Forbidden' });
     }
 
@@ -140,13 +283,86 @@ export const deleteTicketType = async (req, res) => {
 /* ------------------------------------------------------------------ */
 export const getUserTickets = async (req, res) => {
   try {
+    // Self-healing: if the user has completed orders whose tickets were not yet minted, mint them now
+    try {
+      const [completedOrders] = await pool.execute(
+        `SELECT o.id, o.event_id
+         FROM orders o
+         WHERE o.user_id = ? AND o.payment_status = 'completed'`,
+        [req.user.id],
+      );
+
+      for (const ord of completedOrders) {
+        const [existing] = await pool.execute(
+          `SELECT id FROM tickets WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)`,
+          [ord.id],
+        );
+        if (!existing || existing.length === 0) {
+          const [items] = await pool.execute('SELECT * FROM order_items WHERE order_id = ?', [ord.id]);
+          for (const oi of items) {
+            for (let i = 0; i < oi.quantity; i++) {
+              let ticketNumber = `TC-${uuidv4().split('-')[0].toUpperCase()}`;
+              let seatNumber = null;
+              let ticketFileUrl = null;
+              let ticketFileName = null;
+
+              try {
+                const [utRows] = await pool.execute(
+                  `SELECT id, file_url, file_name, barcode, seat_number
+                   FROM uploaded_tickets
+                   WHERE ticket_type_id = ? AND is_assigned = FALSE
+                   ORDER BY id ASC LIMIT 1`,
+                  [oi.ticket_type_id],
+                );
+                const ut = utRows?.[0];
+                if (ut) {
+                  if (ut.barcode) ticketNumber = ut.barcode;
+                  if (ut.seat_number) seatNumber = ut.seat_number;
+                  ticketFileUrl = ut.file_url || null;
+                  ticketFileName = ut.file_name || null;
+                }
+
+                const [tResult] = await pool.execute(
+                  `INSERT INTO tickets (order_item_id, user_id, event_id, ticket_type_id, ticket_number, qr_code, seat_number, ticket_file_url, ticket_file_name, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+                  [oi.id, req.user.id, ord.event_id, oi.ticket_type_id, ticketNumber, ticketNumber, seatNumber, ticketFileUrl, ticketFileName],
+                );
+
+                if (ut) {
+                  await pool.execute(
+                    `UPDATE uploaded_tickets SET is_assigned = TRUE, assigned_ticket_id = ?, assigned_at = NOW() WHERE id = ?`,
+                    [tResult.insertId, ut.id],
+                  );
+                }
+              } catch {
+                await pool.execute(
+                  `INSERT INTO tickets (order_item_id, user_id, event_id, ticket_type_id, ticket_number, qr_code, status)
+                   VALUES (?, ?, ?, ?, ?, ?, 'active')`,
+                  [oi.id, req.user.id, ord.event_id, oi.ticket_type_id, ticketNumber, ticketNumber],
+                );
+              }
+            }
+          }
+        }
+      }
+    } catch (healErr) {
+      console.warn('[ticketController.getUserTickets] Auto-heal notice:', healErr.message);
+    }
+
     const [rows] = await pool.execute(
-      `SELECT t.*, tt.name AS ticket_type_name, tt.price AS ticket_price, e.title AS event_title,
-              e.venue AS event_venue, e.city AS event_city, e.start_date, e.start_time,
-              e.banner_image, e.ticket_template, u.name AS attendee_name
+      `SELECT t.*, tt.name AS ticket_type_name, tt.price AS ticket_price,
+              COALESCE(oi.unit_price, tt.price, 0) AS unit_price,
+              e.title AS event_title, e.venue AS event_venue, e.city AS event_city, e.start_date, e.start_time,
+              e.banner_image, e.ticket_template, u.name AS attendee_name,
+              u.email AS attendee_email, u.phone AS attendee_phone,
+              o.id AS order_id, o.payment_reference, o.payment_method, o.payment_status,
+              o.invoice_number, o.discount_amount AS order_discount, o.total_amount AS order_total,
+              o.created_at AS order_created_at
        FROM tickets t
-       JOIN ticket_types tt ON tt.id = t.ticket_type_id
-       JOIN events e ON e.id = t.event_id
+       LEFT JOIN ticket_types tt ON tt.id = t.ticket_type_id
+       LEFT JOIN order_items oi ON oi.id = t.order_item_id
+       LEFT JOIN orders o ON o.id = oi.order_id
+       LEFT JOIN events e ON e.id = t.event_id
        LEFT JOIN users u ON u.id = t.user_id
        WHERE t.user_id = ?
        ORDER BY t.created_at DESC`,
@@ -166,11 +382,18 @@ export const getTicketById = async (req, res) => {
   try {
     const { id } = req.params;
     const [rows] = await pool.execute(
-      `SELECT t.*, tt.name AS ticket_type_name, tt.price AS ticket_price, e.title AS event_title,
-              e.venue, e.address, e.city, e.start_date, e.end_date, e.start_time, e.end_time,
-              e.banner_image, e.ticket_template, e.organizer_id, u.name AS attendee_name
+      `SELECT t.*, tt.name AS ticket_type_name, tt.price AS ticket_price,
+              COALESCE(oi.unit_price, tt.price, 0) AS unit_price,
+              e.title AS event_title, e.venue, e.address, e.city, e.start_date, e.end_date, e.start_time, e.end_time,
+              e.banner_image, e.ticket_template, e.organizer_id, u.name AS attendee_name,
+              u.email AS attendee_email, u.phone AS attendee_phone,
+              o.id AS order_id, o.payment_reference, o.payment_method, o.payment_status,
+              o.invoice_number, o.discount_amount AS order_discount, o.total_amount AS order_total,
+              o.created_at AS order_created_at
        FROM tickets t
        JOIN ticket_types tt ON tt.id = t.ticket_type_id
+       LEFT JOIN order_items oi ON oi.id = t.order_item_id
+       LEFT JOIN orders o ON o.id = oi.order_id
        JOIN events e ON e.id = t.event_id
        LEFT JOIN users u ON u.id = t.user_id
        WHERE t.id = ?`,
@@ -300,7 +523,7 @@ export const transferTicket = async (req, res) => {
       conn.release();
       return res.status(404).json({ message: 'Ticket not found' });
     }
-    if (ticket.user_id !== req.user.id) {
+    if (Number(ticket.user_id) !== Number(req.user.id)) {
       conn.release();
       return res.status(403).json({ message: 'You can only transfer your own tickets' });
     }
@@ -497,7 +720,7 @@ export const bulkCheckIn = async (req, res) => {
     let skipped = 0;
     const results = [];
     for (const ticket of tickets) {
-      if (ticket.organizer_id !== req.user.id && req.user.role !== 'admin') {
+      if (Number(ticket.organizer_id) !== Number(req.user.id) && req.user.role !== 'admin') {
         results.push({ id: ticket.id, status: 'forbidden' });
         continue;
       }

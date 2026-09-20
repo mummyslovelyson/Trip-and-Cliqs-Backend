@@ -130,6 +130,24 @@ async function initDb() {
           created_at              TIMESTAMPTZ DEFAULT NOW(),
           updated_at              TIMESTAMPTZ DEFAULT NOW()
         )`,
+        `ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ticket_file_url TEXT`,
+        `ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ticket_file_name VARCHAR(255)`,
+        `CREATE TABLE IF NOT EXISTS uploaded_tickets (
+          id                  BIGSERIAL PRIMARY KEY,
+          event_id            BIGINT NOT NULL,
+          ticket_type_id      BIGINT NOT NULL,
+          file_url            TEXT NOT NULL,
+          file_name           VARCHAR(255),
+          barcode             VARCHAR(100),
+          seat_number         VARCHAR(50),
+          is_assigned         BOOLEAN NOT NULL DEFAULT FALSE,
+          assigned_ticket_id  BIGINT,
+          assigned_at         TIMESTAMPTZ,
+          created_at          TIMESTAMPTZ DEFAULT NOW(),
+          CONSTRAINT fk_ut_event FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
+          CONSTRAINT fk_ut_tt FOREIGN KEY (ticket_type_id) REFERENCES ticket_types(id) ON DELETE CASCADE
+        )`,
+        `CREATE INDEX IF NOT EXISTS idx_ut_tt_unassigned ON uploaded_tickets(ticket_type_id, is_assigned)`,
       ];
       for (const migSql of safeMigrations) {
         try {
