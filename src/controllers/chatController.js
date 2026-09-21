@@ -493,12 +493,13 @@ export const handleChatMessage = async (req, res) => {
       ? `Organizer Stats: Total Events: ${organizerStats.total_events}, Tickets Sold: ${organizerStats.total_tickets_sold}, Revenue: GHS ${organizerStats.total_revenue}.`
       : '';
 
-    const systemInstruction = `You are Cliq Concierge, the official autonomous AI Agent for Tribes & Cliqs (Ghana's premier event ticketing and nightlife platform).
+    const systemInstruction = `You are Cliqs Bot, the official assistant for Tribes & Cliqs (Ghana's premier event ticketing and nightlife platform).
 
 Role & Persona:
-- You act as a warm, ultra-helpful, highly competent local event concierge and app agent.
+- You act as a warm, ultra-helpful, highly competent local event assistant.
 - You answer questions accurately, concisely (1-3 sentences), and offer actionable assistance.
 - Avoid robotic corporate speak, avoid markdown heading spam, and keep it crisp and elegant.
+- CRITICAL: DO NOT use any emojis in your reply, actions, or suggestions. Keep all text plain and professional.
 
 Current Application State:
 ${userInfoSummary}
@@ -517,25 +518,25 @@ ${liveEventsSummary || 'No published events at this moment.'}
 FEW-SHOT TRAINING EXAMPLES (Follow this style and format precisely):
 Example 1 (Event Search):
 User: "What concerts are on this weekend?"
-Output: {"reply":"Accra has some electric vibes this weekend! Based on our ML recommendations, check out the live shows below.","intent":"SEARCH_EVENTS","actions":[{"type":"NAVIGATE","label":"🔍 Explore All Events","path":"/explore"}],"suggestions":["What time does it start?","Ticket pricing tiers","Show my tickets"]}
+Output: {"reply":"Accra has great events this weekend! Check out the live shows below.","intent":"SEARCH_EVENTS","actions":[{"type":"NAVIGATE","label":"Explore All Events","path":"/explore"}],"suggestions":["What time does it start?","Ticket pricing tiers","Show my tickets"]}
 
 Example 2 (Ticket Management):
 User: "How do I transfer my ticket?"
-Output: {"reply":"Head to **My Tickets**, find your pass, and click **Transfer** to safely send it to your friend's email with a fresh QR code.","intent":"TRANSFER","actions":[{"type":"NAVIGATE","label":"🎟️ Open My Tickets","path":"/attendee/tickets"}],"suggestions":["Show my tickets","How does resale work?","Download receipt"]}
+Output: {"reply":"Head to **My Tickets**, find your pass, and click **Transfer** to safely send it to your friend's email with a fresh QR code.","intent":"TRANSFER","actions":[{"type":"NAVIGATE","label":"Open My Tickets","path":"/attendee/tickets"}],"suggestions":["Show my tickets","How does resale work?","Download receipt"]}
 
 Example 3 (Organizer Check-In):
 User: "I need to scan tickets at the gate"
-Output: {"reply":"You can launch our high-speed camera scanner right now to scan QR passes and check in your attendees!","intent":"NAVIGATE","actions":[{"type":"NAVIGATE","label":"📲 Open Check-In Scanner","path":"/organizer/check-in"}],"suggestions":["View attendee list","Organizer dashboard"]}
+Output: {"reply":"You can launch our high-speed camera scanner right now to scan QR passes and check in your attendees!","intent":"NAVIGATE","actions":[{"type":"NAVIGATE","label":"Open Check-In Scanner","path":"/organizer/check-in"}],"suggestions":["View attendee list","Organizer dashboard"]}
 
 INSTRUCTIONS FOR AGENT ACTIONS & RESPONSE FORMAT:
-You MUST output valid JSON conforming to this schema:
+You MUST output valid JSON conforming to this schema (strictly without emojis):
 {
   "reply": "Your concise, friendly response text formatted with basic markdown (**bold**)",
   "intent": "GENERAL" | "GET_TICKETS" | "SEARCH_EVENTS" | "NAVIGATE" | "EVENT_INFO" | "TRANSFER" | "RESALE" | "ORGANIZER" | "SUPPORT",
   "actions": [
     {
       "type": "NAVIGATE",
-      "label": "Button Label with Emoji (e.g. 🎟️ View My Tickets, 🔍 Explore Music, 📲 Open Scanner, 🔑 Log In)",
+      "label": "Button Label without any emoji (e.g. View My Tickets, Explore Events, Open Scanner, Log In)",
       "path": "/attendee/tickets" | "/explore" | "/organizer/check-in" | "/organizer/events/create" | "/login" | "/events/${eventId || ''}" | "/attendee/support"
     }
   ],
@@ -569,10 +570,10 @@ You MUST output valid JSON conforming to this schema:
         if (user) {
           finalTickets = mappedTickets;
           if (!finalActions.some((a) => a.path === '/attendee/tickets')) {
-            finalActions.unshift({ type: 'NAVIGATE', label: '🎟️ Open My Tickets', path: '/attendee/tickets' });
+            finalActions.unshift({ type: 'NAVIGATE', label: 'Open My Tickets', path: '/attendee/tickets' });
           }
         } else {
-          finalActions.unshift({ type: 'NAVIGATE', label: '🔑 Log In to View Tickets', path: '/login' });
+          finalActions.unshift({ type: 'NAVIGATE', label: 'Log In to View Tickets', path: '/login' });
         }
       }
 
@@ -582,13 +583,13 @@ You MUST output valid JSON conforming to this schema:
 
       if (mlAnalysis.urgency === 'high' || mlAnalysis.isDispute) {
         if (!finalActions.some((a) => a.path?.includes('support'))) {
-          finalActions.unshift({ type: 'NAVIGATE', label: '🚨 Contact Priority Support', path: '/attendee/support' });
+          finalActions.unshift({ type: 'NAVIGATE', label: 'Contact Support', path: '/attendee/support' });
         }
       }
 
       if (wantsOrganizerSales && organizerStats) {
         if (!finalActions.some((a) => a.path === '/organizer/dashboard')) {
-          finalActions.push({ type: 'NAVIGATE', label: '📊 Organizer Dashboard', path: '/organizer/dashboard' });
+          finalActions.push({ type: 'NAVIGATE', label: 'Organizer Dashboard', path: '/organizer/dashboard' });
         }
       }
 
@@ -615,8 +616,8 @@ You MUST output valid JSON conforming to this schema:
         reply: `I understand this is an urgent matter. Don't worry—our support specialists and organizers are dedicated to resolving any ticket or billing disputes promptly.`,
         intent: 'SUPPORT',
         actions: [
-          { type: 'NAVIGATE', label: '🚨 Open Support Ticket', path: '/attendee/support' },
-          { type: 'NAVIGATE', label: '🎟️ Check My Tickets', path: user ? '/attendee/tickets' : '/login' },
+          { type: 'NAVIGATE', label: 'Open Support Ticket', path: '/attendee/support' },
+          { type: 'NAVIGATE', label: 'Check My Tickets', path: user ? '/attendee/tickets' : '/login' },
         ],
         suggestions: ['Check payment status', 'Contact Organizer', 'Refund Policy'],
       });
@@ -628,7 +629,7 @@ You MUST output valid JSON conforming to this schema:
         return res.json({
           reply: `You need to log into your Tribes & Cliqs account first so I can retrieve your personal tickets and digital passes.`,
           intent: 'NAVIGATE',
-          actions: [{ type: 'NAVIGATE', label: '🔑 Log In Now', path: '/login' }],
+          actions: [{ type: 'NAVIGATE', label: 'Log In Now', path: '/login' }],
           suggestions: ['Explore upcoming events', 'How does ticket resale work?', 'Accepted payment methods'],
         });
       }
@@ -637,7 +638,7 @@ You MUST output valid JSON conforming to this schema:
         return res.json({
           reply: `You don't have any active tickets right now, **${user.name || 'there'}**. Check out upcoming concerts and club nights!`,
           intent: 'GET_TICKETS',
-          actions: [{ type: 'NAVIGATE', label: '🔍 Explore Events', path: '/explore' }],
+          actions: [{ type: 'NAVIGATE', label: 'Explore Events', path: '/explore' }],
           suggestions: ['What’s happening this weekend?', 'Concerts in Accra', 'Free events'],
         });
       }
@@ -646,7 +647,7 @@ You MUST output valid JSON conforming to this schema:
         reply: `Here are your current tickets, **${user.name || ''}**! You can view full QR passes, download receipts, or transfer tickets in **My Tickets**.`,
         intent: 'GET_TICKETS',
         tickets: mappedTickets,
-        actions: [{ type: 'NAVIGATE', label: '🎟️ View All in My Tickets', path: '/attendee/tickets' }],
+        actions: [{ type: 'NAVIGATE', label: 'View All in My Tickets', path: '/attendee/tickets' }],
         suggestions: ['How do I transfer a ticket?', 'Can I resell my ticket?', 'Explore more events'],
       });
     }
@@ -656,7 +657,7 @@ You MUST output valid JSON conforming to this schema:
       return res.json({
         reply: `You can easily transfer a ticket! Go to **My Tickets**, find your event pass, and click **Transfer**. Enter the recipient's phone or email to securely hand it over.`,
         intent: 'TRANSFER',
-        actions: [{ type: 'NAVIGATE', label: '🎟️ Go to My Tickets', path: '/attendee/tickets' }],
+        actions: [{ type: 'NAVIGATE', label: 'Go to My Tickets', path: '/attendee/tickets' }],
         suggestions: ['Show my tickets', 'How does resale work?', 'Contact Support'],
       });
     }
@@ -666,7 +667,7 @@ You MUST output valid JSON conforming to this schema:
       return res.json({
         reply: `Our verified resale marketplace lets you list tickets safely. Go to **My Tickets**, select your ticket, click **List for Resale**, and choose your price. Funds are credited once sold!`,
         intent: 'RESALE',
-        actions: [{ type: 'NAVIGATE', label: '🎟️ Open My Tickets', path: '/attendee/tickets' }],
+        actions: [{ type: 'NAVIGATE', label: 'Open My Tickets', path: '/attendee/tickets' }],
         suggestions: ['Show my tickets', 'Explore events', 'Refund policy'],
       });
     }
@@ -676,7 +677,7 @@ You MUST output valid JSON conforming to this schema:
       return res.json({
         reply: `Ready to check in guests? Open the fast in-app QR scanner to validate attendee tickets at the gate.`,
         intent: 'NAVIGATE',
-        actions: [{ type: 'NAVIGATE', label: '📲 Open Check-In Scanner', path: '/organizer/check-in' }],
+        actions: [{ type: 'NAVIGATE', label: 'Open Check-In Scanner', path: '/organizer/check-in' }],
         suggestions: ['View Attendees List', 'Organizer Dashboard'],
       });
     }
@@ -685,7 +686,7 @@ You MUST output valid JSON conforming to this schema:
       return res.json({
         reply: `Ready to launch an event? Head to the event creator to set up ticket tiers, add flyers, and start selling in minutes!`,
         intent: 'NAVIGATE',
-        actions: [{ type: 'NAVIGATE', label: '⚡ Create New Event', path: '/organizer/events/create' }],
+        actions: [{ type: 'NAVIGATE', label: 'Create New Event', path: '/organizer/events/create' }],
         suggestions: ['How do payouts work?', 'View My Events'],
       });
     }
@@ -695,8 +696,8 @@ You MUST output valid JSON conforming to this schema:
         reply: `Here is your current organizer overview: You have published **${organizerStats.total_events} events** with **${organizerStats.total_tickets_sold} tickets sold** and **GHS ${Number(organizerStats.total_revenue).toLocaleString()}** in total revenue.`,
         intent: 'ORGANIZER',
         actions: [
-          { type: 'NAVIGATE', label: '📊 View Organizer Dashboard', path: '/organizer/dashboard' },
-          { type: 'NAVIGATE', label: '👥 Attendee List', path: '/organizer/attendees' },
+          { type: 'NAVIGATE', label: 'View Organizer Dashboard', path: '/organizer/dashboard' },
+          { type: 'NAVIGATE', label: 'Attendee List', path: '/organizer/attendees' },
         ],
         suggestions: ['Open Check-In Scanner', 'Create a Promo Code', 'View Wallet'],
       });
@@ -708,7 +709,7 @@ You MUST output valid JSON conforming to this schema:
       return res.json({
         reply: `You're currently viewing **${activeEvent.title}** at **${activeEvent.venue || activeEvent.city}** on **${activeEvent.start_date}**. ${priceText ? `Tickets: ${priceText}.` : ''}`,
         intent: 'EVENT_INFO',
-        actions: [{ type: 'NAVIGATE', label: '🎟️ Get Tickets', path: `/events/${activeEvent.id}` }],
+        actions: [{ type: 'NAVIGATE', label: 'Get Tickets', path: `/events/${activeEvent.id}` }],
         suggestions: ['What time does it start?', 'Dress code & venue', 'Explore other events'],
       });
     }
@@ -723,7 +724,7 @@ You MUST output valid JSON conforming to this schema:
         return res.json({
           reply: item.instruction_or_answer,
           intent: 'FAQ',
-          actions: [{ type: 'NAVIGATE', label: '🔍 Explore Events', path: '/explore' }],
+          actions: [{ type: 'NAVIGATE', label: 'Explore Events', path: '/explore' }],
           suggestions: ['Explore all events', 'View My Tickets', 'Contact Support'],
         });
       }
@@ -731,12 +732,12 @@ You MUST output valid JSON conforming to this schema:
 
     // G. Event discovery fallback
     res.json({
-      reply: `Hey! I'm your **Cliq Concierge Agent**. I can help you discover upcoming concerts, locate free events, manage your tickets and transfers, or guide you through the app. What would you like to do?`,
+      reply: `Hey! I'm **Cliqs Bot**. I can help you discover upcoming concerts, locate free events, manage your tickets and transfers, or guide you through the app. What would you like to do?`,
       intent: 'GENERAL',
       events: mappedEventCards.length > 0 ? mappedEventCards : undefined,
       actions: [
-        { type: 'NAVIGATE', label: '🔍 Explore Events', path: '/explore' },
-        { type: 'NAVIGATE', label: '🎟️ My Tickets', path: user ? '/attendee/tickets' : '/login' },
+        { type: 'NAVIGATE', label: 'Explore Events', path: '/explore' },
+        { type: 'NAVIGATE', label: 'My Tickets', path: user ? '/attendee/tickets' : '/login' },
       ],
       suggestions: [
         'What’s happening this weekend?',
