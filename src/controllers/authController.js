@@ -387,12 +387,6 @@ export const adminLogin = async (req, res) => {
     const { rawToken: refreshToken } = await generateRefreshToken(payload, buildMeta(req, family));
 
     await pool.execute('UPDATE users SET last_login_at = NOW() WHERE id = ?', [user.id]);
-    await sendNotification({
-      userId: user.id,
-      title: 'Admin Portal Login',
-      message: `Admin portal signed in on ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}.`,
-      type: 'system',
-    });
     await logAudit({ userId: user.id, action: 'admin_login', entityType: 'user', entityId: user.id });
     recordAuthSuccess(req);
 

@@ -8,7 +8,7 @@ import {
   getPayments, getPayment, refundPayment, getWithdrawals, approveWithdrawal, rejectWithdrawal,
   getReports, getRevenueReport, getGrowthReport,
   getSupportTickets, getSupportTicket, respondToSupportTicket, closeSupportTicket, resolveSupportTicket,
-  sendAnnouncement, getAdminNotifications, markAdminNotificationsRead, getAuditLogs, getSystemSettings, updateSystemSettings,
+  sendAnnouncement, getAdminAnnouncements, getNotificationTemplates, getAdminNotifications, markAdminNotificationsRead, deleteAdminNotification, getAuditLogs, getSystemSettings, updateSystemSettings,
   testEmailSetting, testSmsSetting, getSmsBalanceSetting, testPaystackSetting,
   getContentPages, createContentPage, updateContentPage, deleteContentPage,
   getAITrainingData, createAIKnowledgeItem, updateAIKnowledgeItem, deleteAIKnowledgeItem, updateAISettings, testAIPrompt,
@@ -99,8 +99,14 @@ router.put('/support-tickets/:id/resolve', writeLimiter, resolveSupportTicket);
 router.get('/notifications', getAdminNotifications);
 router.put('/notifications/:id/read', markAdminNotificationsRead);
 router.post('/notifications/mark-read', markAdminNotificationsRead);
-router.post('/notifications', writeLimiter, sendAnnouncement);
+router.delete('/notifications/clear-read', deleteAdminNotification);
+router.delete('/notifications/:id', deleteAdminNotification);
+
+router.get('/announcements', getAdminAnnouncements);
 router.post('/announcements', writeLimiter, sendAnnouncement);
+router.post('/notifications', writeLimiter, sendAnnouncement);
+
+router.get('/notification-templates', getNotificationTemplates);
 
 // Content Management
 router.get('/content', getContentPages);

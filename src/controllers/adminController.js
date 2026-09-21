@@ -1164,30 +1164,153 @@ export const resolveSupportTicket = async (req, res) => {
 /* ------------------------------------------------------------------ */
 export const sendAnnouncement = async (req, res) => {
   try {
-    const { title, message, target_role = 'all' } = req.body;
-    if (!title || !message) return res.status(400).json({ message: 'title and message are required' });
+    const { title, message, target = 'all', target_role, channel = 'in-app', userId } = req.body;
+    if (!title?.trim() || !message?.trim()) {
+      return res.status(400).json({ message: 'Title and message are required' });
+    }
 
-    const [result] = await pool.execute(
-      `INSERT INTO announcements (title, message, target_role, created_by) VALUES (?, ?, ?, ?)`,
-      [title, message, target_role, req.user.id],
+    const effectiveTarget = (target_role || target || 'all').toLowerCase();
+    const effectiveChannel = channel || req.body.type || 'in-app';
+
+    // 1. Insert announcement record into announcements table
+    const [insRes] = await pool.execute(
+      `INSERT INTO announcements (title, message, target_role, channel, created_by, sent_count)
+       VALUES (?, ?, ?, ?, ?, 0)
+       RETURNING id, created_at`,
+      [title.trim(), message.trim(), effectiveTarget, effectiveChannel, req.user.id]
     );
+    const announcementId = insRes[0]?.id;
 
-    // Notify matching users.
+    // 2. Identify target user IDs
     let userIds = [];
-    if (target_role === 'all') {
+    if (effectiveTarget === 'all') {
       const [rows] = await pool.execute(`SELECT id FROM users WHERE status = 'active'`);
       userIds = rows.map((r) => r.id);
-    } else {
-      const [rows] = await pool.execute(`SELECT id FROM users WHERE status = 'active' AND role = ?`, [target_role]);
+    } else if (effectiveTarget === 'attendees' || effectiveTarget === 'attendee') {
+      const [rows] = await pool.execute(`SELECT id FROM users WHERE status = 'active' AND role = 'attendee'`);
+      userIds = rows.map((r) => r.id);
+    } else if (effectiveTarget === 'organizers' || effectiveTarget === 'organizer') {
+      const [rows] = await pool.execute(`SELECT id FROM users WHERE status = 'active' AND role = 'organizer'`);
+      userIds = rows.map((r) => r.id);
+    } else if (effectiveTarget === 'admins' || effectiveTarget === 'admin') {
+      const [rows] = await pool.execute(`SELECT id FROM users WHERE status = 'active' AND role IN ('admin', 'system_admin', 'superadmin')`);
+      userIds = rows.map((r) => r.id);
+    } else if (effectiveTarget === 'specific' && userId) {
+      const [rows] = await pool.execute(`SELECT id FROM users WHERE id = ? OR email = ?`, [userId, userId]);
       userIds = rows.map((r) => r.id);
     }
-    await sendNotificationToMany(userIds, { title, message, type: 'announcement' });
 
-    await logAudit({ userId: req.user.id, action: 'send_announcement', entityType: 'announcement', entityId: result.insertId });
-    res.status(201).json({ message: 'Announcement sent', announcementId: result.insertId, recipients: userIds.length });
+    // 3. Dispatch in-app notifications
+    if (userIds.length > 0) {
+      await sendNotificationToMany(userIds, {
+        title: title.trim(),
+        message: message.trim(),
+        type: 'announcement',
+        link: '/attendee/tickets',
+      });
+    }
+
+    // 4. Update sent count
+    if (announcementId) {
+      await pool.execute(`UPDATE announcements SET sent_count = ? WHERE id = ?`, [userIds.length, announcementId]);
+    }
+
+    await logAudit({
+      userId: req.user.id,
+      action: 'send_announcement',
+      entityType: 'announcement',
+      entityId: announcementId,
+      details: { title, target: effectiveTarget, channel: effectiveChannel, recipients: userIds.length },
+    });
+
+    res.status(201).json({
+      message: 'Announcement broadcast dispatched successfully',
+      announcementId,
+      recipients: userIds.length,
+      announcement: {
+        id: announcementId,
+        title: title.trim(),
+        message: message.trim(),
+        target_role: effectiveTarget,
+        channel: effectiveChannel,
+        sent_count: userIds.length,
+        created_at: insRes[0]?.created_at || new Date().toISOString(),
+      },
+    });
   } catch (err) {
     console.error('[adminController.sendAnnouncement]', err);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error while dispatching broadcast' });
+  }
+};
+
+/* ------------------------------------------------------------------ */
+/* Broadcast History / Announcements Query                            */
+/* ------------------------------------------------------------------ */
+export const getAdminAnnouncements = async (req, res) => {
+  try {
+    const { page = 1, limit = 15 } = req.query;
+    const pageNum = Math.max(parseInt(page, 10) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit, 10) || 15, 1), 100);
+    const offset = (pageNum - 1) * limitNum;
+
+    const [countRows] = await pool.execute(`SELECT COUNT(*) AS total FROM announcements`);
+    const total = Number(countRows[0]?.total || 0);
+
+    const [rows] = await pool.execute(
+      `SELECT a.*, u.name AS sender_name, u.email AS sender_email
+       FROM announcements a
+       LEFT JOIN users u ON a.created_by = u.id
+       ORDER BY a.created_at DESC
+       LIMIT ${limitNum} OFFSET ${offset}`
+    );
+
+    res.json({
+      announcements: rows,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum) || 1,
+      },
+    });
+  } catch (err) {
+    console.error('[adminController.getAdminAnnouncements]', err);
+    res.status(500).json({ message: 'Failed to fetch broadcast history' });
+  }
+};
+
+/* ------------------------------------------------------------------ */
+/* Notification Templates                                             */
+/* ------------------------------------------------------------------ */
+export const getNotificationTemplates = async (req, res) => {
+  try {
+    const [rows] = await pool.execute(`SELECT * FROM notification_templates ORDER BY id ASC`);
+    if (rows && rows.length > 0) {
+      return res.json({ templates: rows });
+    }
+
+    // Seed default standard templates if table is empty (check constraint: 'email', 'sms', 'push', 'in_app')
+    const defaults = [
+      ['Welcome Onboarding', 'Welcome to Tribes & Cliqs', 'Welcome to Tribes & Cliqs! Discover upcoming concerts, meetups, and cultural events.', 'email'],
+      ['Event 24-Hour Reminder', 'Reminder: Your Event Starts in 24 Hours', 'Your event is happening tomorrow! Please make sure to arrive 30 minutes early with your digital pass ready.', 'push'],
+      ['Payment & Ticket Confirmation', 'Order Confirmed - Your Ticket Is Ready', 'Thank you for your order! Your digital ticket is confirmed and available in your wallet.', 'email'],
+      ['Organizer Account Approved', 'Organizer Account Approved', 'Congratulations! Your organizer KYC verification has been approved. You can now publish events and receive payouts.', 'email'],
+      ['System Maintenance Notice', 'Scheduled Platform Maintenance Notice', 'Tribes & Cliqs will undergo scheduled maintenance tonight between 02:00 AM and 03:00 AM UTC.', 'in_app'],
+    ];
+
+    for (const [name, subject, body, type] of defaults) {
+      await pool.execute(
+        `INSERT INTO notification_templates (name, subject, body, type) VALUES (?, ?, ?, ?)`,
+        [name, subject, body, type]
+      );
+    }
+
+    const [seeded] = await pool.execute(`SELECT * FROM notification_templates ORDER BY id ASC`);
+    const mapped = (seeded || []).map((t) => ({ ...t, type: t.type === 'in_app' ? 'in-app' : t.type }));
+    res.json({ templates: mapped });
+  } catch (err) {
+    console.error('[adminController.getNotificationTemplates]', err);
+    res.status(500).json({ message: 'Failed to load notification templates' });
   }
 };
 
@@ -1196,31 +1319,81 @@ export const sendAnnouncement = async (req, res) => {
 /* ------------------------------------------------------------------ */
 export const getAdminNotifications = async (req, res) => {
   try {
-    const { page = 1, limit = 20, unreadOnly = 'false' } = req.query;
+    const { page = 1, limit = 20, unreadOnly = 'false', category = 'all', search = '' } = req.query;
     const pageNum = Math.max(parseInt(page, 10) || 1, 1);
     const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
     const offset = (pageNum - 1) * limitNum;
 
-    const unreadClause = unreadOnly === 'true' ? 'AND is_read = FALSE' : '';
+    const conditions = ['(user_id = ? OR user_id IS NULL)'];
+    const params = [req.user.id];
+
+    if (unreadOnly === 'true') {
+      conditions.push('is_read = FALSE');
+    }
+
+    if (category && category !== 'all') {
+      if (category === 'payments') {
+        conditions.push(`type IN ('payment', 'withdrawal', 'refund')`);
+      } else if (category === 'organizers' || category === 'account') {
+        conditions.push(`type = 'account'`);
+      } else if (category === 'events' || category === 'tickets') {
+        conditions.push(`type IN ('ticket', 'price_change', 'update')`);
+      } else if (category === 'support') {
+        conditions.push(`type = 'support'`);
+      } else if (category === 'system') {
+        conditions.push(`type IN ('system', 'announcement', 'marketing', 'info')`);
+      } else {
+        conditions.push(`type = ?`);
+        params.push(category);
+      }
+    }
+
+    if (search && search.trim()) {
+      conditions.push(`(title ILIKE ? OR message ILIKE ?)`);
+      const term = `%${search.trim()}%`;
+      params.push(term, term);
+    }
+
+    const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const [countRows] = await pool.execute(
-      `SELECT COUNT(*) AS total FROM notifications WHERE user_id = ? ${unreadClause}`,
-      [req.user.id]
+      `SELECT COUNT(*) AS total FROM notifications ${whereClause}`,
+      params
     );
 
     const [unreadCountRows] = await pool.execute(
-      `SELECT COUNT(*) AS unread FROM notifications WHERE user_id = ? AND is_read = FALSE`,
+      `SELECT COUNT(*) AS unread FROM notifications WHERE (user_id = ? OR user_id IS NULL) AND is_read = FALSE`,
       [req.user.id]
     );
 
-    const [rows] = await pool.execute(
-      `SELECT * FROM notifications WHERE user_id = ? ${unreadClause} ORDER BY created_at DESC LIMIT ${limitNum} OFFSET ${offset}`,
+    // Category breakdown counts for tabs
+    const [countsByType] = await pool.execute(
+      `SELECT type, COUNT(*) AS count
+       FROM notifications
+       WHERE (user_id = ? OR user_id IS NULL)
+       GROUP BY type`,
       [req.user.id]
+    );
+
+    const counts = { all: Number(countRows[0]?.total || 0), payments: 0, organizers: 0, events: 0, support: 0, system: 0 };
+    (countsByType || []).forEach((c) => {
+      const cnt = Number(c.count);
+      if (['payment', 'withdrawal', 'refund'].includes(c.type)) counts.payments += cnt;
+      else if (c.type === 'account') counts.organizers += cnt;
+      else if (['ticket', 'price_change', 'update'].includes(c.type)) counts.events += cnt;
+      else if (c.type === 'support') counts.support += cnt;
+      else counts.system += cnt;
+    });
+
+    const [rows] = await pool.execute(
+      `SELECT * FROM notifications ${whereClause} ORDER BY created_at DESC LIMIT ${limitNum} OFFSET ${offset}`,
+      params
     );
 
     res.json({
       notifications: rows,
       unreadCount: Number(unreadCountRows[0]?.unread || 0),
+      counts,
       pagination: {
         page: pageNum,
         limit: limitNum,
@@ -1236,16 +1409,44 @@ export const getAdminNotifications = async (req, res) => {
 
 export const markAdminNotificationsRead = async (req, res) => {
   try {
-    const { id } = req.params;
-    if (id === 'all') {
-      await pool.execute(`UPDATE notifications SET is_read = TRUE WHERE user_id = ?`, [req.user.id]);
+    const id = req.params.id || req.body.id;
+    if (!id || id === 'all') {
+      await pool.execute(
+        `UPDATE notifications SET is_read = TRUE WHERE (user_id = ? OR user_id IS NULL)`,
+        [req.user.id]
+      );
     } else {
-      await pool.execute(`UPDATE notifications SET is_read = TRUE WHERE id = ? AND user_id = ?`, [id, req.user.id]);
+      await pool.execute(
+        `UPDATE notifications SET is_read = TRUE WHERE id = ? AND (user_id = ? OR user_id IS NULL)`,
+        [id, req.user.id]
+      );
     }
     res.json({ message: 'Notifications marked as read' });
   } catch (err) {
     console.error('[adminController.markAdminNotificationsRead]', err);
     res.status(500).json({ message: 'Failed to update notification status' });
+  }
+};
+
+export const deleteAdminNotification = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (id === 'clear-read') {
+      const [resDel] = await pool.execute(
+        `DELETE FROM notifications WHERE is_read = TRUE AND (user_id = ? OR user_id IS NULL)`,
+        [req.user.id]
+      );
+      return res.json({ message: 'Read notifications cleared successfully' });
+    }
+
+    await pool.execute(
+      `DELETE FROM notifications WHERE id = ? AND (user_id = ? OR user_id IS NULL)`,
+      [id, req.user.id]
+    );
+    res.json({ message: 'Notification removed successfully' });
+  } catch (err) {
+    console.error('[adminController.deleteAdminNotification]', err);
+    res.status(500).json({ message: 'Failed to remove notification' });
   }
 };
 
@@ -2410,7 +2611,7 @@ export default {
   getPayments, getPayment, refundPayment, getWithdrawals, approveWithdrawal, rejectWithdrawal,
   getReports, getRevenueReport, getGrowthReport,
   getSupportTickets, getSupportTicket, respondToSupportTicket, closeSupportTicket, resolveSupportTicket,
-  sendAnnouncement, getAdminNotifications, getAuditLogs, getSystemSettings, updateSystemSettings,
+  sendAnnouncement, getAdminAnnouncements, getNotificationTemplates, getAdminNotifications, markAdminNotificationsRead, deleteAdminNotification, getAuditLogs, getSystemSettings, updateSystemSettings,
   getContentPages, createContentPage, updateContentPage, deleteContentPage,
   getAITrainingData, createAIKnowledgeItem, updateAIKnowledgeItem, deleteAIKnowledgeItem, updateAISettings, testAIPrompt,
 };
