@@ -576,6 +576,25 @@ CREATE TABLE IF NOT EXISTS ai_training_knowledge (
 CREATE INDEX IF NOT EXISTS idx_atk_category ON ai_training_knowledge(category);
 CREATE INDEX IF NOT EXISTS idx_atk_active ON ai_training_knowledge(is_active);
 
+-- ────────────────  BOT CONVERSATIONS (CHAT & VOICE LOGS)  ────────────────
+CREATE TABLE IF NOT EXISTS bot_conversations (
+  id         BIGSERIAL PRIMARY KEY,
+  user_id    BIGINT,
+  user_name  VARCHAR(150),
+  user_email VARCHAR(150),
+  session_id VARCHAR(100),
+  mode       VARCHAR(20) NOT NULL DEFAULT 'chat',
+  question   TEXT NOT NULL,
+  answer     TEXT NOT NULL,
+  intent     VARCHAR(50),
+  page_path  VARCHAR(255),
+  metadata   JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  CONSTRAINT fk_bot_conv_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bot_conv_created ON bot_conversations(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_bot_conv_mode ON bot_conversations(mode);
+
 -- ────────────────  NOTIFICATION TEMPLATES  ────────────────
 CREATE TABLE IF NOT EXISTS notification_templates (
   id         BIGSERIAL PRIMARY KEY,

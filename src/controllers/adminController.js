@@ -2603,6 +2603,82 @@ ${eventsSummary}
   }
 };
 
+export const getBotConversations = async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+    const offset = (page - 1) * limit;
+    const mode = req.query.mode || 'all';
+    const search = (req.query.search || '').trim();
+
+    const conditions = [];
+    const params = [];
+
+    if (mode && mode !== 'all') {
+      conditions.push('mode = ?');
+      params.push(mode);
+    }
+
+    if (search) {
+      conditions.push('(question ILIKE ? OR answer ILIKE ? OR user_name ILIKE ? OR user_email ILIKE ? OR intent ILIKE ?)');
+      const wildcard = `%${search}%`;
+      params.push(wildcard, wildcard, wildcard, wildcard, wildcard);
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const [[countRow]] = await pool.execute(
+      `SELECT COUNT(*) AS total FROM bot_conversations ${whereClause}`,
+      params
+    );
+    const total = parseInt(countRow?.total, 10) || 0;
+
+    const [rows] = await pool.execute(
+      `SELECT * FROM bot_conversations ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
+
+    const [[statsRow]] = await pool.execute(`
+      SELECT 
+        COUNT(*) AS total_conversations,
+        COUNT(CASE WHEN DATE(created_at) = CURRENT_DATE THEN 1 END) AS today_count,
+        COUNT(CASE WHEN mode = 'chat' THEN 1 END) AS chat_count,
+        COUNT(CASE WHEN mode = 'voice' THEN 1 END) AS voice_count
+      FROM bot_conversations
+    `);
+
+    res.json({
+      conversations: rows || [],
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit) || 1,
+      },
+      stats: {
+        totalConversations: parseInt(statsRow?.total_conversations, 10) || 0,
+        todayCount: parseInt(statsRow?.today_count, 10) || 0,
+        chatCount: parseInt(statsRow?.chat_count, 10) || 0,
+        voiceCount: parseInt(statsRow?.voice_count, 10) || 0,
+      },
+    });
+  } catch (err) {
+    console.error('[adminController.getBotConversations]', err);
+    res.status(500).json({ message: 'Failed to retrieve bot conversation logs' });
+  }
+};
+
+export const deleteBotConversation = async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.execute(`DELETE FROM bot_conversations WHERE id = ?`, [id]);
+    res.json({ message: 'Conversation record deleted successfully' });
+  } catch (err) {
+    console.error('[adminController.deleteBotConversation]', err);
+    res.status(500).json({ message: 'Failed to delete bot conversation record' });
+  }
+};
+
 export default {
   getDashboardStats, getUsers, getUser, updateUser, suspendUser, unsuspendUser, verifyUser, deleteUser, approveOrganizer, rejectOrganizer, resetUserPassword, createAdminUser,
   getUserManagementStats, getUserActivity, getUserSessions, getUserStats, forceLogoutUser, addAdminNote, getAdminNotes, deleteAdminNote, exportUsers, bulkRoleChange, bulkDeleteUsers,
@@ -2614,4 +2690,6 @@ export default {
   sendAnnouncement, getAdminAnnouncements, getNotificationTemplates, getAdminNotifications, markAdminNotificationsRead, deleteAdminNotification, getAuditLogs, getSystemSettings, updateSystemSettings,
   getContentPages, createContentPage, updateContentPage, deleteContentPage,
   getAITrainingData, createAIKnowledgeItem, updateAIKnowledgeItem, deleteAIKnowledgeItem, updateAISettings, testAIPrompt,
+  getBotConversations, deleteBotConversation,
 };
+

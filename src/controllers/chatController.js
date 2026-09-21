@@ -254,11 +254,48 @@ async function callGemini(contents, systemInstruction, temperature = 0.4) {
 }
 
 /**
+ * Log user question and agent/bot answer to database for admin visibility
+ */
+async function logBotConversation({
+  userId,
+  userName,
+  userEmail,
+  sessionId,
+  mode,
+  question,
+  answer,
+  intent,
+  pagePath,
+  metadata = {},
+}) {
+  try {
+    await pool.execute(
+      `INSERT INTO bot_conversations (user_id, user_name, user_email, session_id, mode, question, answer, intent, page_path, metadata)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        userId || null,
+        userName || 'Guest User',
+        userEmail || null,
+        sessionId || null,
+        mode || 'chat',
+        question,
+        answer,
+        intent || 'GENERAL',
+        pagePath || '/',
+        JSON.stringify(metadata || {}),
+      ]
+    );
+  } catch (err) {
+    console.error('[logBotConversation] error:', err.message);
+  }
+}
+
+/**
  * Intelligent Gemini AI Event Concierge & Platform Agent Controller
  */
 export const handleChatMessage = async (req, res) => {
   try {
-    const { message, conversationHistory = [], context = {} } = req.body;
+    const { message, conversationHistory = [], context = {}, mode = 'chat' } = req.body;
     const rawMessage = (message || '').trim();
 
     if (!rawMessage) {
@@ -266,8 +303,32 @@ export const handleChatMessage = async (req, res) => {
     }
 
     const user = req.user || null;
-    const currentPath = context.currentPath || '';
+    const currentPath = context.currentPath || context.pathname || '';
     let eventId = context.eventId || null;
+
+    // Intercept res.json to automatically record questions and answers in database
+    const originalJson = res.json.bind(res);
+    res.json = (data) => {
+      if (data && data.reply) {
+        logBotConversation({
+          userId: user?.id,
+          userName: user?.name,
+          userEmail: user?.email,
+          sessionId: req.headers['x-session-id'] || context?.sessionId,
+          mode: (mode && mode !== 'chat' ? mode : (context?.mode || (context?.isVoice ? 'voice' : 'chat'))),
+          question: rawMessage,
+          answer: data.reply,
+          intent: data.intent || 'GENERAL',
+          pagePath: currentPath || '/',
+          metadata: {
+            eventsCount: data.events?.length || 0,
+            ticketsCount: data.tickets?.length || 0,
+            hasActions: (data.actions?.length || 0) > 0,
+          },
+        }).catch(() => {});
+      }
+      return originalJson(data);
+    };
 
     // Detect if user is viewing an event details page: /events/:id
     if (!eventId && currentPath.startsWith('/events/')) {

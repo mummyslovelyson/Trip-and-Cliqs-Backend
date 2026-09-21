@@ -12,6 +12,7 @@ import {
   testEmailSetting, testSmsSetting, getSmsBalanceSetting, testPaystackSetting,
   getContentPages, createContentPage, updateContentPage, deleteContentPage,
   getAITrainingData, createAIKnowledgeItem, updateAIKnowledgeItem, deleteAIKnowledgeItem, updateAISettings, testAIPrompt,
+  getBotConversations, deleteBotConversation,
 } from '../controllers/adminController.js';
 import { authenticate, authorize } from '../middleware/auth.js';
 import { rateLimit } from '../middleware/rateLimit.js';
@@ -131,5 +132,9 @@ router.put('/ai/knowledge/:id', writeLimiter, updateAIKnowledgeItem);
 router.delete('/ai/knowledge/:id', destructiveLimiter, deleteAIKnowledgeItem);
 router.put('/ai/settings', writeLimiter, updateAISettings);
 router.post('/ai/test', writeLimiter, testAIPrompt);
+
+// Bot & Voice Agent Conversations Logs
+router.get('/chat-logs', getBotConversations);
+router.delete('/chat-logs/:id', destructiveLimiter, deleteBotConversation);
 
 export default router;
