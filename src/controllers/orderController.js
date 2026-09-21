@@ -171,6 +171,9 @@ export const createOrder = async (req, res) => {
         return res.status(400).json({ message: 'Could not initialise payment', error: payResult.error, orderId, reference });
       }
       authorizationUrl = payResult.data.authorization_url;
+    } else if (total === 0) {
+      // Auto-complete order immediately when total is 0 (e.g. amount is on pre-generated pass)
+      await completeOrder(orderId, reference);
     }
 
     await logAudit({ userId: req.user.id, action: 'create_order', entityType: 'order', entityId: orderId });
@@ -184,6 +187,7 @@ export const createOrder = async (req, res) => {
       discount,
       total,
       authorizationUrl,
+      paymentStatus: total === 0 ? 'completed' : 'pending',
     });
   } catch (err) {
     try { await conn.rollback(); } catch { /* ignore */ }
@@ -259,7 +263,7 @@ export const generateTicketsForOrder = async (orderId) => {
 /* ------------------------------------------------------------------ */
 /* Internal: mark an order completed, generate tickets and notify      */
 /* ------------------------------------------------------------------ */
-const completeOrder = async (orderId, reference) => {
+async function completeOrder(orderId, reference) {
   // Atomically claim the completion. The Paystack webhook and the browser
   // callback can fire within the same second; without this guard both would
   // see 'pending' and mint duplicate tickets.
