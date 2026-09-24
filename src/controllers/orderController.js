@@ -48,7 +48,7 @@ const MAX_QUANTITY_PER_LINE = 20;
 export const createOrder = async (req, res) => {
   const conn = await pool.getConnection();
   try {
-    const { eventId, items, couponCode } = req.body;
+    const { eventId, items, couponCode, callbackUrl } = req.body;
     const paymentMethod = (req.body.paymentMethod ?? 'paystack').toLowerCase();
     if (!eventId || !Array.isArray(items) || items.length === 0) {
       conn.release();
@@ -165,6 +165,7 @@ export const createOrder = async (req, res) => {
         email: userRows[0]?.email,
         amount: total,
         reference,
+        callback_url: callbackUrl,
         metadata: { orderId, eventId, userId: req.user.id, paymentMethod },
       });
       if (!payResult.status) {
@@ -371,11 +372,13 @@ export const initiateOrderPayment = async (req, res) => {
       return res.json({ message: 'Order completed', orderId: order.id, authorizationUrl: null });
     }
 
+    const { callbackUrl } = req.body || {};
     const [userRows] = await pool.execute('SELECT email FROM users WHERE id = ?', [order.user_id]);
     const payResult = await initializeTransaction({
       email: userRows[0]?.email,
       amount: Number(order.total_amount),
       reference: order.payment_reference,
+      callback_url: callbackUrl,
       metadata: { orderId: order.id, eventId: order.event_id, userId: order.user_id },
     });
     if (!payResult.status) {
@@ -950,8 +953,159 @@ export const testWebhook = async (req, res) => {
     res.status(500).json({ message: 'Test webhook error' });
   }
 };
+/* ------------------------------------------------------------------ */
+/* Payment Callback Bridge for Mobile & Web Gateways                  */
+/* ------------------------------------------------------------------ */
+export const paymentCallbackBridge = async (req, res) => {
+  const reference = req.query.reference || req.query.trxref || '';
+  const appRedirect = req.query.app_redirect || 'tribescliqs://payment-callback';
+
+  if (reference) {
+    try {
+      const verifyResult = await verifyTransaction(reference);
+      if (verifyResult.status && verifyResult.data?.status === 'success') {
+        const [rows] = await pool.execute('SELECT id, payment_status FROM orders WHERE payment_reference = ?', [reference]);
+        const order = rows[0];
+        if (order && order.payment_status !== 'completed') {
+          await completeOrder(order.id, reference);
+        }
+      }
+    } catch (e) {
+      console.warn('[orderController.paymentCallbackBridge] Verification notice:', e.message);
+    }
+  }
+
+  const encodedRef = encodeURIComponent(reference);
+  const encodedRedirect = encodeURIComponent(appRedirect);
+
+  res.send(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Payment Successful - Tribes &amp; Cliqs</title>
+  <style>
+    body {
+      background-color: #1C232B;
+      color: #EFEFF1;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 24px;
+      box-sizing: border-box;
+    }
+    .card {
+      background-color: #242B32;
+      border: 1px solid #494F55;
+      border-radius: 20px;
+      padding: 36px 24px;
+      text-align: center;
+      max-width: 400px;
+      width: 100%;
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4);
+    }
+    .icon-circle {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      background-color: rgba(34, 197, 94, 0.15);
+      border: 2px solid rgba(34, 197, 94, 0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 16px auto;
+      color: #22C55E;
+      font-size: 32px;
+      font-weight: 800;
+    }
+    .title {
+      font-size: 20px;
+      font-weight: 700;
+      color: #FFFFFF;
+      margin: 0 0 8px 0;
+    }
+    .desc {
+      color: #949599;
+      font-size: 14px;
+      line-height: 1.5;
+      margin: 0 0 20px 0;
+    }
+    .ref-box {
+      background-color: #1C232B;
+      border: 1px dashed #494F55;
+      border-radius: 10px;
+      padding: 10px 14px;
+      margin-bottom: 24px;
+      font-size: 13px;
+      color: #949599;
+    }
+    .ref-code {
+      font-family: monospace;
+      color: #EFEFF1;
+      font-weight: 700;
+    }
+    .btn {
+      display: block;
+      background-color: #b21414;
+      color: #ffffff;
+      padding: 14px 24px;
+      border-radius: 12px;
+      text-decoration: none;
+      font-weight: 700;
+      font-size: 15px;
+      margin-bottom: 12px;
+    }
+    .btn-secondary {
+      background-color: transparent;
+      border: 1px solid #494F55;
+      color: #EFEFF1;
+      font-weight: 600;
+      font-size: 13px;
+      padding: 10px 20px;
+      border-radius: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon-circle">✓</div>
+    <h2 class="title">Payment Successful!</h2>
+    <p class="desc">Your tickets have been issued and added to your digital pass wallet.</p>
+    ${reference ? `<div class="ref-box">Reference: <span class="ref-code">${reference}</span></div>` : ''}
+    <a id="returnBtn" class="btn" href="#">Return to Tribes &amp; Cliqs App</a>
+    <a id="webBtn" class="btn btn-secondary" href="https://tribesandcliqs-app.vercel.app/profile">View on Web</a>
+  </div>
+  <script>
+    (function() {
+      var params = new URLSearchParams(window.location.search);
+      var reference = params.get('reference') || params.get('trxref') || '${encodedRef}';
+      var appRedirect = params.get('app_redirect') || '${appRedirect}';
+      var sep = appRedirect.indexOf('?') !== -1 ? '&' : '?';
+      var target = reference ? (appRedirect + sep + 'reference=' + encodeURIComponent(reference) + '&status=success') : appRedirect;
+
+      var returnBtn = document.getElementById('returnBtn');
+      if (returnBtn) returnBtn.href = target;
+
+      // Automatically redirect back to native app
+      window.location.replace(target);
+      setTimeout(function() {
+        window.location.href = target;
+      }, 250);
+
+      // Attempt popup close
+      setTimeout(function() {
+        try { window.close(); } catch(e) {}
+      }, 1500);
+    })();
+  </script>
+</body>
+</html>`);
+};
 
 export default {
   createOrder, getOrder, getUserOrders, getOrganizerOrders, cancelOrder, requestRefund, verifyPayment,
-  applyCouponHandler, initiateOrderPayment, getOrderInvoice, testWebhook,
+  applyCouponHandler, initiateOrderPayment, getOrderInvoice, testWebhook, paymentCallbackBridge,
 };

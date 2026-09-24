@@ -3,6 +3,7 @@ import {
   createOrder, getOrder, getOrders, getUserOrders, getOrganizerOrders,
   cancelOrder, requestRefund, verifyPayment,
   applyCouponHandler, initiateOrderPayment, getOrderInvoice, testWebhook,
+  paymentCallbackBridge,
 } from '../controllers/orderController.js';
 import { authenticate, authorize } from '../middleware/auth.js';
 import { rateLimit } from '../middleware/rateLimit.js';
@@ -13,7 +14,8 @@ const router = Router();
 const orderLimiter = rateLimit({ windowMs: 60_000, max: 10, message: 'Too many order attempts. Please try again later.' });
 const refundLimiter = rateLimit({ windowMs: 60_000, max: 3, message: 'Too many refund requests.' });
 
-// Paystack webhook — verified via signature/reference on the server
+// Paystack webhook & payment callback bridge
+router.get('/payment-callback', paymentCallbackBridge);
 router.post('/verify-payment', verifyPayment);
 router.post('/webhook', verifyPayment);
 router.post('/webhook/test', testWebhook);

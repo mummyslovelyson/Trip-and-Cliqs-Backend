@@ -237,6 +237,7 @@ export const purchaseResaleListing = async (req, res) => {
       email: userRows[0]?.email,
       amount: Number(listing.price),
       reference,
+      callback_url: req.body?.callbackUrl,
       metadata: { orderId, eventId: listing.event_id, userId: req.user.id, resaleListingId: id },
     });
 

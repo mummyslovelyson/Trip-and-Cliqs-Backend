@@ -37,9 +37,17 @@ export const initializeTransaction = async ({
   if (!secretKey) {
     return { status: false, error: 'Paystack secret key not configured. Please set PAYSTACK_SECRET_KEY in system settings or .env' };
   }
-
   try {
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    let resolvedFrontend = process.env.FRONTEND_URL || '';
+    if (!resolvedFrontend || resolvedFrontend.includes('localhost')) {
+      if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
+        resolvedFrontend = 'https://tribesandcliqs-app.vercel.app';
+      } else {
+        resolvedFrontend = 'http://localhost:5173';
+      }
+    }
+    const resolvedCallbackUrl = callback_url || `${resolvedFrontend}/payment/callback`;
+
     const response = await fetch(`${BASE_URL}/transaction/initialize`, {
       method: 'POST',
       headers: headers(secretKey),
@@ -49,7 +57,7 @@ export const initializeTransaction = async ({
         reference,
         currency: currency || process.env.PAYSTACK_CURRENCY || 'GHS',
         channels: channels || ['card', 'mobile_money', 'bank', 'ussd', 'qr', 'eft'],
-        callback_url: callback_url || `${frontendUrl}/payment/callback`,
+        callback_url: resolvedCallbackUrl,
         metadata: metadata || {},
       }),
     });
