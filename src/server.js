@@ -20,6 +20,7 @@ import uploadRoutes from './routes/upload.js';
 import supportRoutes from './routes/support.js';
 import chatRoutes from './routes/chat.js';
 import mobileRoutes from './routes/mobile.js';
+import { getCategories } from './controllers/eventController.js';
 import { getSetting } from './utils/settings.js';
 import { maintenanceMiddleware } from './middleware/maintenance.js';
 import { globalRateLimit } from './middleware/globalRateLimit.js';
@@ -46,6 +47,7 @@ const SHUTDOWN_TIMEOUT_MS = parseInt(process.env.SHUTDOWN_TIMEOUT_MS, 10) || 30_
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: 'cross-origin' },
+    crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
     hsts: { maxAge: 15552000, includeSubDomains: true, preload: true },
     contentSecurityPolicy: process.env.NODE_ENV === 'production' ? undefined : false,
     referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
@@ -171,6 +173,9 @@ app.use('/api/upload', uploadRoutes);
 app.use('/api/support', supportRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/mobile', mobileRoutes);
+
+// Public categories endpoint alias
+app.get('/api/categories', getCategories);
 
 // Public, unauthenticated platform settings (currency display config).
 app.get('/api/public/settings', async (_req, res) => {
