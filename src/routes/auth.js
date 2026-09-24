@@ -27,6 +27,84 @@ router.post(
   googleAuth,
 );
 
+// Mobile OAuth Redirect Callback Bridge
+router.get('/callback', (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Authenticating with Tribes &amp; Cliqs</title>
+  <style>
+    body {
+      background-color: #1C232B;
+      color: #EFEFF1;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 24px;
+      box-sizing: border-box;
+    }
+    .card {
+      background-color: #242B32;
+      border: 1px solid #494F55;
+      border-radius: 16px;
+      padding: 32px 24px;
+      text-align: center;
+      max-width: 360px;
+      width: 100%;
+    }
+    .title {
+      font-size: 20px;
+      font-weight: 700;
+      color: #EFEFF1;
+      margin: 0 0 8px 0;
+    }
+    .desc {
+      color: #949599;
+      font-size: 14px;
+      margin: 0 0 20px 0;
+    }
+    .btn {
+      display: inline-block;
+      background-color: #b21414;
+      color: #ffffff;
+      padding: 12px 24px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2 class="title">Tribes &amp; Cliqs</h2>
+    <p class="desc">Completing authentication and returning to the app...</p>
+    <a id="returnBtn" class="btn" href="#">Return to App</a>
+  </div>
+  <script>
+    (function() {
+      var params = new URLSearchParams(window.location.search);
+      var appRedirect = params.get('app_redirect') || 'tribescliqs://auth-callback';
+      var hash = window.location.hash || '';
+      var query = window.location.search || '';
+      var target = appRedirect + (hash ? hash : (query ? '?' + query.substring(1) : ''));
+      var btn = document.getElementById('returnBtn');
+      if (btn) btn.href = target;
+      window.location.replace(target);
+      setTimeout(function() {
+        window.location.href = target;
+      }, 250);
+    })();
+  </script>
+</body>
+</html>`);
+});
+
 // Registration — strict rate limit + honeypot + validation
 router.post(
   '/register',

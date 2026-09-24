@@ -19,6 +19,7 @@ import resaleRoutes from './routes/resale.js';
 import uploadRoutes from './routes/upload.js';
 import supportRoutes from './routes/support.js';
 import chatRoutes from './routes/chat.js';
+import mobileRoutes from './routes/mobile.js';
 import { getSetting } from './utils/settings.js';
 import { maintenanceMiddleware } from './middleware/maintenance.js';
 import { globalRateLimit } from './middleware/globalRateLimit.js';
@@ -73,7 +74,10 @@ const parseOrigins = () => {
     'http://localhost:5173',
     'http://localhost:3000',
     'http://localhost:5000',
+    'http://localhost:8081',
+    'http://localhost:8082',
     'http://127.0.0.1:5173',
+    'http://127.0.0.1:8081',
     'https://tribesandcliqsevent.vercel.app',
     
   ];
@@ -86,6 +90,7 @@ const isOriginAllowed = (origin) => {
   if (!origin) return true;
   if (allowedOrigins.has(origin)) return true;
   if (/^https:\/\/.*\.vercel\.app$/.test(origin)) return true;
+  if (/^http:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$/.test(origin)) return true;
   return false;
 };
 
@@ -165,6 +170,7 @@ app.use('/api/resale', resaleRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/support', supportRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/mobile', mobileRoutes);
 
 // Public, unauthenticated platform settings (currency display config).
 app.get('/api/public/settings', async (_req, res) => {

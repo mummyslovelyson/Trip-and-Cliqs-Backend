@@ -13,6 +13,7 @@ import {
   getContentPages, createContentPage, updateContentPage, deleteContentPage,
   getAITrainingData, createAIKnowledgeItem, updateAIKnowledgeItem, deleteAIKnowledgeItem, updateAISettings, testAIPrompt,
   getBotConversations, deleteBotConversation,
+  getMobileAppConfig, updateMobileAppSettings, createMobileAppBanner, updateMobileAppBanner, deleteMobileAppBanner,
 } from '../controllers/adminController.js';
 import { authenticate, authorize } from '../middleware/auth.js';
 import { rateLimit } from '../middleware/rateLimit.js';
@@ -136,5 +137,12 @@ router.post('/ai/test', writeLimiter, testAIPrompt);
 // Bot & Voice Agent Conversations Logs
 router.get('/chat-logs', getBotConversations);
 router.delete('/chat-logs/:id', destructiveLimiter, deleteBotConversation);
+
+// Mobile App Management
+router.get('/mobile-app', getMobileAppConfig);
+router.put('/mobile-app/settings', writeLimiter, updateMobileAppSettings);
+router.post('/mobile-app/banners', writeLimiter, createMobileAppBanner);
+router.put('/mobile-app/banners/:id', writeLimiter, updateMobileAppBanner);
+router.delete('/mobile-app/banners/:id', destructiveLimiter, deleteMobileAppBanner);
 
 export default router;

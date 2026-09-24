@@ -336,11 +336,14 @@ export const completeResaleOrder = async (orderId, reference) => {
       type: 'payment',
     });
 
+    const [buyerRows] = await pool.execute('SELECT name, email FROM users WHERE id = ?', [order.user_id]);
+    const buyer = buyerRows[0];
+
     notifyAdmins({
-      title: 'Resale Ticket Sold',
-      message: `Resale ticket for "${listing.event_title || 'Event'}" was purchased for GHS ${Number(listing.price || 0).toFixed(2)}.`,
-      type: 'ticket',
-      link: '/admin/events',
+      title: 'Resale Ticket Purchased',
+      message: `${buyer?.name || 'Customer'} (${buyer?.email || 'N/A'}) purchased resale ticket for "${listing.event_title || 'Event'}" (Order #${order.id} • GHS ${Number(listing.price || 0).toFixed(2)}).`,
+      type: 'payment',
+      link: '/admin/payments',
     }).catch(() => {});
 
     await logAudit({

@@ -161,14 +161,14 @@ export const getUsers = async (req, res) => {
 
     if (status && status !== 'all') {
       if (status === 'pending') {
-        conditions.push('u.role = ?', 'u.is_approved = ?', 'u.status = ?');
-        params.push('organizer', 0, 'pending');
+        conditions.push("u.role = ? AND (u.is_approved = FALSE OR u.is_approved IS NULL) AND u.status != 'rejected' AND u.status != 'suspended' AND u.status != 'active'");
+        params.push('organizer');
       } else if (status === 'active') {
         conditions.push('u.status = ?');
         params.push('active');
       } else if (status === 'approved') {
-        conditions.push('u.role = ?', 'u.is_approved = ?', 'u.status = ?');
-        params.push('organizer', 1, 'active');
+        conditions.push("u.role = ? AND (u.is_approved = TRUE OR u.status = 'active')");
+        params.push('organizer');
       } else if (status === 'suspended' || status === 'rejected') {
         conditions.push('u.status = ?');
         params.push(status);
@@ -194,11 +194,12 @@ export const getUsers = async (req, res) => {
 
     const [rows] = await pool.execute(
       `SELECT u.id, u.name, u.email, u.role, u.phone, u.status, u.is_approved, u.email_verified,
-              u.suspend_reason, u.suspended_at,
+              u.suspend_reason, u.suspended_at, u.location, u.bio,
               COALESCE(u.avatar_url, u.avatar) AS avatar, u.created_at,
               (SELECT COUNT(*) FROM events e WHERE e.organizer_id = u.id) AS events_count,
               (SELECT COUNT(*) FROM tickets t WHERE t.user_id = u.id) AS tickets_count,
-              op.organization_name, op.description AS org_description, op.website, op.logo_url, op.is_verified AS org_is_verified
+              op.organization_name, op.description AS org_description, op.website, op.logo_url, op.is_verified AS org_is_verified,
+              op.category AS org_category, op.city AS org_city
        FROM users u
        LEFT JOIN organizer_profiles op ON op.user_id = u.id
        ${where}
@@ -218,6 +219,10 @@ export const getUsers = async (req, res) => {
       email_verified: u.email_verified,
       avatar: u.avatar,
       createdAt: u.created_at,
+      location: u.org_city || u.location || null,
+      city: u.org_city || u.location || null,
+      category: u.org_category || null,
+      bio: u.org_description || u.bio || null,
       eventsCount: Number(u.events_count) || 0,
       ticketsCount: Number(u.tickets_count) || 0,
       isSuspended: u.status === 'suspended',
@@ -226,9 +231,11 @@ export const getUsers = async (req, res) => {
       organizationName: u.organization_name || u.name,
       organization: {
         name: u.organization_name || u.name,
-        description: u.org_description,
-        website: u.website,
-        logoUrl: u.logo_url,
+        category: u.org_category || null,
+        city: u.org_city || u.location || null,
+        description: u.org_description || u.bio || null,
+        website: u.website || null,
+        logoUrl: u.logo_url || null,
         isVerified: !!u.org_is_verified,
       },
     }));
@@ -341,7 +348,7 @@ export const updateUser = async (req, res) => {
     const target = rows[0];
     if (!target) return res.status(404).json({ message: 'User not found' });
 
-    const allowed = ['name', 'email', 'role', 'phone', 'status', 'is_approved'];
+    const allowed = ['name', 'email', 'role', 'phone', 'status', 'is_approved', 'bio', 'location'];
     const fields = [];
     const values = [];
     const changed = {};
@@ -377,19 +384,43 @@ export const updateUser = async (req, res) => {
       changed[key] = value;
     }
 
-    if (!fields.length) return res.status(400).json({ message: 'No fields to update' });
-    values.push(id);
-    await pool.execute(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`, values);
+    const orgName = req.body.organization_name ?? req.body.organizationName;
+    const orgCategory = req.body.category ?? req.body.org_category;
+    const orgCity = req.body.city ?? req.body.org_city;
+    const orgWebsite = req.body.website ?? req.body.org_website;
+    const orgDesc = req.body.description ?? req.body.org_description;
+    const hasOrgUpdates = [orgName, orgCategory, orgCity, orgWebsite, orgDesc].some((v) => v !== undefined);
 
-    // Promoting someone to organizer: make sure they have a profile row so
-    // the organizer dashboard and approval flow work immediately.
-    if (changed.role === 'organizer') {
+    if (!fields.length && !hasOrgUpdates) {
+      return res.status(400).json({ message: 'No fields to update' });
+    }
+
+    if (fields.length) {
+      values.push(id);
+      await pool.execute(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`, values);
+    }
+
+    // Promoting someone to organizer or updating organizer details
+    const isOrganizer = (changed.role || target.role) === 'organizer';
+    if (isOrganizer) {
       const [existing] = await pool.execute('SELECT id FROM organizer_profiles WHERE user_id = ?', [id]);
       if (!existing.length) {
         await pool.execute(
-          'INSERT INTO organizer_profiles (user_id, organization_name) VALUES (?, ?)',
-          [Number(id), changed.name || target.name],
+          'INSERT INTO organizer_profiles (user_id, organization_name, category, city, website, description) VALUES (?, ?, ?, ?, ?, ?)',
+          [Number(id), orgName || changed.name || target.name, orgCategory || null, orgCity || null, orgWebsite || null, orgDesc || null],
         );
+      } else if (hasOrgUpdates) {
+        const orgFields = [];
+        const orgVals = [];
+        if (orgName !== undefined) { orgFields.push('organization_name = ?'); orgVals.push(orgName); changed.organization_name = orgName; }
+        if (orgCategory !== undefined) { orgFields.push('category = ?'); orgVals.push(orgCategory); changed.category = orgCategory; }
+        if (orgCity !== undefined) { orgFields.push('city = ?'); orgVals.push(orgCity); changed.city = orgCity; }
+        if (orgWebsite !== undefined) { orgFields.push('website = ?'); orgVals.push(orgWebsite); changed.website = orgWebsite; }
+        if (orgDesc !== undefined) { orgFields.push('description = ?'); orgVals.push(orgDesc); changed.description = orgDesc; }
+        if (orgFields.length) {
+          orgVals.push(id);
+          await pool.execute(`UPDATE organizer_profiles SET ${orgFields.join(', ')} WHERE user_id = ?`, orgVals);
+        }
       }
     }
 
@@ -2196,12 +2227,11 @@ export const getUserManagementStats = async (_req, res) => {
     const [[active]] = await pool.execute("SELECT COUNT(*) AS count FROM users WHERE status = 'active'");
     const [[suspended]] = await pool.execute("SELECT COUNT(*) AS count FROM users WHERE status = 'suspended'");
     const [[pending]] = await pool.execute(
-      "SELECT COUNT(*) AS count FROM users WHERE role = 'organizer' AND is_approved = ? AND status = 'active'",
-      [0],
+      "SELECT COUNT(*) AS count FROM users WHERE role = 'organizer' AND (is_approved = FALSE OR is_approved IS NULL) AND status != 'rejected' AND status != 'suspended' AND status != 'active'",
     );
     const [[organizers]] = await pool.execute("SELECT COUNT(*) AS count FROM users WHERE role = 'organizer'");
     const [[attendees]] = await pool.execute("SELECT COUNT(*) AS count FROM users WHERE role = 'attendee'");
-    const [[verified]] = await pool.execute('SELECT COUNT(*) AS count FROM users WHERE email_verified = ?', [1]);
+    const [[verified]] = await pool.execute('SELECT COUNT(*) AS count FROM users WHERE email_verified = TRUE');
     const [[recentWeek]] = await pool.execute("SELECT COUNT(*) AS count FROM users WHERE created_at >= NOW() - INTERVAL '7 days'");
 
     res.json({
@@ -2679,6 +2709,269 @@ export const deleteBotConversation = async (req, res) => {
   }
 };
 
+/* ------------------------------------------------------------------ */
+/* Mobile App Management                                              */
+/* ------------------------------------------------------------------ */
+
+export const ensureMobileTables = async () => {
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS mobile_app_banners (
+      id BIGSERIAL PRIMARY KEY,
+      title VARCHAR(255) NOT NULL,
+      subtitle VARCHAR(255),
+      image_url VARCHAR(500) NOT NULL,
+      link_type VARCHAR(50) DEFAULT 'none',
+      link_target VARCHAR(255) DEFAULT '',
+      is_active BOOLEAN DEFAULT TRUE,
+      sort_order INT DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
+};
+
+export const getMobileAppConfig = async (req, res) => {
+  try {
+    await ensureMobileTables();
+
+    const [settingRows] = await pool.execute(
+      `SELECT setting_key, setting_value FROM system_settings WHERE setting_key LIKE 'mobile_%'`
+    );
+    const settingsMap = {};
+    for (const r of settingRows) {
+      settingsMap[r.setting_key] = r.setting_value;
+    }
+
+    const [banners] = await pool.execute(
+      `SELECT * FROM mobile_app_banners ORDER BY sort_order ASC, id DESC`
+    );
+
+    const [eventRows] = await pool.execute(
+      `SELECT id, title, start_date, venue, city, banner_image FROM events WHERE status = 'published' ORDER BY start_date ASC LIMIT 30`
+    );
+
+    res.json({
+      settings: {
+        maintenance_mode: settingsMap['mobile_maintenance_mode'] === 'true',
+        maintenance_message: settingsMap['mobile_maintenance_message'] || 'We are currently performing scheduled maintenance on the mobile app. Please check back shortly.',
+        min_version: settingsMap['mobile_min_version'] || '1.0.0',
+        support_email: settingsMap['mobile_support_email'] || 'support@tribesandcliqs.com',
+        support_phone: settingsMap['mobile_support_phone'] || '+233 55 123 4567',
+        announcement_enabled: settingsMap['mobile_announcement_enabled'] === 'true',
+        announcement_text: settingsMap['mobile_announcement_text'] || '',
+        announcement_type: settingsMap['mobile_announcement_type'] || 'info',
+        announcement_link: settingsMap['mobile_announcement_link'] || '',
+      },
+      banners: banners || [],
+      availableEvents: eventRows || [],
+    });
+  } catch (err) {
+    console.error('[adminController.getMobileAppConfig]', err);
+    res.status(500).json({ message: 'Failed to retrieve mobile app configuration' });
+  }
+};
+
+export const updateMobileAppSettings = async (req, res) => {
+  try {
+    const {
+      maintenance_mode,
+      maintenance_message,
+      min_version,
+      support_email,
+      support_phone,
+      announcement_enabled,
+      announcement_text,
+      announcement_type,
+      announcement_link,
+    } = req.body;
+
+    const updates = [
+      ['mobile_maintenance_mode', maintenance_mode ? 'true' : 'false'],
+      ['mobile_maintenance_message', String(maintenance_message || '').trim()],
+      ['mobile_min_version', String(min_version || '1.0.0').trim()],
+      ['mobile_support_email', String(support_email || '').trim()],
+      ['mobile_support_phone', String(support_phone || '').trim()],
+      ['mobile_announcement_enabled', announcement_enabled ? 'true' : 'false'],
+      ['mobile_announcement_text', String(announcement_text || '').trim()],
+      ['mobile_announcement_type', String(announcement_type || 'info').trim()],
+      ['mobile_announcement_link', String(announcement_link || '').trim()],
+    ];
+
+    for (const [key, value] of updates) {
+      await pool.execute(
+        `INSERT INTO system_settings (setting_key, setting_value)
+         VALUES (?, ?)
+         ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value`,
+        [key, value]
+      );
+    }
+
+    clearSettingsCache();
+    await logAudit({
+      userId: req.user.id,
+      action: 'update_mobile_app_settings',
+      entityType: 'system_settings',
+      details: { maintenance_mode, announcement_enabled },
+    });
+
+    res.json({ message: 'Mobile app settings updated successfully' });
+  } catch (err) {
+    console.error('[adminController.updateMobileAppSettings]', err);
+    res.status(500).json({ message: 'Failed to update mobile app settings' });
+  }
+};
+
+export const createMobileAppBanner = async (req, res) => {
+  try {
+    await ensureMobileTables();
+    const {
+      title,
+      subtitle = '',
+      image_url,
+      link_type = 'none',
+      link_target = '',
+      is_active = true,
+      sort_order = 0,
+    } = req.body;
+
+    if (!title || !image_url) {
+      return res.status(400).json({ message: 'Banner title and image URL are required' });
+    }
+
+    const [result] = await pool.execute(
+      `INSERT INTO mobile_app_banners (title, subtitle, image_url, link_type, link_target, is_active, sort_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       RETURNING *`,
+      [title.trim(), subtitle.trim(), image_url.trim(), link_type, link_target.trim(), Boolean(is_active), Number(sort_order) || 0]
+    );
+
+    const newBanner = result[0];
+    await logAudit({
+      userId: req.user.id,
+      action: 'create_mobile_banner',
+      entityType: 'mobile_app_banners',
+      entityId: newBanner?.id,
+      details: { title },
+    });
+
+    res.status(201).json({ message: 'Mobile banner created successfully', banner: newBanner });
+  } catch (err) {
+    console.error('[adminController.createMobileAppBanner]', err);
+    res.status(500).json({ message: 'Failed to create mobile banner' });
+  }
+};
+
+export const updateMobileAppBanner = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      title,
+      subtitle,
+      image_url,
+      link_type,
+      link_target,
+      is_active,
+      sort_order,
+    } = req.body;
+
+    const [existing] = await pool.execute(`SELECT * FROM mobile_app_banners WHERE id = ?`, [id]);
+    if (!existing || existing.length === 0) {
+      return res.status(404).json({ message: 'Banner not found' });
+    }
+
+    const current = existing[0];
+    const newTitle = title !== undefined ? String(title).trim() : current.title;
+    const newSubtitle = subtitle !== undefined ? String(subtitle).trim() : current.subtitle;
+    const newImageUrl = image_url !== undefined ? String(image_url).trim() : current.image_url;
+    const newLinkType = link_type !== undefined ? link_type : current.link_type;
+    const newLinkTarget = link_target !== undefined ? String(link_target).trim() : current.link_target;
+    const newIsActive = is_active !== undefined ? Boolean(is_active) : current.is_active;
+    const newSortOrder = sort_order !== undefined ? Number(sort_order) : current.sort_order;
+
+    await pool.execute(
+      `UPDATE mobile_app_banners
+       SET title = ?, subtitle = ?, image_url = ?, link_type = ?, link_target = ?, is_active = ?, sort_order = ?, updated_at = NOW()
+       WHERE id = ?`,
+      [newTitle, newSubtitle, newImageUrl, newLinkType, newLinkTarget, newIsActive, newSortOrder, id]
+    );
+
+    await logAudit({
+      userId: req.user.id,
+      action: 'update_mobile_banner',
+      entityType: 'mobile_app_banners',
+      entityId: id,
+      details: { title: newTitle, is_active: newIsActive },
+    });
+
+    res.json({ message: 'Banner updated successfully' });
+  } catch (err) {
+    console.error('[adminController.updateMobileAppBanner]', err);
+    res.status(500).json({ message: 'Failed to update mobile banner' });
+  }
+};
+
+export const deleteMobileAppBanner = async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.execute(`DELETE FROM mobile_app_banners WHERE id = ?`, [id]);
+    await logAudit({
+      userId: req.user.id,
+      action: 'delete_mobile_banner',
+      entityType: 'mobile_app_banners',
+      entityId: id,
+    });
+    res.json({ message: 'Banner deleted successfully' });
+  } catch (err) {
+    console.error('[adminController.deleteMobileAppBanner]', err);
+    res.status(500).json({ message: 'Failed to delete mobile banner' });
+  }
+};
+
+export const getPublicMobileConfig = async (req, res) => {
+  try {
+    await ensureMobileTables();
+
+    const [settingRows] = await pool.execute(
+      `SELECT setting_key, setting_value FROM system_settings WHERE setting_key LIKE 'mobile_%'`
+    );
+    const settingsMap = {};
+    for (const r of settingRows) {
+      settingsMap[r.setting_key] = r.setting_value;
+    }
+
+    const [banners] = await pool.execute(
+      `SELECT id, title, subtitle, image_url, link_type, link_target, sort_order
+       FROM mobile_app_banners
+       WHERE is_active = TRUE
+       ORDER BY sort_order ASC, id DESC`
+    );
+
+    res.json({
+      maintenance: {
+        enabled: settingsMap['mobile_maintenance_mode'] === 'true',
+        message: settingsMap['mobile_maintenance_message'] || 'We are currently performing scheduled maintenance on the mobile app. Please check back shortly.',
+        minVersion: settingsMap['mobile_min_version'] || '1.0.0',
+        supportEmail: settingsMap['mobile_support_email'] || 'support@tribesandcliqs.com',
+        supportPhone: settingsMap['mobile_support_phone'] || '+233 55 123 4567',
+      },
+      announcement: {
+        enabled: settingsMap['mobile_announcement_enabled'] === 'true',
+        text: settingsMap['mobile_announcement_text'] || '',
+        type: settingsMap['mobile_announcement_type'] || 'info',
+        link: settingsMap['mobile_announcement_link'] || '',
+      },
+      banners: banners || [],
+    });
+  } catch (err) {
+    console.error('[adminController.getPublicMobileConfig]', err);
+    res.json({
+      maintenance: { enabled: false, message: '', minVersion: '1.0.0' },
+      announcement: { enabled: false, text: '', type: 'info' },
+      banners: [],
+    });
+  }
+};
+
 export default {
   getDashboardStats, getUsers, getUser, updateUser, suspendUser, unsuspendUser, verifyUser, deleteUser, approveOrganizer, rejectOrganizer, resetUserPassword, createAdminUser,
   getUserManagementStats, getUserActivity, getUserSessions, getUserStats, forceLogoutUser, addAdminNote, getAdminNotes, deleteAdminNote, exportUsers, bulkRoleChange, bulkDeleteUsers,
@@ -2691,5 +2984,6 @@ export default {
   getContentPages, createContentPage, updateContentPage, deleteContentPage,
   getAITrainingData, createAIKnowledgeItem, updateAIKnowledgeItem, deleteAIKnowledgeItem, updateAISettings, testAIPrompt,
   getBotConversations, deleteBotConversation,
+  getMobileAppConfig, updateMobileAppSettings, createMobileAppBanner, updateMobileAppBanner, deleteMobileAppBanner, getPublicMobileConfig,
 };
 

@@ -39,15 +39,16 @@ export const sendNotificationToMany = async (userIds, { title, message = '', typ
  */
 export const notifyAdmins = async ({ title, message = '', type = 'system', link = '' }) => {
   try {
+    const notifType = VALID_TYPES.has(type) ? type : 'system';
     const [admins] = await pool.execute(
-      `SELECT id FROM users WHERE role IN ('admin', 'system_admin', 'superadmin') AND status = 'active'`
+      `SELECT id FROM users WHERE role IN ('admin', 'system_admin', 'superadmin') AND (status = 'active' OR status IS NULL)`
     );
     if (!admins || !admins.length) return;
 
     for (const admin of admins) {
       await pool.execute(
         `INSERT INTO notifications (user_id, title, message, type, link, is_read) VALUES (?, ?, ?, ?, ?, FALSE)`,
-        [admin.id, title, message, type, link]
+        [admin.id, title, message, notifType, link]
       );
     }
   } catch (err) {

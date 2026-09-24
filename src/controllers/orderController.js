@@ -288,7 +288,7 @@ async function completeOrder(orderId, reference) {
   const order = orderRows[0];
   if (!order) return;
 
-  const [userRows] = await pool.execute('SELECT email, phone FROM users WHERE id = ?', [order.user_id]);
+  const [userRows] = await pool.execute('SELECT id, name, email, phone FROM users WHERE id = ?', [order.user_id]);
   const user = userRows[0];
   const [eventRows] = await pool.execute('SELECT title FROM events WHERE id = ?', [order.event_id]);
   const eventTitle = eventRows[0]?.title;
@@ -310,8 +310,8 @@ async function completeOrder(orderId, reference) {
   });
 
   notifyAdmins({
-    title: 'Ticket Order Completed',
-    message: `Order #${order.id} paid (GHS ${Number(order.total_amount).toFixed(2)}) for "${eventTitle || 'Event'}".`,
+    title: 'Ticket Purchase Completed',
+    message: `${user?.name || 'Customer'} (${user?.email || 'N/A'}) purchased tickets for "${eventTitle || 'Event'}" (Order #${order.id} • GHS ${Number(order.total_amount).toFixed(2)}).`,
     type: 'payment',
     link: '/admin/payments',
   }).catch(() => {});

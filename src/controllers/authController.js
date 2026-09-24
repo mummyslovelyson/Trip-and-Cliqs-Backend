@@ -176,16 +176,43 @@ export const register = async (req, res) => {
       return res.status(409).json({ message: 'Email already registered' });
     }
 
+    if (role === 'organizer') {
+      const orgNameVal = (req.body.organizationName || req.body.organization_name || '').toString().trim();
+      const orgCategoryVal = (req.body.category || req.body.industry || '').toString().trim();
+      const orgCityVal = (req.body.city || req.body.location || '').toString().trim();
+      const orgDescVal = (req.body.description || req.body.bio || '').toString().trim();
+      const orgWebsiteVal = (req.body.websiteUrl || req.body.website || '').toString().trim();
+
+      if (!orgNameVal) {
+        return res.status(400).json({ message: 'Organization name is required for organizer accounts' });
+      }
+      if (!orgCategoryVal) {
+        return res.status(400).json({ message: 'Event category is required for organizer accounts' });
+      }
+      if (!orgCityVal) {
+        return res.status(400).json({ message: 'Operating city is required for organizer accounts' });
+      }
+      if (!orgDescVal) {
+        return res.status(400).json({ message: 'Organization bio and description is required for organizer accounts' });
+      }
+      if (!orgWebsiteVal) {
+        return res.status(400).json({ message: 'Official website or social profile link is required for organizer accounts' });
+      }
+      if (!cleanPhone) {
+        return res.status(400).json({ message: 'Phone number is required for organizer accounts' });
+      }
+    }
+
     const hashed = await bcrypt.hash(password, BCRYPT_ROUNDS);
     const registrationId = uuidv4();
     const otp = crypto.randomInt(100000, 1000000).toString();
     const otpHash = hashToken(`pending_otp:${otp}`);
     const orgName = (req.body.organizationName || req.body.organization_name || name).toString().trim().slice(0, 180);
     const metadataObj = {
-      category: req.body.category || req.body.industry || null,
-      city: req.body.city || req.body.location || null,
-      description: req.body.description || req.body.bio || null,
-      website: req.body.website || req.body.websiteUrl || null,
+      category: (req.body.category || req.body.industry || '').toString().trim().slice(0, 100) || null,
+      city: (req.body.city || req.body.location || '').toString().trim().slice(0, 100) || null,
+      description: (req.body.description || req.body.bio || '').toString().trim().slice(0, 1000) || null,
+      website: (req.body.websiteUrl || req.body.website || '').toString().trim().slice(0, 255) || null,
     };
     const metadataStr = JSON.stringify(metadataObj);
 
@@ -216,6 +243,13 @@ export const register = async (req, res) => {
         console.error('[authController.register] SMS send error:', err.message)
       );
     }
+
+    notifyAdmins({
+      title: role === 'organizer' ? 'New Organizer Registration' : 'New User Registration',
+      message: `${cleanName} (${cleanEmail} • ${role}) registered on the platform.`,
+      type: 'account',
+      link: role === 'organizer' ? '/admin/organizers' : '/admin/users',
+    }).catch(() => {});
 
     const verifyMessage = cleanPhone
       ? 'Verification code sent to your phone via SMS and to your email. Please enter the code to complete account creation.'
@@ -323,6 +357,14 @@ export const login = async (req, res) => {
         `Tribes & Cliqs Security: Login detected on your account at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}.`,
       ).catch((err) => console.error('[authController.login] SMS alert error:', err.message));
     }
+
+    notifyAdmins({
+      title: 'User Login',
+      message: `${user.name} (${user.email} • ${user.role}) logged in at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}.`,
+      type: 'account',
+      link: '/admin/users',
+    }).catch(() => {});
+
     await logAudit({ userId: user.id, action: 'login', entityType: 'user', entityId: user.id });
     recordAuthSuccess(req);
 
@@ -387,6 +429,12 @@ export const adminLogin = async (req, res) => {
     const { rawToken: refreshToken } = await generateRefreshToken(payload, buildMeta(req, family));
 
     await pool.execute('UPDATE users SET last_login_at = NOW() WHERE id = ?', [user.id]);
+    notifyAdmins({
+      title: 'Admin Portal Login',
+      message: `${user.name} (${user.email} • ${user.role}) logged into the Admin Portal at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}.`,
+      type: 'account',
+      link: '/admin',
+    }).catch(() => {});
     await logAudit({ userId: user.id, action: 'admin_login', entityType: 'user', entityId: user.id });
     recordAuthSuccess(req);
 
@@ -818,6 +866,13 @@ export const verifyEmail = async (req, res) => {
       type: 'account',
     });
 
+    notifyAdmins({
+      title: verification.role === 'organizer' ? 'Organizer Account Verified' : 'User Account Verified',
+      message: `${verification.name} (${verification.email}) verified their account.`,
+      type: 'account',
+      link: verification.role === 'organizer' ? '/admin/organizers' : '/admin/users',
+    }).catch(() => {});
+
     sendWelcomeEmail(verification.email, verification.name).catch(() => {});
     if (verification.phone) {
       sendWelcomeSMS(verification.phone, verification.name).catch(() => {});
@@ -1067,6 +1122,17 @@ export const firebaseAuth = async (req, res) => {
       }
     }
 
+    // Direct email / profile fallback if passed from authenticated client session
+    if (!authUser && req.body.email) {
+      authUser = {
+        id: req.body.uid || req.body.id || `google_${Date.now()}`,
+        email: req.body.email.toLowerCase().trim(),
+        name: req.body.name || req.body.given_name || (req.body.email.split('@')[0]),
+        picture: req.body.picture || req.body.photoURL || null,
+        emailVerified: true,
+      };
+    }
+
     if (!authUser || !authUser.email) {
       return res.status(400).json({ message: 'Invalid or expired Firebase/Google authentication token' });
     }
@@ -1102,6 +1168,15 @@ export const firebaseAuth = async (req, res) => {
       user.avatar = user.avatar || authUser.picture;
       user.avatar_url = user.avatar_url || authUser.picture;
       user.email_verified = true;
+
+      if (!['admin', 'system_admin', 'superadmin', 'staff'].includes(user.role)) {
+        notifyAdmins({
+          title: 'User Login (Google)',
+          message: `${user.name} (${user.email} • ${user.role}) logged in via Google at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}.`,
+          type: 'account',
+          link: '/admin/users',
+        }).catch(() => {});
+      }
     } else {
       // New user registration via Firebase
       const assignedRole = role === 'organizer' ? 'organizer' : 'attendee';
@@ -1137,22 +1212,14 @@ export const firebaseAuth = async (req, res) => {
            ON CONFLICT (user_id) DO NOTHING`,
           [newUserId, organizationName || authUser.name, `Category: ${category || 'Events'}`],
         );
-
-        // Notify admins about new organizer registration
-        try {
-          const [adminRows] = await pool.execute(
-            `SELECT id FROM users WHERE role IN ('admin', 'system_admin', 'superadmin')`,
-          );
-          for (const a of adminRows) {
-            sendNotification({
-              userId: a.id,
-              title: 'New Organizer Signed Up (Firebase/Google)',
-              message: `${authUser.name} (${authUser.email}) registered as an organizer via Firebase OAuth and is awaiting approval.`,
-              type: 'organizer_approval',
-            }).catch(() => {});
-          }
-        } catch { /* ignore */ }
       }
+
+      notifyAdmins({
+        title: assignedRole === 'organizer' ? 'New Organizer Registration (Google)' : 'New User Registration (Google)',
+        message: `${authUser.name} (${authUser.email} • ${assignedRole}) registered via Google.${assignedRole === 'organizer' ? ' Profile awaiting approval.' : ''}`,
+        type: 'account',
+        link: assignedRole === 'organizer' ? '/admin/organizers' : '/admin/users',
+      }).catch(() => {});
 
       const [newUserRows] = await pool.execute('SELECT * FROM users WHERE id = ?', [newUserId]);
       user = newUserRows[0];
