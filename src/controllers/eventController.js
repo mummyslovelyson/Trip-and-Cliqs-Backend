@@ -1033,6 +1033,131 @@ export const getFeaturedOrganizers = async (req, res) => {
     console.error('[eventController.getFeaturedOrganizers]', err);
     res.status(500).json({ message: 'Server error fetching organizers' });
   }
+/* ------------------------------------------------------------------ */
+/* Get Public Organizer Profile with Events & Reviews                 */
+/* ------------------------------------------------------------------ */
+export const getPublicOrganizerProfile = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const organizerId = Number(id);
+    if (!organizerId || isNaN(organizerId)) {
+      return res.status(400).json({ message: 'Valid organizer ID required' });
+    }
+
+    const [userRows] = await pool.execute(
+      `SELECT u.id, u.name, u.email, u.phone, COALESCE(u.avatar_url, u.avatar) AS avatar,
+              u.created_at, op.organization_name, op.description, op.about, op.website,
+              op.logo_url, op.banner_url, op.social_links, op.is_verified, op.category,
+              op.city, op.country, op.primary_color, op.tagline
+       FROM users u
+       LEFT JOIN organizer_profiles op ON op.user_id = u.id
+       WHERE u.id = ? AND u.role IN ('organizer', 'admin', 'system_admin')`,
+      [organizerId],
+    );
+
+    const organizer = userRows[0];
+    if (!organizer) {
+      return res.status(404).json({ message: 'Organizer not found' });
+    }
+
+    // Followers count
+    let followersCount = 0;
+    try {
+      const [followerRows] = await pool.execute(
+        `SELECT COUNT(*) AS count FROM organizer_follows WHERE organizer_id = ?`,
+        [organizerId],
+      );
+      followersCount = Number(followerRows[0]?.count || 0);
+    } catch {
+      // safe fallback if organizer_follows table is missing
+    }
+
+    // Is current user following?
+    let isFollowing = false;
+    if (req.user?.id) {
+      try {
+        const [followCheck] = await pool.execute(
+          `SELECT id FROM organizer_follows WHERE follower_id = ? AND organizer_id = ?`,
+          [req.user.id, organizerId],
+        );
+        isFollowing = followCheck.length > 0;
+      } catch {
+        isFollowing = false;
+      }
+    }
+
+    // Events by this organizer
+    const [eventsRows] = await pool.execute(
+      `SELECT e.*,
+              COALESCE(MIN(tt.price), 0) AS min_price,
+              COALESCE(MAX(tt.price), 0) AS max_price,
+              COALESCE(SUM(tt.quantity), 0) AS total_capacity,
+              COALESCE(SUM(tt.quantity_sold), 0) AS total_sold
+       FROM events e
+       LEFT JOIN ticket_types tt ON tt.event_id = e.id AND tt.is_active = TRUE
+       WHERE e.organizer_id = ? AND e.status = 'published'
+       GROUP BY e.id
+       ORDER BY e.start_date ASC, e.start_time ASC`,
+      [organizerId],
+    );
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    const upcomingEvents = [];
+    const pastEvents = [];
+
+    for (const ev of eventsRows) {
+      const evDate = ev.start_date ? new Date(ev.start_date).toISOString().split('T')[0] : '';
+      if (evDate >= todayStr) {
+        upcomingEvents.push(ev);
+      } else {
+        pastEvents.push(ev);
+      }
+    }
+
+    // Reviews & average rating across organizer's events
+    let reviewsRows = [];
+    let averageRating = 5.0;
+    try {
+      const [revRows] = await pool.execute(
+        `SELECT r.id, r.rating, r.comment, r.created_at,
+                u.name AS reviewer_name, COALESCE(u.avatar_url, u.avatar) AS reviewer_avatar,
+                e.title AS event_title, e.id AS event_id
+         FROM reviews r
+         JOIN users u ON u.id = r.user_id
+         JOIN events e ON e.id = r.event_id
+         WHERE e.organizer_id = ?
+         ORDER BY r.created_at DESC
+         LIMIT 30`,
+        [organizerId],
+      );
+      reviewsRows = revRows;
+      if (reviewsRows.length > 0) {
+        const sum = reviewsRows.reduce((acc, r) => acc + Number(r.rating || 0), 0);
+        averageRating = Number((sum / reviewsRows.length).toFixed(1));
+      }
+    } catch {
+      reviewsRows = [];
+    }
+
+    res.json({
+      organizer,
+      stats: {
+        totalEvents: eventsRows.length,
+        upcomingCount: upcomingEvents.length,
+        pastCount: pastEvents.length,
+        followersCount,
+        isFollowing,
+        averageRating,
+        reviewCount: reviewsRows.length,
+      },
+      upcomingEvents,
+      pastEvents,
+      reviews: reviewsRows,
+    });
+  } catch (err) {
+    console.error('[eventController.getPublicOrganizerProfile]', err);
+    res.status(500).json({ message: 'Server error fetching organizer profile' });
+  }
 };
 
 export default {
@@ -1040,5 +1165,5 @@ export default {
   publishEvent, unpublishEvent,
   getOrganizerEvents, getFeaturedEvents, getTrendingEvents, getRecommendedEvents,
   toggleEventReminder, getEventReminderStatus,
-  getCategories, getFeaturedOrganizers,
+  getCategories, getFeaturedOrganizers, getPublicOrganizerProfile,
 };
