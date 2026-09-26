@@ -787,6 +787,50 @@ CREATE INDEX IF NOT EXISTS idx_ual_user    ON user_activity_log(user_id);
 CREATE INDEX IF NOT EXISTS idx_ual_action  ON user_activity_log(action);
 CREATE INDEX IF NOT EXISTS idx_ual_created ON user_activity_log(created_at);
 
+-- ────────────────  RESALE LISTINGS  ────────────────
+CREATE TABLE IF NOT EXISTS resale_listings (
+  id               BIGSERIAL PRIMARY KEY,
+  ticket_id        BIGINT NOT NULL,
+  seller_id        BIGINT NOT NULL,
+  event_id         BIGINT NOT NULL,
+  ticket_type_id   BIGINT NOT NULL,
+  price            DECIMAL(12,2) NOT NULL,
+  original_price   DECIMAL(12,2) DEFAULT 0,
+  max_resale_price DECIMAL(12,2) DEFAULT 0,
+  platform_fee     DECIMAL(12,2) DEFAULT 0,
+  seller_payout    DECIMAL(12,2) DEFAULT 0,
+  status           TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','sold','cancelled','rejected')),
+  approval_status  TEXT NOT NULL DEFAULT 'approved' CHECK (approval_status IN ('pending','approved','rejected')),
+  approved_by      BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  approved_at      TIMESTAMPTZ,
+  rejection_reason TEXT,
+  sold_to          BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  sold_at          TIMESTAMPTZ,
+  created_at       TIMESTAMPTZ DEFAULT NOW(),
+  CONSTRAINT fk_rl_ticket FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
+  CONSTRAINT fk_rl_seller FOREIGN KEY (seller_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_rl_event FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
+  CONSTRAINT fk_rl_type FOREIGN KEY (ticket_type_id) REFERENCES ticket_types(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_rl_event ON resale_listings(event_id);
+CREATE INDEX IF NOT EXISTS idx_rl_seller ON resale_listings(seller_id);
+CREATE INDEX IF NOT EXISTS idx_rl_status ON resale_listings(status);
+CREATE INDEX IF NOT EXISTS idx_rl_approval ON resale_listings(approval_status);
+
+-- ────────────────  EVENT VIEWS (Personalized Recommendations)  ────────────────
+CREATE TABLE IF NOT EXISTS event_views (
+  id         BIGSERIAL PRIMARY KEY,
+  user_id    BIGINT REFERENCES users(id) ON DELETE CASCADE,
+  event_id   BIGINT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  ip_address VARCHAR(80),
+  viewed_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ev_user ON event_views(user_id);
+CREATE INDEX IF NOT EXISTS idx_ev_event ON event_views(event_id);
+CREATE INDEX IF NOT EXISTS idx_ev_viewed_at ON event_views(viewed_at);
+
 -- ────────────────  updated_at TRIGGER  ────────────────
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$

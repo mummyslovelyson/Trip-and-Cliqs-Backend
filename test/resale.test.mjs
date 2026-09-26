@@ -278,7 +278,7 @@ test('completeOrder path transfers the ticket when a resale order completes', as
     ticket_number: 'TC-DDD1', qr_code: 'qr-d', seat_number: null,
     status: 'active', created_at: new Date().toISOString(),
   });
-  const create = await api('POST', '/api/resale', { token: alice, body: { ticketId, price: 55 } });
+  const create = await api('POST', '/api/resale', { token: alice, body: { ticketId, price: 45 } });
   assert.equal(create.status, 201);
   const listingId = create.json.listingId;
 
@@ -286,7 +286,7 @@ test('completeOrder path transfers the ticket when a resale order completes', as
   // order controller path (webhook equivalent: completeOrder -> transfer).
   const orderId = db.seq.orders++;
   db.tables.orders.push({
-    id: orderId, user_id: 3, event_id: 1, total_amount: 55, discount_amount: 0,
+    id: orderId, user_id: 3, event_id: 1, total_amount: 45, discount_amount: 0,
     payment_method: 'paystack', payment_status: 'pending',
     payment_reference: 'TC-DEV99', resale_listing_id: listingId,
     order_status: 'active', created_at: new Date().toISOString(),
@@ -302,4 +302,56 @@ test('completeOrder path transfers the ticket when a resale order completes', as
   assert.equal(original.status, 'transferred');
   const buyerTicket = db.tables.tickets.find((t) => t.user_id === 3 && t.status === 'active');
   assert.ok(buyerTicket, 'buyer received ticket via completeOrder');
+  assert.match(buyerTicket.ticket_number, /^TRB-/, 'buyer ticket uses new TRB- format');
+  assert.match(buyerTicket.qr_code, /^TRB-QR-/, 'buyer ticket receives a fresh QR code');
 });
+
+test('anti-scalping: cannot list a ticket higher than maximum resale price (+25% cap)', async () => {
+  const alice = await login('alice@test.com');
+  const ticketId = db.seq.tickets++;
+  // Ticket type 2 has original price 40. Max resale price is 40 * 1.25 = 50.
+  db.tables.tickets.push({
+    id: ticketId, order_item_id: null, user_id: 1, event_id: 1, ticket_type_id: 2,
+    ticket_number: 'TC-SCALP', qr_code: 'qr-scalp', seat_number: null,
+    status: 'active', created_at: new Date().toISOString(),
+  });
+
+  // Attempting to list at 65 (> 50 cap) must fail
+  const rejected = await api('POST', '/api/resale', { token: alice, body: { ticketId, price: 65 } });
+  assert.equal(rejected.status, 400);
+  assert.match(rejected.json.message, /exceeds maximum allowed resale price/i);
+  assert.equal(rejected.json.maxResalePrice, 50);
+
+  // Listing at 50 (within cap) succeeds with 5% platform fee and 95% payout
+  const allowed = await api('POST', '/api/resale', { token: alice, body: { ticketId, price: 50 } });
+  assert.equal(allowed.status, 201);
+  assert.equal(allowed.json.originalPrice, 40);
+  assert.equal(allowed.json.maxResalePrice, 50);
+  assert.equal(allowed.json.platformFee, 2.5);
+  assert.equal(allowed.json.sellerPayout, 47.5);
+});
+
+test('public can explore marketplace verified resale tickets', async () => {
+  const r = await api('GET', '/api/resale/marketplace');
+  assert.equal(r.status, 200);
+  assert.ok(Array.isArray(r.json.listings));
+  assert.ok(r.json.listings.length >= 1);
+  const item = r.json.listings[0];
+  assert.ok(item.price > 0);
+  assert.ok(item.platformFee >= 0);
+  assert.ok(item.sellerPayout > 0);
+});
+
+test('personalized recommendations factor purchases and viewed events', async () => {
+  const alice = await login('alice@test.com');
+  const r = await api('GET', '/api/events/recommended', { token: alice });
+  assert.equal(r.status, 200);
+  assert.ok(Array.isArray(r.json.events));
+  if (r.json.events.length > 0) {
+    const rec = r.json.events[0];
+    assert.ok(rec.recommendationBadge, 'has recommendation badge');
+    assert.ok(rec.recommendationReason, 'has recommendation reason');
+  }
+});
+
+

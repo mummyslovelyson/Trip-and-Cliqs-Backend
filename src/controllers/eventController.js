@@ -203,6 +203,18 @@ export const getEvent = async (req, res) => {
     if (event.status !== 'published' && !isOwner && !isAdmin) {
       return res.status(404).json({ message: 'Event not found' });
     }
+
+    // Asynchronously record event view for personalized recommendations & analytics
+    try {
+      pool.execute(
+        `INSERT INTO event_views (user_id, event_id, ip_address, viewed_at)
+         VALUES (?, ?, ?, NOW())`,
+        [req.user?.id || null, event.id, req.ip || null],
+      ).catch(() => {});
+    } catch {
+      // non-fatal
+    }
+
     const [tickets] = await pool.execute(
       `SELECT * FROM ticket_types WHERE event_id = ? ORDER BY price ASC`,
       [id],
@@ -813,6 +825,34 @@ export const getTrendingEvents = async (req, res) => {
 // their favorites (strongest signal), past ticket purchases, and location.
 // Anonymous users (or users with no history) get the platform's popular
 // picks instead, so the section is never empty.
+/* ------------------------------------------------------------------ */
+/* Track event view (Personalized Recommendations signal)             */
+/* ------------------------------------------------------------------ */
+export const trackEventView = async (req, res) => {
+  try {
+    const eventId = Number(req.params.id);
+    if (!eventId) return res.status(400).json({ message: 'Event ID required' });
+    const userId = req.user?.id || null;
+    const ip = req.ip || null;
+
+    await pool.execute(
+      `INSERT INTO event_views (user_id, event_id, ip_address, viewed_at)
+       VALUES (?, ?, ?, NOW())`,
+      [userId, eventId, ip],
+    );
+    res.status(204).end();
+  } catch (err) {
+    res.status(200).json({ ok: true });
+  }
+};
+
+/* ------------------------------------------------------------------ */
+/* Personalized recommendations                                         */
+/* ------------------------------------------------------------------ */
+// Scored recommendations based on:
+// 1. Previous purchases (tickets owned/attended)
+// 2. Events viewed (browsing history)
+// 3. User location/city & bookmarked favorites
 export const getRecommendedEvents = async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit, 10) || 8, 20);
@@ -820,7 +860,7 @@ export const getRecommendedEvents = async (req, res) => {
 
     const [candidates] = await pool.execute(
       `SELECT e.id, e.title, e.slug, e.description, e.banner_image, e.venue, e.category, e.city,
-              e.start_date, e.end_date, e.start_time, e.is_featured,
+              e.start_date, e.end_date, e.start_time, e.is_featured, e.organizer_id,
               u.name AS organizer_name,
               (SELECT MIN(price) FROM ticket_types WHERE event_id = e.id) AS min_price
        FROM events e
@@ -834,10 +874,59 @@ export const getRecommendedEvents = async (req, res) => {
     if (!userId) {
       const popular = [...candidates]
         .sort((a, b) => (b.is_featured ? 1 : 0) - (a.is_featured ? 1 : 0) || new Date(a.start_date) - new Date(b.start_date))
-        .slice(0, limit);
+        .slice(0, limit)
+        .map((e) => ({
+          ...e,
+          recommendationReason: e.is_featured ? 'Featured on Tribes & Cliqs' : `Popular upcoming event in ${e.city || 'Ghana'}`,
+          recommendationBadge: e.is_featured ? 'Featured Pick' : 'Trending',
+        }));
       return res.json({ events: popular });
     }
 
+    // 1. SIGNAL: Previous Purchases (Tickets owned/attended by user)
+    const [purchaseRows] = await pool.execute(
+      `SELECT DISTINCT e.id AS event_id, e.title, e.category, e.organizer_id, e.city
+       FROM tickets t
+       JOIN events e ON e.id = t.event_id
+       WHERE t.user_id = ?`,
+      [userId],
+    );
+    const ownedEventIds = new Set(purchaseRows.map((r) => r.event_id));
+    const purchasedCategories = new Map();
+    const purchasedOrganizers = new Map();
+    for (const r of purchaseRows) {
+      if (r.category) {
+        purchasedCategories.set(r.category, { title: r.title, count: (purchasedCategories.get(r.category)?.count || 0) + 1 });
+      }
+      if (r.organizer_id) {
+        purchasedOrganizers.set(r.organizer_id, (purchasedOrganizers.get(r.organizer_id) || 0) + 1);
+      }
+    }
+
+    // 2. SIGNAL: Events Viewed (Browsing history)
+    let viewedRows = [];
+    try {
+      const [vRows] = await pool.execute(
+        `SELECT DISTINCT e.id AS event_id, e.title, e.category, e.organizer_id, e.city, ev.viewed_at
+         FROM event_views ev
+         JOIN events e ON e.id = ev.event_id
+         WHERE ev.user_id = ?
+         ORDER BY ev.viewed_at DESC
+         LIMIT 40`,
+        [userId],
+      );
+      viewedRows = vRows || [];
+    } catch {
+      viewedRows = [];
+    }
+    const viewedCategories = new Map();
+    for (const r of viewedRows) {
+      if (r.category && !viewedCategories.has(r.category)) {
+        viewedCategories.set(r.category, { title: r.title });
+      }
+    }
+
+    // 3. SIGNAL: Bookmarked Favorites
     const [favRows] = await pool.execute(
       `SELECT event_id FROM favorites WHERE user_id = ?`,
       [userId],
@@ -849,24 +938,12 @@ export const getRecommendedEvents = async (req, res) => {
       if (rows[0]?.category) favCategories.add(rows[0].category);
     }
 
-    // Categories the user has actually attended/bought into.
-    const [attRows] = await pool.execute(
-      `SELECT DISTINCT event_id FROM tickets WHERE user_id = ? AND status = 'active'`,
-      [userId],
-    );
-    const ownedEventIds = new Set(attRows.map((r) => r.event_id));
-    const attendedCategories = new Set();
-    for (const id of ownedEventIds) {
-      const [rows] = await pool.execute('SELECT category FROM events WHERE id = ?', [id]);
-      if (rows[0]?.category) attendedCategories.add(rows[0].category);
-    }
-
-    // The user's home city — derived from their profile location
+    // 4. SIGNAL: User City
     let userCity = null;
     try {
       const [userRows] = await pool.execute('SELECT location FROM users WHERE id = ?', [userId]);
       const loc = userRows[0]?.location;
-      if (loc && typeof loc === 'string') userCity = loc.split(',')[0].trim();
+      if (loc && typeof loc === 'string') userCity = loc.split(',')[0].trim().toLowerCase();
     } catch {
       // ignore
     }
@@ -875,21 +952,70 @@ export const getRecommendedEvents = async (req, res) => {
       .filter((e) => !ownedEventIds.has(e.id))
       .map((e) => {
         let score = 0;
-        if (favCategories.has(e.category)) score += 3;
-        if (attendedCategories.has(e.category)) score += 2;
-        if (userCity && e.city && e.city.toLowerCase() === userCity.toLowerCase()) score += 1;
-        return { ...e, score };
+        let recommendationReason = 'Recommended for you';
+        let recommendationBadge = 'For You';
+
+        // Check Previous Purchases match (Weight: Highest)
+        if (purchasedCategories.has(e.category)) {
+          const match = purchasedCategories.get(e.category);
+          score += 12;
+          recommendationReason = `Because you attended ${match.title || e.category}`;
+          recommendationBadge = 'Past Purchase Match';
+        } else if (purchasedOrganizers.has(e.organizer_id)) {
+          score += 10;
+          recommendationReason = `From an organizer you previously booked with (${e.organizer_name || 'Organizer'})`;
+          recommendationBadge = 'Favorite Organizer';
+        }
+
+        // Check Events Viewed match (Weight: High)
+        if (viewedCategories.has(e.category)) {
+          const vMatch = viewedCategories.get(e.category);
+          score += 7;
+          if (score <= 7) {
+            recommendationReason = `Based on your recent interest in ${e.category}`;
+            recommendationBadge = 'Recently Viewed Match';
+          }
+        }
+
+        // Check Favorites match
+        if (favCategories.has(e.category)) {
+          score += 5;
+          if (score <= 5) {
+            recommendationReason = `Matches your saved ${e.category} interests`;
+            recommendationBadge = 'Saved Interest';
+          }
+        }
+
+        // Check City match
+        if (userCity && e.city && e.city.toLowerCase() === userCity) {
+          score += 4;
+          if (score <= 4) {
+            recommendationReason = `Happening near you in ${e.city}`;
+            recommendationBadge = 'Near You';
+          }
+        }
+
+        if (e.is_featured) score += 2;
+
+        return {
+          ...e,
+          score,
+          recommendationReason,
+          recommendationBadge,
+        };
       })
       .sort((a, b) => b.score - a.score || new Date(a.start_date) - new Date(b.start_date));
 
-    // No personalised signals → platform picks.
-    const top = scored.length && scored.some((e) => e.score > 0)
-      ? scored
-      : [...candidates].sort(
-        (a, b) => (b.is_featured ? 1 : 0) - (a.is_featured ? 1 : 0) || new Date(a.start_date) - new Date(b.start_date),
-      );
+    // Fallback if no personalized signals exist
+    const top = (scored.length && scored.some((e) => e.score > 0) ? scored : candidates)
+      .slice(0, limit)
+      .map((e) => ({
+        ...e,
+        recommendationReason: e.recommendationReason || (e.is_featured ? 'Featured on Tribes & Cliqs' : 'Popular upcoming event'),
+        recommendationBadge: e.recommendationBadge || (e.is_featured ? 'Featured Pick' : 'Trending'),
+      }));
 
-    res.json({ events: top.slice(0, limit) });
+    res.json({ events: top });
   } catch (err) {
     console.error('[eventController.getRecommendedEvents]', err);
     res.status(500).json({ message: 'Server error' });
@@ -1163,7 +1289,7 @@ export const getPublicOrganizerProfile = async (req, res) => {
 };
 
 export default {
-  getEvents, getEvent, createEvent, updateEvent, deleteEvent,
+  getEvents, getEvent, trackEventView, createEvent, updateEvent, deleteEvent,
   publishEvent, unpublishEvent,
   getOrganizerEvents, getFeaturedEvents, getTrendingEvents, getRecommendedEvents,
   toggleEventReminder, getEventReminderStatus,

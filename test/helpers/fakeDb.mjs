@@ -20,7 +20,7 @@ export function createFakeDb() {
     refresh_tokens: 1, password_history: 1,
     admin_user_notes: 1, user_activity_log: 1,
     pending_registrations: 1, system_settings: 1,
-    uploaded_tickets: 1,
+    uploaded_tickets: 1, wallet_transactions: 1, event_views: 1,
   };
   const tables = {
     users: [], events: [], ticket_types: [], notifications: [],
@@ -32,7 +32,7 @@ export function createFakeDb() {
     refresh_tokens: [], password_history: [],
     admin_user_notes: [], user_activity_log: [],
     pending_registrations: [], system_settings: [],
-    uploaded_tickets: [],
+    uploaded_tickets: [], wallet_transactions: [], event_views: [],
   };
 
   const nowIso = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
@@ -288,11 +288,15 @@ export function createFakeDb() {
       });
     }
 
-    // JOIN ticket_types tt ON tt.id = <main>.ticket_type_id → merge type name.
+    // JOIN ticket_types tt ON tt.id = <main>.ticket_type_id → merge type name and price.
     if (/JOIN\s+ticket_types\s+tt\s+ON\s+tt\.id\s*=\s*(\w+)\.ticket_type_id/i.test(sql)) {
       rows = rows.map((r) => {
         const tt = tables.ticket_types.find((x) => x.id === r.ticket_type_id);
-        return { ...r, ticket_type_name: tt?.name ?? null };
+        return {
+          ...r,
+          ticket_type_name: tt?.name ?? null,
+          ticket_type_price: tt?.price != null ? Number(tt.price) : null,
+        };
       });
     }
 
