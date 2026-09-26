@@ -80,10 +80,19 @@ export const getProfile = async (req, res) => {
     );
 
     const { password, reset_token, reset_expires, ...profile } = user;
+    let favoriteCategories = [];
+    if (profile.favorite_categories) {
+      favoriteCategories = typeof profile.favorite_categories === 'string'
+        ? JSON.parse(profile.favorite_categories || '[]')
+        : (Array.isArray(profile.favorite_categories) ? profile.favorite_categories : []);
+    }
+
     res.json({
       user: {
         ...profile,
         dateOfBirth: profile.date_of_birth || null,
+        favoriteCategories,
+        favorite_categories: favoriteCategories,
         notificationSettings: readNotificationSettings(prefRows[0]),
       },
     });
@@ -107,6 +116,7 @@ export const updateProfile = async (req, res) => {
       avatar: 'avatar',
       bio: 'bio',
       location: 'location',
+      city: 'location',
       dateOfBirth: 'date_of_birth',
     };
     const fields = [];
@@ -116,6 +126,13 @@ export const updateProfile = async (req, res) => {
         fields.push(`${column} = ?`);
         values.push(req.body[key] === '' ? null : req.body[key]);
       }
+    }
+
+    if (req.body.favoriteCategories !== undefined || req.body.favorite_categories !== undefined) {
+      const cats = req.body.favoriteCategories ?? req.body.favorite_categories;
+      const formatted = Array.isArray(cats) ? JSON.stringify(cats) : (cats || '[]');
+      fields.push('favorite_categories = ?');
+      values.push(formatted);
     }
 
     if (req.user.role === 'organizer' && req.body.organization_name !== undefined) {

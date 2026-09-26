@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS users (
   failed_login_attempts INT NOT NULL DEFAULT 0,
   locked_until    TIMESTAMPTZ,
   last_login_at   TIMESTAMPTZ,
+  favorite_categories JSONB DEFAULT '[]',
   created_at      TIMESTAMPTZ DEFAULT NOW(),
   updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
@@ -830,6 +831,19 @@ CREATE TABLE IF NOT EXISTS event_views (
 CREATE INDEX IF NOT EXISTS idx_ev_user ON event_views(user_id);
 CREATE INDEX IF NOT EXISTS idx_ev_event ON event_views(event_id);
 CREATE INDEX IF NOT EXISTS idx_ev_viewed_at ON event_views(viewed_at);
+
+-- ────────────────  SEARCH HISTORY (Personalized Recommendations)  ────────────────
+CREATE TABLE IF NOT EXISTS search_history (
+  id          BIGSERIAL PRIMARY KEY,
+  user_id     BIGINT REFERENCES users(id) ON DELETE CASCADE,
+  query       VARCHAR(255) NOT NULL,
+  category    VARCHAR(100),
+  city        VARCHAR(100),
+  searched_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_sh_user ON search_history(user_id);
+CREATE INDEX IF NOT EXISTS idx_sh_searched_at ON search_history(searched_at);
 
 -- ────────────────  updated_at TRIGGER  ────────────────
 CREATE OR REPLACE FUNCTION update_updated_at_column()

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import {
-  getEvents, getEvent, trackEventView, createEvent, updateEvent, deleteEvent,
+  getEvents, getEvent, trackEventView, trackSearchQuery, createEvent, updateEvent, deleteEvent,
   publishEvent, unpublishEvent,
   getOrganizerEvents, getFeaturedEvents, getTrendingEvents, getRecommendedEvents,
   getCategories, getFeaturedOrganizers, getPublicOrganizerProfile,
@@ -29,7 +29,8 @@ router.get('/reminders/mine', authenticate, getUserReminders);
 router.post('/:id/reminders', authenticate, writeLimiter, toggleEventReminder);
 router.get('/:id/reminders', optionalAuth, getEventReminderStatus);
 
-// View tracking (Personalized Recommendations)
+// Search & View Tracking (Personalized Recommendations)
+router.post('/search/log', optionalAuth, trackSearchQuery);
 router.post('/:id/view', optionalAuth, trackEventView);
 
 // Organizer-only (create / manage)

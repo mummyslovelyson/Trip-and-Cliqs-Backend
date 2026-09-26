@@ -847,20 +847,50 @@ export const trackEventView = async (req, res) => {
 };
 
 /* ------------------------------------------------------------------ */
+/* Search query logging (Personalized Recommendations)                 */
+/* ------------------------------------------------------------------ */
+export const trackSearchQuery = async (req, res) => {
+  try {
+    const { query, category, city } = req.body;
+    if (!query || typeof query !== 'string' || !query.trim()) {
+      return res.json({ tracked: false });
+    }
+    const userId = req.user?.id || null;
+    const cleanQuery = query.trim().slice(0, 255);
+    const cleanCategory = category ? String(category).slice(0, 100) : null;
+    const cleanCity = city ? String(city).slice(0, 100) : null;
+
+    await pool.execute(
+      `INSERT INTO search_history (user_id, query, category, city, searched_at)
+       VALUES (?, ?, ?, ?, NOW())`,
+      [userId, cleanQuery, cleanCategory, cleanCity],
+    );
+    res.json({ tracked: true });
+  } catch (err) {
+    // Non-fatal logging failure
+    res.json({ tracked: false });
+  }
+};
+
+/* ------------------------------------------------------------------ */
 /* Personalized recommendations                                         */
 /* ------------------------------------------------------------------ */
-// Scored recommendations based on:
-// 1. Previous purchases (tickets owned/attended)
-// 2. Events viewed (browsing history)
-// 3. User location/city & bookmarked favorites
+// Scored recommendations and contextual grouped rails based on:
+// 1. Previous purchases / attendance ("Because you attended: [Event]")
+// 2. Favorite categories
+// 3. Location / city
+// 4. Organizers & artists followed
+// 5. Search history
+// 6. Events viewed
 export const getRecommendedEvents = async (req, res) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit, 10) || 8, 20);
+    const limit = Math.min(parseInt(req.query.limit, 10) || 12, 30);
     const userId = req.user?.id;
+    const clientCity = req.query.city ? String(req.query.city).trim().toLowerCase() : null;
 
     const [candidates] = await pool.execute(
       `SELECT e.id, e.title, e.slug, e.description, e.banner_image, e.venue, e.category, e.city,
-              e.start_date, e.end_date, e.start_time, e.is_featured, e.organizer_id,
+              e.start_date, e.end_date, e.start_time, e.is_featured, e.organizer_id, e.tags,
               u.name AS organizer_name,
               (SELECT MIN(price) FROM ticket_types WHERE event_id = e.id) AS min_price
        FROM events e
@@ -870,31 +900,67 @@ export const getRecommendedEvents = async (req, res) => {
        ORDER BY e.start_date ASC`,
     );
 
-    // Anonymous / no-history fallback: featured first, then soonest.
+    // Anonymous fallback: featured first, then soonest
     if (!userId) {
+      const cityFilter = clientCity || 'Accra';
+      const cityEvents = candidates.filter((e) => e.city && e.city.toLowerCase().includes(cityFilter.toLowerCase())).slice(0, 6);
+      const featuredEvents = candidates.filter((e) => e.is_featured).slice(0, 6);
+
       const popular = [...candidates]
         .sort((a, b) => (b.is_featured ? 1 : 0) - (a.is_featured ? 1 : 0) || new Date(a.start_date) - new Date(b.start_date))
         .slice(0, limit)
         .map((e) => ({
           ...e,
-          recommendationReason: e.is_featured ? 'Featured on Tribes & Cliqs' : `Popular upcoming event in ${e.city || 'Ghana'}`,
+          recommendationReason: e.is_featured ? 'Featured on Tribes & Cliqs' : `Popular upcoming in ${e.city || 'Ghana'}`,
           recommendationBadge: e.is_featured ? 'Featured Pick' : 'Trending',
         }));
-      return res.json({ events: popular });
+
+      const defaultSections = [];
+      if (cityEvents.length > 0) {
+        defaultSections.push({
+          id: 'popular_city',
+          type: 'location',
+          title: `Trending Near You in ${clientCity ? clientCity.charAt(0).toUpperCase() + clientCity.slice(1) : 'Accra'}`,
+          subtitle: 'Exciting live experiences in your area',
+          events: cityEvents,
+        });
+      }
+      if (featuredEvents.length > 0) {
+        defaultSections.push({
+          id: 'featured_picks',
+          type: 'featured',
+          title: 'Handpicked For You',
+          subtitle: 'Curated experiences hand-selected by Tribes & Cliqs',
+          events: featuredEvents,
+        });
+      }
+
+      return res.json({ events: popular, sections: defaultSections });
     }
 
-    // 1. SIGNAL: Previous Purchases (Tickets owned/attended by user)
+    // ──────────────── 1. SIGNAL: PREVIOUS PURCHASES & ATTENDANCE ────────────────
     const [purchaseRows] = await pool.execute(
-      `SELECT DISTINCT e.id AS event_id, e.title, e.category, e.organizer_id, e.city
+      `SELECT DISTINCT e.id AS event_id, e.title, e.category, e.organizer_id, e.city, t.created_at AS attended_at
        FROM tickets t
        JOIN events e ON e.id = t.event_id
-       WHERE t.user_id = ?`,
+       WHERE t.user_id = ?
+       ORDER BY t.created_at DESC`,
       [userId],
     );
     const ownedEventIds = new Set(purchaseRows.map((r) => r.event_id));
+    const pastAttendedEvents = [];
     const purchasedCategories = new Map();
     const purchasedOrganizers = new Map();
+
     for (const r of purchaseRows) {
+      if (!pastAttendedEvents.some((p) => p.id === r.event_id || p.event_id === r.event_id)) {
+        pastAttendedEvents.push({
+          id: r.event_id,
+          event_id: r.event_id,
+          title: r.title,
+          category: r.category,
+        });
+      }
       if (r.category) {
         purchasedCategories.set(r.category, { title: r.title, count: (purchasedCategories.get(r.category)?.count || 0) + 1 });
       }
@@ -903,7 +969,59 @@ export const getRecommendedEvents = async (req, res) => {
       }
     }
 
-    // 2. SIGNAL: Events Viewed (Browsing history)
+    // ──────────────── 2. SIGNAL: FAVORITE CATEGORIES & USER LOCATION ────────────────
+    let favoriteCategories = [];
+    let userCity = clientCity;
+    try {
+      const [userRows] = await pool.execute(
+        'SELECT location, favorite_categories FROM users WHERE id = ?',
+        [userId],
+      );
+      if (userRows[0]) {
+        const u = userRows[0];
+        if (u.location && !userCity) {
+          userCity = String(u.location).split(',')[0].trim().toLowerCase();
+        }
+        if (u.favorite_categories) {
+          favoriteCategories = typeof u.favorite_categories === 'string'
+            ? JSON.parse(u.favorite_categories || '[]')
+            : (Array.isArray(u.favorite_categories) ? u.favorite_categories : []);
+        }
+      }
+    } catch {
+      // ignore
+    }
+    const favCatSet = new Set(favoriteCategories.map((c) => String(c).toLowerCase()));
+
+    // ──────────────── 3. SIGNAL: ORGANIZERS & ARTISTS FOLLOWED ────────────────
+    let followedOrganizerIds = new Set();
+    try {
+      const [followRows] = await pool.execute(
+        'SELECT organizer_id FROM organizer_follows WHERE follower_id = ?',
+        [userId],
+      );
+      followedOrganizerIds = new Set(followRows.map((r) => Number(r.organizer_id)));
+    } catch {
+      followedOrganizerIds = new Set();
+    }
+
+    // ──────────────── 4. SIGNAL: SEARCH HISTORY ────────────────
+    let recentSearches = [];
+    try {
+      const [shRows] = await pool.execute(
+        `SELECT DISTINCT query, category, city, searched_at
+         FROM search_history
+         WHERE user_id = ?
+         ORDER BY searched_at DESC
+         LIMIT 5`,
+        [userId],
+      );
+      recentSearches = shRows || [];
+    } catch {
+      recentSearches = [];
+    }
+
+    // ──────────────── 5. SIGNAL: EVENTS VIEWED ────────────────
     let viewedRows = [];
     try {
       const [vRows] = await pool.execute(
@@ -912,7 +1030,7 @@ export const getRecommendedEvents = async (req, res) => {
          JOIN events e ON e.id = ev.event_id
          WHERE ev.user_id = ?
          ORDER BY ev.viewed_at DESC
-         LIMIT 40`,
+         LIMIT 30`,
         [userId],
       );
       viewedRows = vRows || [];
@@ -926,76 +1044,106 @@ export const getRecommendedEvents = async (req, res) => {
       }
     }
 
-    // 3. SIGNAL: Bookmarked Favorites
-    const [favRows] = await pool.execute(
-      `SELECT event_id FROM favorites WHERE user_id = ?`,
-      [userId],
-    );
-    const favEventIds = favRows.map((r) => r.event_id);
+    // ──────────────── 6. SIGNAL: BOOKMARKED FAVORITES ────────────────
     const favCategories = new Set();
-    for (const id of favEventIds) {
-      const [rows] = await pool.execute('SELECT category FROM events WHERE id = ?', [id]);
-      if (rows[0]?.category) favCategories.add(rows[0].category);
-    }
-
-    // 4. SIGNAL: User City
-    let userCity = null;
     try {
-      const [userRows] = await pool.execute('SELECT location FROM users WHERE id = ?', [userId]);
-      const loc = userRows[0]?.location;
-      if (loc && typeof loc === 'string') userCity = loc.split(',')[0].trim().toLowerCase();
+      const [favRows] = await pool.execute(
+        'SELECT event_id FROM favorites WHERE user_id = ?',
+        [userId],
+      );
+      for (const f of favRows) {
+        const [rows] = await pool.execute('SELECT category FROM events WHERE id = ?', [f.event_id]);
+        if (rows[0]?.category) favCategories.add(rows[0].category.toLowerCase());
+      }
     } catch {
       // ignore
     }
 
+    // ──────────────── COMPOSITE SCORING ────────────────
     const scored = candidates
       .filter((e) => !ownedEventIds.has(e.id))
       .map((e) => {
         let score = 0;
         let recommendationReason = 'Recommended for you';
         let recommendationBadge = 'For You';
+        const eCatLower = (e.category || '').toLowerCase();
 
-        // Check Previous Purchases match (Weight: Highest)
+        // 1. Previous Purchases / Attendance Match (Highest Weight: +18)
         if (purchasedCategories.has(e.category)) {
           const match = purchasedCategories.get(e.category);
-          score += 12;
+          score += 18;
           recommendationReason = `Because you attended ${match.title || e.category}`;
-          recommendationBadge = 'Past Purchase Match';
+          recommendationBadge = 'Past Attendance';
         } else if (purchasedOrganizers.has(e.organizer_id)) {
-          score += 10;
+          score += 15;
           recommendationReason = `From an organizer you previously booked with (${e.organizer_name || 'Organizer'})`;
           recommendationBadge = 'Favorite Organizer';
         }
 
-        // Check Events Viewed match (Weight: High)
-        if (viewedCategories.has(e.category)) {
-          const vMatch = viewedCategories.get(e.category);
-          score += 7;
-          if (score <= 7) {
-            recommendationReason = `Based on your recent interest in ${e.category}`;
-            recommendationBadge = 'Recently Viewed Match';
+        // 2. Organizers / Artists Followed Match (+14)
+        if (followedOrganizerIds.has(Number(e.organizer_id))) {
+          score += 14;
+          if (score <= 14) {
+            recommendationReason = `From ${e.organizer_name || 'an organizer'} you follow`;
+            recommendationBadge = 'Following';
           }
         }
 
-        // Check Favorites match
-        if (favCategories.has(e.category)) {
-          score += 5;
-          if (score <= 5) {
+        // 3. Favorite Categories Match (+12)
+        if (favCatSet.has(eCatLower)) {
+          score += 12;
+          if (score <= 12) {
+            recommendationReason = `Matches your favorite category: ${e.category}`;
+            recommendationBadge = 'Favorite Category';
+          }
+        }
+
+        // 4. Search History Match (+10)
+        if (recentSearches.length > 0) {
+          for (const s of recentSearches) {
+            const q = (s.query || '').toLowerCase();
+            const inTitle = (e.title || '').toLowerCase().includes(q);
+            const inDesc = (e.description || '').toLowerCase().includes(q);
+            const inCat = eCatLower.includes(q);
+            if (q.length >= 3 && (inTitle || inDesc || inCat)) {
+              score += 10;
+              if (score <= 10) {
+                recommendationReason = `Based on your search for "${s.query}"`;
+                recommendationBadge = 'Search Match';
+              }
+              break;
+            }
+          }
+        }
+
+        // 5. Events Viewed Match (+8)
+        if (viewedCategories.has(e.category)) {
+          score += 8;
+          if (score <= 8) {
+            recommendationReason = `Based on your recent interest in ${e.category}`;
+            recommendationBadge = 'Recently Viewed';
+          }
+        }
+
+        // 6. Bookmarked Favorites Match (+6)
+        if (favCategories.has(eCatLower)) {
+          score += 6;
+          if (score <= 6) {
             recommendationReason = `Matches your saved ${e.category} interests`;
             recommendationBadge = 'Saved Interest';
           }
         }
 
-        // Check City match
-        if (userCity && e.city && e.city.toLowerCase() === userCity) {
-          score += 4;
-          if (score <= 4) {
+        // 7. City / Location Match (+5)
+        if (userCity && e.city && e.city.toLowerCase().includes(userCity)) {
+          score += 5;
+          if (score <= 5) {
             recommendationReason = `Happening near you in ${e.city}`;
             recommendationBadge = 'Near You';
           }
         }
 
-        if (e.is_featured) score += 2;
+        if (e.is_featured) score += 3;
 
         return {
           ...e,
@@ -1006,7 +1154,144 @@ export const getRecommendedEvents = async (req, res) => {
       })
       .sort((a, b) => b.score - a.score || new Date(a.start_date) - new Date(b.start_date));
 
-    // Fallback if no personalized signals exist
+    // ──────────────── BUILD CONTEXTUAL RECOMMENDATION SECTIONS ────────────────
+    const sections = [];
+    const usedEventIds = new Set();
+
+    // Section 1: "Because you attended: [Event Name]"
+    // E.g. Blueprint example: "Because you attended: Tech Summit Ghana" -> "Ghana Developer Conference, AI Ghana Summit, Startup Expo Accra"
+    if (pastAttendedEvents.length > 0) {
+      let attendedCount = 0;
+      for (const attended of pastAttendedEvents) {
+        if (attendedCount >= 2) break;
+        const related = candidates.filter(
+          (c) =>
+            !ownedEventIds.has(c.id) &&
+            !usedEventIds.has(c.id) &&
+            (c.category === attended.category ||
+              (attended.category && (c.description || '').toLowerCase().includes(attended.category.toLowerCase()))),
+        ).slice(0, 4);
+
+        if (related.length > 0) {
+          attendedCount++;
+          related.forEach((r) => usedEventIds.add(r.id));
+          sections.push({
+            id: `attended_${attended.id}`,
+            type: 'because_you_attended',
+            title: `Because you attended: ${attended.title}`,
+            subtitle: `Handpicked upcoming ${attended.category || 'live'} events matching your experience`,
+            basis: attended.title,
+            category: attended.category,
+            events: related.map((r) => ({
+              ...r,
+              recommendationReason: `Because you attended ${attended.title}`,
+              recommendationBadge: 'Past Attendance',
+            })),
+          });
+        }
+      }
+    }
+
+    // Section 2: "From Organizers & Artists You Follow"
+    if (followedOrganizerIds.size > 0) {
+      const orgEvents = candidates
+        .filter((c) => !ownedEventIds.has(c.id) && followedOrganizerIds.has(Number(c.organizer_id)))
+        .slice(0, 4);
+
+      if (orgEvents.length > 0) {
+        orgEvents.forEach((r) => usedEventIds.add(r.id));
+        sections.push({
+          id: 'organizers_followed',
+          type: 'organizers_followed',
+          title: 'From Organizers & Artists You Follow',
+          subtitle: 'Upcoming shows from your favorite event creators',
+          events: orgEvents.map((r) => ({
+            ...r,
+            recommendationReason: `From ${r.organizer_name || 'an organizer'} you follow`,
+            recommendationBadge: 'Following',
+          })),
+        });
+      }
+    }
+
+    // Section 3: "Matches Your Favorite Categories"
+    if (favoriteCategories.length > 0) {
+      const favEvents = candidates
+        .filter((c) => !ownedEventIds.has(c.id) && favCatSet.has((c.category || '').toLowerCase()))
+        .slice(0, 6);
+
+      if (favEvents.length > 0) {
+        favEvents.forEach((r) => usedEventIds.add(r.id));
+        sections.push({
+          id: 'favorite_categories',
+          type: 'favorite_categories',
+          title: 'Matches Your Favorite Categories',
+          subtitle: `Curated for your preferences: ${favoriteCategories.join(', ')}`,
+          categories: favoriteCategories,
+          events: favEvents.map((r) => ({
+            ...r,
+            recommendationReason: `Matches your favorite category: ${r.category}`,
+            recommendationBadge: 'Favorite Category',
+          })),
+        });
+      }
+    }
+
+    // Section 4: "Based on Your Recent Searches"
+    if (recentSearches.length > 0) {
+      const latest = recentSearches[0];
+      const q = (latest.query || '').toLowerCase();
+      if (q.length >= 3) {
+        const searchMatches = candidates
+          .filter(
+            (c) =>
+              !ownedEventIds.has(c.id) &&
+              ((c.title || '').toLowerCase().includes(q) ||
+                (c.category || '').toLowerCase().includes(q) ||
+                (c.description || '').toLowerCase().includes(q)),
+          )
+          .slice(0, 4);
+
+        if (searchMatches.length > 0) {
+          searchMatches.forEach((r) => usedEventIds.add(r.id));
+          sections.push({
+            id: 'recent_searches',
+            type: 'search_history',
+            title: `Because you searched for "${latest.query}"`,
+            subtitle: 'Recommended matches from your search activity',
+            query: latest.query,
+            events: searchMatches.map((r) => ({
+              ...r,
+              recommendationReason: `Based on your search for "${latest.query}"`,
+              recommendationBadge: 'Search Match',
+            })),
+          });
+        }
+      }
+    }
+
+    // Section 5: "Trending Near You"
+    if (userCity) {
+      const cityMatches = candidates
+        .filter((c) => !ownedEventIds.has(c.id) && c.city && c.city.toLowerCase().includes(userCity))
+        .slice(0, 4);
+
+      if (cityMatches.length > 0) {
+        sections.push({
+          id: 'near_you',
+          type: 'location',
+          title: `Trending Near You in ${userCity.charAt(0).toUpperCase() + userCity.slice(1)}`,
+          subtitle: 'Live experiences happening right around you',
+          city: userCity,
+          events: cityMatches.map((r) => ({
+            ...r,
+            recommendationReason: `Happening in ${r.city}`,
+            recommendationBadge: 'Near You',
+          })),
+        });
+      }
+    }
+
     const top = (scored.length && scored.some((e) => e.score > 0) ? scored : candidates)
       .slice(0, limit)
       .map((e) => ({
@@ -1015,7 +1300,17 @@ export const getRecommendedEvents = async (req, res) => {
         recommendationBadge: e.recommendationBadge || (e.is_featured ? 'Featured Pick' : 'Trending'),
       }));
 
-    res.json({ events: top });
+    res.json({
+      events: top,
+      sections,
+      meta: {
+        favoriteCategories,
+        location: userCity,
+        followingCount: followedOrganizerIds.size,
+        searchesCount: recentSearches.length,
+        attendedCount: pastAttendedEvents.length,
+      },
+    });
   } catch (err) {
     console.error('[eventController.getRecommendedEvents]', err);
     res.status(500).json({ message: 'Server error' });
@@ -1289,7 +1584,7 @@ export const getPublicOrganizerProfile = async (req, res) => {
 };
 
 export default {
-  getEvents, getEvent, trackEventView, createEvent, updateEvent, deleteEvent,
+  getEvents, getEvent, trackEventView, trackSearchQuery, createEvent, updateEvent, deleteEvent,
   publishEvent, unpublishEvent,
   getOrganizerEvents, getFeaturedEvents, getTrendingEvents, getRecommendedEvents,
   toggleEventReminder, getEventReminderStatus,

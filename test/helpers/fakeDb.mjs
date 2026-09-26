@@ -20,7 +20,7 @@ export function createFakeDb() {
     refresh_tokens: 1, password_history: 1,
     admin_user_notes: 1, user_activity_log: 1,
     pending_registrations: 1, system_settings: 1,
-    uploaded_tickets: 1, wallet_transactions: 1, event_views: 1,
+    uploaded_tickets: 1, wallet_transactions: 1, event_views: 1, search_history: 1,
   };
   const tables = {
     users: [], events: [], ticket_types: [], notifications: [],
@@ -32,7 +32,7 @@ export function createFakeDb() {
     refresh_tokens: [], password_history: [],
     admin_user_notes: [], user_activity_log: [],
     pending_registrations: [], system_settings: [],
-    uploaded_tickets: [], wallet_transactions: [], event_views: [],
+    uploaded_tickets: [], wallet_transactions: [], event_views: [], search_history: [],
   };
 
   const nowIso = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
@@ -280,6 +280,10 @@ export function createFakeDb() {
         const ev = tables.events.find((x) => x.id === r.event_id);
         return {
           ...r,
+          title: ev?.title ?? null,
+          category: ev?.category ?? null,
+          city: ev?.city ?? null,
+          organizer_id: ev?.organizer_id ?? null,
           event_title: ev?.title ?? null,
           start_date: ev?.start_date ?? null,
           start_time: ev?.start_time ?? null,

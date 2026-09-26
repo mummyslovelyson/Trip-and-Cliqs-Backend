@@ -347,11 +347,65 @@ test('personalized recommendations factor purchases and viewed events', async ()
   const r = await api('GET', '/api/events/recommended', { token: alice });
   assert.equal(r.status, 200);
   assert.ok(Array.isArray(r.json.events));
+  assert.ok(Array.isArray(r.json.sections), 'exposes grouped recommendation sections');
   if (r.json.events.length > 0) {
     const rec = r.json.events[0];
     assert.ok(rec.recommendationBadge, 'has recommendation badge');
     assert.ok(rec.recommendationReason, 'has recommendation reason');
   }
+});
+
+test('personalized recommendations generate "Because you attended: [Event]" section with related events', async () => {
+  const alice = await login('alice@test.com');
+
+  // Seed user attendance: Alice attended "Tech Summit Ghana" (Category: Technology)
+  const techSummitId = db.seq.events++;
+  db.tables.events.push({
+    id: techSummitId, title: 'Tech Summit Ghana', category: 'Technology',
+    status: 'completed', start_date: '2025-11-10', organizer_id: 2, visibility: 'public',
+  });
+  db.tables.tickets.push({
+    id: db.seq.tickets++, user_id: 1, event_id: techSummitId, ticket_type_id: 1,
+    ticket_number: 'TRB-PAST-01', qr_code: 'qr-past-01', status: 'used',
+    created_at: '2025-11-10T10:00:00Z',
+  });
+
+  // Seed upcoming tech events (as in blueprint example: Ghana Developer Conference, AI Ghana Summit, Startup Expo Accra)
+  db.tables.events.push({
+    id: db.seq.events++, title: 'Ghana Developer Conference', category: 'Technology',
+    status: 'published', start_date: '2026-11-15', organizer_id: 2, visibility: 'public',
+  });
+  db.tables.events.push({
+    id: db.seq.events++, title: 'AI Ghana Summit', category: 'Technology',
+    status: 'published', start_date: '2026-11-20', organizer_id: 2, visibility: 'public',
+  });
+  db.tables.events.push({
+    id: db.seq.events++, title: 'Startup Expo Accra', category: 'Technology',
+    status: 'published', start_date: '2026-12-05', organizer_id: 2, visibility: 'public',
+  });
+
+  // Also log search history for Alice
+  const searchLog = await api('POST', '/api/events/search/log', {
+    token: alice,
+    body: { query: 'Developer', category: 'Technology' },
+  });
+  assert.equal(searchLog.status, 200);
+
+  const res = await api('GET', '/api/events/recommended', { token: alice });
+  assert.ok(Array.isArray(res.json.sections));
+
+  // Find "because_you_attended" section
+  const attendedSection = res.json.sections.find((s) => s.type === 'because_you_attended');
+  assert.ok(attendedSection, 'contains "because_you_attended" recommendation rail');
+  assert.match(attendedSection.title, /Because you attended.*Tech Summit Ghana/i);
+  assert.ok(attendedSection.events.length >= 1, 'contains recommended matching tech events');
+  const matchedTitles = attendedSection.events.map((e) => e.title);
+  assert.ok(
+    matchedTitles.includes('Ghana Developer Conference') ||
+    matchedTitles.includes('AI Ghana Summit') ||
+    matchedTitles.includes('Startup Expo Accra'),
+    'recommends related tech events from attendance blueprint'
+  );
 });
 
 
