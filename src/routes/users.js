@@ -9,6 +9,7 @@ import {
   getFollowingSummary,
   followUser, unfollowUser, checkUserFollow, getFriendsList, searchFriends,
   getReviews, createReview, deleteReview,
+  applyOrganizer, getOrganizerApplicationStatus,
 } from '../controllers/userController.js';
 import { authenticate } from '../middleware/auth.js';
 import { uploadSingle } from '../middleware/upload.js';
@@ -31,6 +32,10 @@ router.delete('/:id/follow', unfollowUser);
 // Profile
 router.get('/profile', getProfile);
 router.put('/profile', updateProfile);
+
+// Organizer Application
+router.post('/apply-organizer', applyOrganizer);
+router.get('/organizer-status', getOrganizerApplicationStatus);
 
 // Avatar upload
 router.post('/avatar', uploadSingle('avatar'), updateProfile);

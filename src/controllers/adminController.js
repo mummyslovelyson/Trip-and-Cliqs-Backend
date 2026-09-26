@@ -305,25 +305,58 @@ export const rejectOrganizer = async (req, res) => {
   try {
     const { id } = req.params;
     const { rejectionReason, reason } = req.body || {};
-    const rReason = rejectionReason || reason || 'Application did not meet requirements.';
+    const rReason = (rejectionReason || reason || 'Application did not meet verification criteria').toString().trim().slice(0, 500);
 
     const [rows] = await pool.execute('SELECT * FROM users WHERE id = ?', [id]);
     const user = rows[0];
-    if (!user) return res.status(404).json({ message: 'User not found' });
+    if (!user) return res.status(404).json({ message: 'Organizer not found' });
     if (user.role !== 'organizer') return res.status(400).json({ message: 'Only organizer accounts can be rejected' });
 
-    await pool.execute(`UPDATE users SET is_approved = FALSE, status = 'rejected' WHERE id = ?`, [id]);
+    await pool.execute(`UPDATE users SET is_approved = FALSE, status = 'rejected', suspend_reason = ? WHERE id = ?`, [rReason, id]);
     await pool.execute(`UPDATE organizer_profiles SET is_verified = FALSE WHERE user_id = ?`, [id]);
 
     await sendNotification({
       userId: Number(id),
-      title: 'Organizer application update',
+      title: 'Organizer Application Update',
       message: `Your organizer application was not approved. Reason: ${rReason}`,
       type: 'account',
     });
 
+    if (user.phone) {
+      try {
+        sendSMS(
+          user.phone,
+          `Tribes & Cliqs: Your organizer application was not approved. Reason: ${rReason}`
+        ).catch((err) => console.warn('[adminController.rejectOrganizer] SMS send error:', err.message));
+      } catch {
+        /* ignore */
+      }
+    }
+
+    if (user.email) {
+      try {
+        sendEmail({
+          to: user.email,
+          subject: 'Tribes & Cliqs Organizer Application Update',
+          html: `<div style="font-family:sans-serif;color:#1C232B;padding:24px;">
+            <h2>Organizer Application Update</h2>
+            <p>Dear ${user.name},</p>
+            <p>Thank you for your interest in becoming an organizer on Tribes &amp; Cliqs.</p>
+            <p>After reviewing your submission, our team was unable to approve your application at this time.</p>
+            <div style="background:#f4f4f5;border-left:4px solid #ef4444;padding:12px;margin:16px 0;">
+              <strong>Feedback:</strong> ${rReason}
+            </div>
+            <p>You can update your organizer profile details and re-apply from your dashboard or profile settings.</p>
+            <p>Best regards,<br/>The Tribes &amp; Cliqs Team</p>
+          </div>`,
+        }).catch((err) => console.warn('[adminController.rejectOrganizer] Email send error:', err.message));
+      } catch {
+        /* ignore */
+      }
+    }
+
     await logAudit({ userId: req.user.id, action: 'reject_organizer', entityType: 'user', entityId: Number(id), details: { reason: rReason } });
-    res.json({ message: 'Organizer application rejected' });
+    res.json({ message: 'Organizer application rejected', status: 'rejected' });
   } catch (err) {
     console.error('[adminController.rejectOrganizer]', err);
     res.status(500).json({ message: 'Server error rejecting organizer' });
@@ -461,6 +494,9 @@ export const suspendUser = async (req, res) => {
       `UPDATE users SET status = 'suspended', suspend_reason = ?, suspended_at = NOW() WHERE id = ?`,
       [suspendReason, id],
     );
+    if (user.role === 'organizer') {
+      await pool.execute('UPDATE organizer_profiles SET is_verified = FALSE WHERE user_id = ?', [id]);
+    }
     await sendNotification({
       userId: Number(id),
       title: 'Account suspended',
@@ -474,6 +510,7 @@ export const suspendUser = async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 };
+
 
 /* ------------------------------------------------------------------ */
 /* Approve organizer                                                   */
@@ -1783,6 +1820,9 @@ export const unsuspendUser = async (req, res) => {
       `UPDATE users SET status = 'active', suspend_reason = NULL, suspended_at = NULL WHERE id = ?`,
       [id],
     );
+    if (user.role === 'organizer' && user.is_approved) {
+      await pool.execute('UPDATE organizer_profiles SET is_verified = TRUE WHERE user_id = ?', [id]);
+    }
     await sendNotification({
       userId: Number(id),
       title: 'Account reinstated',
@@ -1790,7 +1830,7 @@ export const unsuspendUser = async (req, res) => {
       type: 'account',
     });
     await logAudit({ userId: req.user.id, action: 'unsuspend_user', entityType: 'user', entityId: Number(id) });
-    res.json({ message: 'User unsuspended' });
+    res.json({ message: 'User unsuspended successfully' });
   } catch (err) {
     console.error('[adminController.unsuspendUser]', err);
     res.status(500).json({ message: 'Server error' });

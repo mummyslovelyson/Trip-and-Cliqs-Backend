@@ -84,6 +84,8 @@ CREATE TABLE IF NOT EXISTS events (
   address        VARCHAR(300),
   city           VARCHAR(120),
   country        VARCHAR(100) DEFAULT 'Ghana',
+  location_type  VARCHAR(20) DEFAULT 'physical',
+  gps_location   VARCHAR(255),
   latitude       DECIMAL(10,7),
   longitude      DECIMAL(10,7),
   start_date     DATE NOT NULL,

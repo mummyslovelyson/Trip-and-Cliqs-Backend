@@ -2,7 +2,7 @@ import bcrypt from 'bcryptjs';
 import pool from '../config/db.js';
 import { logAudit } from '../utils/audit.js';
 import { validatePassword } from '../utils/password.js';
-import { sendNotification } from '../utils/notify.js';
+import { sendNotification, notifyAdmins } from '../utils/notify.js';
 
 
 /* ------------------------------------------------------------------ */
@@ -885,6 +885,172 @@ export const searchFriends = async (req, res) => {
   }
 };
 
+export const applyOrganizer = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const {
+      organizationName,
+      companyName,
+      logoUrl,
+      logo,
+      description,
+      phone,
+      socialMedia,
+      socialLinks,
+      website,
+      location,
+      city,
+      category,
+    } = req.body;
+
+    const orgName = (organizationName || companyName || '').toString().trim().slice(0, 180);
+    const orgDesc = (description || '').toString().trim().slice(0, 2000);
+    const orgPhone = (phone || req.user.phone || '').toString().trim().slice(0, 30);
+    const orgCity = (location || city || req.user.location || '').toString().trim().slice(0, 100);
+    const orgWebsite = (website || '').toString().trim().slice(0, 255);
+    const orgCategory = (category || 'Events & Entertainment').toString().trim().slice(0, 100);
+    const orgLogo = (logoUrl || logo || '').toString().trim().slice(0, 500) || null;
+
+    if (!orgName) {
+      return res.status(400).json({ message: 'Company or Organization Name is required' });
+    }
+    if (!orgDesc) {
+      return res.status(400).json({ message: 'Description of your organization/events is required' });
+    }
+    if (!orgPhone) {
+      return res.status(400).json({ message: 'Contact phone number is required' });
+    }
+    if (!orgCity) {
+      return res.status(400).json({ message: 'Operating location or city is required' });
+    }
+
+    let socialData = null;
+    if (socialMedia || socialLinks) {
+      const raw = socialMedia || socialLinks;
+      if (typeof raw === 'object') {
+        socialData = JSON.stringify(raw);
+      } else if (typeof raw === 'string') {
+        try {
+          JSON.parse(raw);
+          socialData = raw;
+        } catch {
+          socialData = JSON.stringify({ link: raw });
+        }
+      }
+    }
+
+    const [userRows] = await pool.execute('SELECT * FROM users WHERE id = ?', [userId]);
+    const user = userRows[0];
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    if (user.status === 'suspended') {
+      return res.status(403).json({ message: 'Your account is suspended. Please contact support.' });
+    }
+
+    const finalPhone = orgPhone || user.phone || null;
+    const finalLocation = orgCity || user.location || null;
+    const finalBio = orgDesc || user.bio || null;
+
+    await pool.execute(
+      `UPDATE users
+       SET role = 'organizer', status = 'pending', is_approved = FALSE,
+           phone = ?, location = ?, bio = ?
+       WHERE id = ?`,
+      [finalPhone, finalLocation, finalBio, userId],
+    );
+
+    const [existingProfiles] = await pool.execute('SELECT * FROM organizer_profiles WHERE user_id = ?', [userId]);
+    if (existingProfiles.length > 0) {
+      const existing = existingProfiles[0];
+      await pool.execute(
+        `UPDATE organizer_profiles
+         SET organization_name = ?, description = ?, website = ?, logo_url = ?,
+             social_links = ?, city = ?, category = ?, is_verified = FALSE, updated_at = NOW()
+         WHERE user_id = ?`,
+        [orgName, orgDesc, orgWebsite || null, orgLogo || existing.logo_url || null, socialData || existing.social_links || null, orgCity, orgCategory, userId],
+      );
+    } else {
+      await pool.execute(
+        `INSERT INTO organizer_profiles (user_id, organization_name, description, website, logo_url, social_links, city, category, is_verified)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, FALSE)`,
+        [userId, orgName, orgDesc, orgWebsite || null, orgLogo, socialData, orgCity, orgCategory],
+      );
+    }
+
+    await sendNotification({
+      userId,
+      title: 'Organizer Application Submitted',
+      message: 'Your application to become an event organizer has been submitted and is currently pending admin verification.',
+      type: 'account',
+    });
+
+    notifyAdmins({
+      title: 'New Organizer Application',
+      message: `${user.name} (${user.email}) applied to become an organizer for "${orgName}".`,
+      type: 'account',
+    });
+
+    await logAudit({
+      userId,
+      action: 'apply_organizer',
+      entityType: 'user',
+      entityId: userId,
+      details: { organizationName: orgName, category: orgCategory },
+    });
+
+    res.json({
+      message: 'Organizer application submitted successfully. Our team will review your application shortly.',
+      status: 'pending',
+      isApproved: false,
+      is_approved: false,
+      is_verified: false,
+      organizationName: orgName,
+    });
+  } catch (err) {
+    console.error('[userController.applyOrganizer]', err);
+    res.status(500).json({ message: 'Server error processing organizer application' });
+  }
+};
+
+export const getOrganizerApplicationStatus = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const [rows] = await pool.execute(
+      `SELECT u.id, u.name, u.email, u.phone, u.role, u.status, u.is_approved, u.location, u.suspend_reason,
+              op.organization_name, op.description, op.website, op.logo_url, op.banner_url,
+              op.social_links, op.is_verified, op.approved_at, op.category, op.city
+       FROM users u
+       LEFT JOIN organizer_profiles op ON op.user_id = u.id
+       WHERE u.id = ?`,
+      [userId],
+    );
+    const user = rows[0];
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    res.json({
+      role: user.role,
+      status: user.status,
+      isApproved: Boolean(user.is_approved),
+      is_approved: Boolean(user.is_approved),
+      isVerified: Boolean(user.is_verified),
+      is_verified: Boolean(user.is_verified),
+      suspendReason: user.suspend_reason,
+      organizationName: user.organization_name || user.name,
+      description: user.description,
+      website: user.website,
+      logoUrl: user.logo_url,
+      socialLinks: user.social_links,
+      city: user.city || user.location,
+      category: user.category,
+      phone: user.phone,
+      email: user.email,
+    });
+  } catch (err) {
+    console.error('[userController.getOrganizerApplicationStatus]', err);
+    res.status(500).json({ message: 'Server error fetching status' });
+  }
+};
+
 export default {
   getProfile, updateProfile, changePassword,
   getNotifications, markNotificationRead, markAllNotificationsRead, deleteNotification,
@@ -895,5 +1061,6 @@ export default {
   getFollowingSummary,
   followUser, unfollowUser, checkUserFollow, getFriendsList, searchFriends,
   getReviews, createReview, deleteReview,
+  applyOrganizer, getOrganizerApplicationStatus,
 };
 

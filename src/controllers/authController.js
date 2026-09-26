@@ -213,6 +213,8 @@ export const register = async (req, res) => {
       city: (req.body.city || req.body.location || '').toString().trim().slice(0, 100) || null,
       description: (req.body.description || req.body.bio || '').toString().trim().slice(0, 1000) || null,
       website: (req.body.websiteUrl || req.body.website || '').toString().trim().slice(0, 255) || null,
+      logo_url: (req.body.logoUrl || req.body.logo || '').toString().trim().slice(0, 500) || null,
+      social_links: req.body.socialMedia || req.body.socialLinks || null,
     };
     const metadataStr = JSON.stringify(metadataObj);
 
@@ -750,8 +752,8 @@ export const verifyEmail = async (req, res) => {
 
           if (pending.role === 'organizer') {
             await pool.execute(
-              `INSERT INTO organizer_profiles (user_id, organization_name, description, website, category, city, is_verified)
-               VALUES (?, ?, ?, ?, ?, ?, FALSE)`,
+              `INSERT INTO organizer_profiles (user_id, organization_name, description, website, category, city, logo_url, social_links, is_verified)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, FALSE)`,
               [
                 userId,
                 pending.organization_name || pending.name,
@@ -759,6 +761,8 @@ export const verifyEmail = async (req, res) => {
                 meta.website || null,
                 meta.category || null,
                 meta.city || meta.location || null,
+                meta.logo_url || null,
+                meta.social_links ? JSON.stringify(meta.social_links) : null,
               ],
             );
           }

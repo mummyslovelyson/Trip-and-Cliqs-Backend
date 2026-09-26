@@ -188,9 +188,11 @@ export const getEvent = async (req, res) => {
   try {
     const { id } = req.params;
     const [rows] = await pool.execute(
-      `SELECT e.*, u.name AS organizer_name, u.avatar AS organizer_avatar
+      `SELECT e.*, u.name AS organizer_name, u.avatar AS organizer_avatar,
+              op.organization_name, op.is_verified AS organizer_is_verified
        FROM events e
        LEFT JOIN users u ON u.id = e.organizer_id
+       LEFT JOIN organizer_profiles op ON op.user_id = e.organizer_id
        WHERE e.id = ?`,
       [id],
     );
@@ -270,8 +272,11 @@ export const getEvent = async (req, res) => {
       organizer: event.organizer_id
         ? {
           id: event.organizer_id,
-          name: event.organizer_name,
+          name: event.organization_name || event.organizer_name,
+          organization_name: event.organization_name || event.organizer_name,
           avatar: event.organizer_avatar,
+          is_verified: Boolean(event.organizer_is_verified),
+          isVerified: Boolean(event.organizer_is_verified),
           followersCount,
           isFollowing,
         }
@@ -294,19 +299,42 @@ export const createEvent = async (req, res) => {
     const organizerId = req.user.id;
     const {
       title, description, category, venue, address, city, country,
-      latitude, longitude, start_date, end_date, start_time, end_time,
+      start_date, end_date, start_time, end_time,
       capacity, dress_code, contact_email, contact_phone,
       banner_image, ticket_template, ticketTemplate, images, tags, visibility,
     } = req.body;
+
+    const location_type = req.body.location_type || req.body.locationType || (venue?.toLowerCase().includes('online') ? 'online' : 'physical');
+    const gps_location = req.body.gps_location || req.body.gpsLocation || null;
+
+    let latitude = req.body.latitude || null;
+    let longitude = req.body.longitude || null;
+    if (gps_location && (!latitude || !longitude)) {
+      const parts = String(gps_location).split(',').map((p) => parseFloat(p.trim()));
+      if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+        latitude = parts[0];
+        longitude = parts[1];
+      }
+    }
 
     if (!title || !venue || !start_date || !end_date || !start_time || !end_time) {
       conn.release();
       return res.status(400).json({ message: 'Missing required event fields' });
     }
 
-    // Organizers can save a draft, or publish directly for instant ticket sales.
-    const status = req.body.status === 'draft' ? 'draft' : 'published';
-    const approval_status = status === 'published' ? 'approved' : 'pending';
+    // Organizers can save a draft, submit for admin approval, or publish directly
+    let status = 'draft';
+    let approval_status = 'pending';
+    if (req.body.status === 'published') {
+      status = 'published';
+      approval_status = 'approved';
+    } else if (req.body.status === 'pending' || req.body.status === 'submitted' || req.body.status === 'submit_for_approval') {
+      status = 'pending';
+      approval_status = 'pending';
+    } else {
+      status = 'draft';
+      approval_status = 'pending';
+    }
 
     // The wizard submits the category name; resolve it to its id so both the
     // display column and the FK are populated.
@@ -325,25 +353,53 @@ export const createEvent = async (req, res) => {
 
     const templateImg = ticket_template || ticketTemplate || null;
 
-    const [result] = await conn.execute(
-      `INSERT INTO events
-        (organizer_id, title, description, category_id, category, venue, address,
-         city, country, latitude, longitude, start_date, end_date, start_time,
-         end_time, capacity, dress_code, contact_email, contact_phone,
-         banner_image, ticket_template, images, tags, visibility, status, approval_status)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [
-        organizerId, title, description || null, categoryId, category || null, venue, address || null,
-        city || null, country || null, latitude || null, longitude || null,
-        start_date, end_date, start_time, end_time, capacity || 0,
-        dress_code || null, contact_email || null, contact_phone || null,
-        banner_image || null, templateImg, images && Array.isArray(images) ? JSON.stringify(images) : null,
-        tags ? JSON.stringify(Array.isArray(tags) ? tags : []) : null,
-        visibility === 'private' ? 'private' : 'public',
-        status,
-        approval_status,
-      ],
-    );
+    let result;
+    try {
+      [result] = await conn.execute(
+        `INSERT INTO events
+          (organizer_id, title, description, category_id, category, venue, address,
+           city, country, location_type, gps_location, latitude, longitude, start_date, end_date, start_time,
+           end_time, capacity, dress_code, contact_email, contact_phone,
+           banner_image, ticket_template, images, tags, visibility, status, approval_status)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [
+          organizerId, title, description || null, categoryId, category || null, venue, address || null,
+          city || null, country || null, location_type, gps_location, latitude || null, longitude || null,
+          start_date, end_date, start_time, end_time, capacity || 0,
+          dress_code || null, contact_email || null, contact_phone || null,
+          banner_image || null, templateImg, images && Array.isArray(images) ? JSON.stringify(images) : null,
+          tags ? JSON.stringify(Array.isArray(tags) ? tags : []) : null,
+          visibility === 'private' ? 'private' : 'public',
+          status,
+          approval_status,
+        ],
+      );
+    } catch (insertErr) {
+      // Graceful fallback if location_type or gps_location column does not exist on legacy DB
+      if (insertErr.message && (insertErr.message.includes('location_type') || insertErr.message.includes('gps_location'))) {
+        [result] = await conn.execute(
+          `INSERT INTO events
+            (organizer_id, title, description, category_id, category, venue, address,
+             city, country, latitude, longitude, start_date, end_date, start_time,
+             end_time, capacity, dress_code, contact_email, contact_phone,
+             banner_image, ticket_template, images, tags, visibility, status, approval_status)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [
+            organizerId, title, description || null, categoryId, category || null, venue, address || null,
+            city || null, country || null, latitude || null, longitude || null,
+            start_date, end_date, start_time, end_time, capacity || 0,
+            dress_code || null, contact_email || null, contact_phone || null,
+            banner_image || null, templateImg, images && Array.isArray(images) ? JSON.stringify(images) : null,
+            tags ? JSON.stringify(Array.isArray(tags) ? tags : []) : null,
+            visibility === 'private' ? 'private' : 'public',
+            status,
+            approval_status,
+          ],
+        );
+      } else {
+        throw insertErr;
+      }
+    }
 
     const eventId = result.insertId;
 
@@ -450,12 +506,26 @@ export const updateEvent = async (req, res) => {
     // their own events (they submit via PATCH /:id/publish for review).
     const allowed = [
       'title','description','category','venue','address','city','country',
-      'latitude','longitude','start_date','end_date','start_time','end_time',
+      'location_type','gps_location','latitude','longitude','start_date','end_date','start_time','end_time',
       'capacity','dress_code','contact_email','contact_phone','banner_image',
       'ticket_template','images','tags','visibility',
     ];
     if (req.user.role === 'admin') {
       allowed.push('status', 'is_featured');
+    }
+
+    if (req.body.locationType !== undefined && req.body.location_type === undefined) {
+      req.body.location_type = req.body.locationType;
+    }
+    if (req.body.gpsLocation !== undefined && req.body.gps_location === undefined) {
+      req.body.gps_location = req.body.gpsLocation;
+    }
+    if (req.body.gps_location && (!req.body.latitude || !req.body.longitude)) {
+      const parts = String(req.body.gps_location).split(',').map((p) => parseFloat(p.trim()));
+      if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+        req.body.latitude = parts[0];
+        req.body.longitude = parts[1];
+      }
     }
 
     if (req.body.ticketTemplate !== undefined && req.body.ticket_template === undefined) {

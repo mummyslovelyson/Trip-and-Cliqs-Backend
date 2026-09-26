@@ -41,11 +41,16 @@ export const authenticate = async (req, res, next) => {
       });
     }
 
-    if (dbUser.role === 'organizer' && (dbUser.is_approved === false || dbUser.is_approved === 0 || dbUser.status === 'pending')) {
-      return res.status(403).json({
-        message: 'Your organizer account is pending admin approval.',
-        requiresApproval: true,
-      });
+    if (dbUser.role === 'organizer' && (dbUser.is_approved === false || dbUser.is_approved === 0 || dbUser.status === 'pending' || dbUser.status === 'rejected')) {
+      // Allow certain self-service endpoints even when pending/rejected
+      const allowedPaths = ['/api/users/organizer-status', '/api/users/apply-organizer', '/api/users/profile', '/api/auth/refresh', '/api/auth/logout'];
+      const requestPath = req.originalUrl.split('?')[0];
+      if (!allowedPaths.some(p => requestPath.startsWith(p))) {
+        return res.status(403).json({
+          message: 'Your organizer account is pending admin approval.',
+          requiresApproval: true,
+        });
+      }
     }
 
     req.user = {

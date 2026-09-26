@@ -107,20 +107,32 @@ export function createFakeDb() {
 
   // Parse a WHERE condition into { col, op, token } — no params touched yet.
   function parseCond(cond) {
-    const inMatch = cond.trim().match(/^([\w.`]+)\s+IN\s*\(([^)]+)\)$/i);
+    const raw = cond.trim();
+    // Check compound OR/NULL conditions on raw input before any stripping.
+    if (/status\s*=\s*'active'\s+OR\s+status\s+IS\s+NULL/i.test(raw)) {
+      return { col: 'status', op: 'ACTIVE_OR_NULL', token: '' };
+    }
+    // Check IN on raw input — the closing ')' must be preserved.
+    const inMatch = raw.match(/^[\s(]*([\w.`]+)\s+IN\s*\(([^)]+)\)\s*\)*$/i);
     if (inMatch) {
       const col = inMatch[1].replace(/`/g, '').split('.').pop();
       const list = splitTop(inMatch[2], ',').map((s) => s.trim().replace(/^['"]|['"]$/g, ''));
       return { col, op: 'IN', list };
     }
-    const lowerMatch = cond.trim().match(/^LOWER\(([\w.`]+)\)\s*(=|!=|<>|LIKE)\s*(?:LOWER\((.+)\)|(.+))$/i);
+    // Now safe to strip wrapping parens for simple conditions.
+    cond = raw.replace(/^\(+|\)+$/g, '').trim();
+    const nullMatch = cond.match(/^([\w.`]+)\s+IS\s+(NOT\s+)?NULL$/i);
+    if (nullMatch) {
+      return { col: nullMatch[1].replace(/`/g, '').split('.').pop(), op: nullMatch[2] ? 'IS_NOT_NULL' : 'IS_NULL', token: '' };
+    }
+    const lowerMatch = cond.match(/^LOWER\(([\w.`]+)\)\s*(=|!=|<>|LIKE)\s*(?:LOWER\((.+)\)|(.+))$/i);
     if (lowerMatch) {
       const col = lowerMatch[1].replace(/`/g, '').split('.').pop();
       const op = lowerMatch[2].toUpperCase();
       const token = (lowerMatch[3] || lowerMatch[4]).trim();
       return { col, op, token, isLower: true };
     }
-    const m = cond.trim().match(/^([\w.`]+)\s*(=|!=|<>|>=|<=|>|<|LIKE)\s*(.+)$/i);
+    const m = cond.match(/^([\w.`]+)\s*(=|!=|<>|>=|<=|>|<|LIKE)\s*(.+)$/i);
     if (!m) throw new Error(`Unsupported WHERE condition: ${cond}`);
     return {
       col: m[1].replace(/`/g, '').split('.').pop(),
@@ -143,6 +155,9 @@ export function createFakeDb() {
       got = String(got ?? '').toLowerCase();
       want = String(want ?? '').toLowerCase();
     }
+    if (cond.op === 'ACTIVE_OR_NULL') return got === 'active' || got == null;
+    if (cond.op === 'IS_NULL') return got == null;
+    if (cond.op === 'IS_NOT_NULL') return got != null;
     if (cond.op === 'IN') {
       return cond.list.includes(String(got));
     }
@@ -280,6 +295,26 @@ export function createFakeDb() {
           organizer_avatar: u?.avatar ?? null,
           email: u?.email ?? null,
           avatar: u?.avatar ?? null,
+        };
+      });
+    }
+
+    // LEFT JOIN organizer_profiles op ON op.user_id = u.id
+    if (/JOIN\s+organizer_profiles\s+\w+\s+ON\s+\w+\.user_id\s*=\s*u\.id/i.test(sql)) {
+      rows = rows.map((u) => {
+        const op = (tables.organizer_profiles || []).find((x) => x.user_id === u.id);
+        return {
+          ...u,
+          organization_name: op?.organization_name ?? null,
+          description: op?.description ?? u.description ?? null,
+          website: op?.website ?? null,
+          logo_url: op?.logo_url ?? null,
+          banner_url: op?.banner_url ?? null,
+          social_links: op?.social_links ?? null,
+          is_verified: op?.is_verified ?? 0,
+          approved_at: op?.approved_at ?? null,
+          category: op?.category ?? null,
+          city: op?.city ?? u.city ?? null,
         };
       });
     }
