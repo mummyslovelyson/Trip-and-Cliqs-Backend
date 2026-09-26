@@ -48,7 +48,7 @@ const MAX_QUANTITY_PER_LINE = 20;
 export const createOrder = async (req, res) => {
   const conn = await pool.getConnection();
   try {
-    const { eventId, items, couponCode, callbackUrl } = req.body;
+    const { eventId, items, couponCode, callbackUrl, customerName, customerEmail, customerPhone } = req.body;
     const paymentMethod = (req.body.paymentMethod ?? 'paystack').toLowerCase();
     if (!eventId || !Array.isArray(items) || items.length === 0) {
       conn.release();
@@ -160,13 +160,29 @@ export const createOrder = async (req, res) => {
     // Initialise Paystack transaction when the order has a real cost.
     let authorizationUrl = null;
     if (total > 0 && SUPPORTED_PAYMENT_METHODS.includes(paymentMethod)) {
-      const [userRows] = await pool.execute('SELECT email FROM users WHERE id = ?', [req.user.id]);
+      const [userRows] = await pool.execute('SELECT email, phone FROM users WHERE id = ?', [req.user.id]);
+      const payerEmail = customerEmail || userRows[0]?.email;
+
+      if (customerPhone && !userRows[0]?.phone) {
+        try {
+          await pool.execute('UPDATE users SET phone = ? WHERE id = ?', [customerPhone, req.user.id]);
+        } catch {}
+      }
+
       const payResult = await initializeTransaction({
-        email: userRows[0]?.email,
+        email: payerEmail,
         amount: total,
         reference,
         callback_url: callbackUrl,
-        metadata: { orderId, eventId, userId: req.user.id, paymentMethod },
+        metadata: {
+          orderId,
+          eventId,
+          userId: req.user.id,
+          paymentMethod,
+          customerName: customerName || null,
+          customerPhone: customerPhone || null,
+          customerEmail: customerEmail || null,
+        },
       });
       if (!payResult.status) {
         return res.status(400).json({ message: 'Could not initialise payment', error: payResult.error, orderId, reference });
