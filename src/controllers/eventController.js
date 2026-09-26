@@ -1033,6 +1033,8 @@ export const getFeaturedOrganizers = async (req, res) => {
     console.error('[eventController.getFeaturedOrganizers]', err);
     res.status(500).json({ message: 'Server error fetching organizers' });
   }
+};
+
 /* ------------------------------------------------------------------ */
 /* Get Public Organizer Profile with Events & Reviews                 */
 /* ------------------------------------------------------------------ */
