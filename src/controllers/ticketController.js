@@ -377,8 +377,10 @@ export const getUserTickets = async (req, res) => {
       `SELECT t.*, tt.name AS ticket_type_name, tt.price AS ticket_price,
               COALESCE(oi.unit_price, tt.price, 0) AS unit_price,
               e.title AS event_title, e.venue AS event_venue, e.city AS event_city, e.start_date, e.start_time,
-              e.banner_image, e.ticket_template, u.name AS attendee_name,
-              u.email AS attendee_email, u.phone AS attendee_phone,
+              e.banner_image, e.ticket_template,
+              COALESCE(t.attendee_name, u.name) AS attendee_name,
+              COALESCE(t.attendee_email, u.email) AS attendee_email,
+              COALESCE(t.attendee_phone, u.phone) AS attendee_phone,
               o.id AS order_id, o.payment_reference, o.payment_method, o.payment_status,
               o.invoice_number, o.discount_amount AS order_discount, o.total_amount AS order_total,
               o.created_at AS order_created_at
@@ -446,7 +448,7 @@ export const getTicketById = async (req, res) => {
 export const checkInTicket = async (req, res) => {
   try {
     let { id } = req.params;
-    if (!id) return res.status(400).json({ message: 'Ticket identifier is required' });
+    if (!id) return res.status(400).json({ success: false, status: 'error', message: 'Ticket identifier is required' });
 
     try {
       id = decodeURIComponent(id).trim();
@@ -458,40 +460,87 @@ export const checkInTicket = async (req, res) => {
     if (id.startsWith('{') && id.endsWith('}')) {
       try {
         const parsed = JSON.parse(id);
-        id = parsed.ticketNumber || parsed.ticketId || parsed.id || id;
+        id = parsed.ticketNumber || parsed.qrCode || parsed.ticketId || parsed.id || id;
       } catch {}
     }
 
     const isNumeric = /^\d+$/.test(String(id));
     const [rows] = await pool.execute(
-      isNumeric
-        ? `SELECT t.*, e.organizer_id, e.title AS event_title, u.name AS attendee_name, tt.name AS ticket_type
-           FROM tickets t
-           JOIN events e ON e.id = t.event_id
-           LEFT JOIN users u ON u.id = t.user_id
-           LEFT JOIN ticket_types tt ON tt.id = t.ticket_type_id
-           WHERE t.id = ? OR t.ticket_number = ? OR t.qr_code = ?`
-        : `SELECT t.*, e.organizer_id, e.title AS event_title, u.name AS attendee_name, tt.name AS ticket_type
-           FROM tickets t
-           JOIN events e ON e.id = t.event_id
-           LEFT JOIN users u ON u.id = t.user_id
-           LEFT JOIN ticket_types tt ON tt.id = t.ticket_type_id
-           WHERE t.ticket_number = ? OR t.qr_code = ?`,
-      isNumeric ? [Number(id), id, id] : [id, id],
+      `SELECT t.*, e.organizer_id, e.title AS event_title, e.venue AS event_venue,
+              COALESCE(t.attendee_name, u.name) AS attendee_name,
+              COALESCE(t.attendee_phone, u.phone) AS attendee_phone,
+              COALESCE(t.attendee_email, u.email) AS attendee_email,
+              tt.name AS ticket_type, o.payment_status, o.total_amount AS order_total
+       FROM tickets t
+       JOIN events e ON e.id = t.event_id
+       LEFT JOIN users u ON u.id = t.user_id
+       LEFT JOIN ticket_types tt ON tt.id = t.ticket_type_id
+       LEFT JOIN order_items oi ON oi.id = t.order_item_id
+       LEFT JOIN orders o ON o.id = oi.order_id
+       WHERE t.ticket_number = ? OR t.qr_code = ? OR (?::bigint IS NOT NULL AND t.id = ?)`,
+      [id, id, isNumeric ? Number(id) : null, isNumeric ? Number(id) : 0],
     );
 
     const ticket = rows[0];
-    if (!ticket) return res.status(404).json({ message: 'Ticket not found' });
+
+    // Checklist 1: Does ticket exist?
+    if (!ticket) {
+      return res.status(404).json({
+        success: false,
+        status: 'not_found',
+        message: '❌ Ticket Not Found or Invalid QR Code',
+      });
+    }
 
     const isOrganizer = Number(ticket.organizer_id) === Number(req.user.id);
     const isStaff = req.user.role === 'admin' || req.user.role === 'staff';
     if (!isOrganizer && !isStaff) {
-      return res.status(403).json({ message: 'Only the event organizer or authorized staff can check in tickets' });
+      return res.status(403).json({
+        success: false,
+        status: 'unauthorized',
+        message: 'Only the event organizer or authorized staff can check in tickets',
+      });
     }
 
+    // Checklist 2: Is payment confirmed?
+    if (ticket.payment_status && ticket.payment_status !== 'paid' && Number(ticket.order_total) > 0) {
+      return res.status(400).json({
+        success: false,
+        status: 'unpaid',
+        message: '❌ Payment Unconfirmed — Entry Denied',
+        ticketNumber: ticket.ticket_number,
+        attendeeName: ticket.attendee_name,
+      });
+    }
+
+    // Checklist 3: Is ticket cancelled?
+    if (ticket.status === 'cancelled') {
+      return res.status(400).json({
+        success: false,
+        status: 'cancelled',
+        message: '❌ Ticket Cancelled — Entry Denied',
+        ticketNumber: ticket.ticket_number,
+        attendeeName: ticket.attendee_name,
+      });
+    }
+
+    // Checklist 4: Is ticket transferred? (Old QR code invalidated)
+    if (ticket.status === 'transferred') {
+      return res.status(400).json({
+        success: false,
+        status: 'transferred',
+        message: '❌ Ticket Transferred — Old QR Code Invalidated',
+        ticketNumber: ticket.ticket_number,
+        attendeeName: ticket.attendee_name,
+      });
+    }
+
+    // Checklist 5: Has ticket already been scanned?
     if (ticket.status === 'used') {
       return res.status(400).json({
-        message: 'Ticket already checked in',
+        success: false,
+        status: 'used',
+        message: '❌ Ticket Already Used',
         ticketId: ticket.id,
         ticketNumber: ticket.ticket_number,
         checkedInAt: ticket.checked_in_at,
@@ -499,25 +548,25 @@ export const checkInTicket = async (req, res) => {
       });
     }
 
-    if (ticket.status !== 'active') {
-      return res.status(400).json({ message: `Ticket is ${ticket.status} and cannot be checked in` });
-    }
-
+    // Checklist 6: Allow entry!
     await pool.execute(
-      `UPDATE tickets SET status = 'used', checked_in_at = NOW() WHERE id = ?`,
-      [ticket.id],
+      `UPDATE tickets SET status = 'used', checked_in_at = NOW(), checked_in_by = ? WHERE id = ?`,
+      [req.user.id, ticket.id],
     );
 
     await logAudit({ userId: req.user.id, action: 'check_in_ticket', entityType: 'ticket', entityId: ticket.id });
 
     res.json({
-      message: 'Ticket checked in successfully',
+      success: true,
+      status: 'success',
+      message: '✅ Valid Ticket — Entry Approved',
       ticket: {
         id: ticket.id,
         ticketNumber: ticket.ticket_number,
-        attendeeName: ticket.attendee_name,
+        attendeeName: ticket.attendee_name || 'Attendee',
         ticketType: ticket.ticket_type,
         eventTitle: ticket.event_title,
+        venue: ticket.event_venue,
         status: 'used',
         checkedInAt: new Date().toISOString(),
       },
@@ -529,16 +578,16 @@ export const checkInTicket = async (req, res) => {
 };
 
 /* ------------------------------------------------------------------ */
-/* Transfer a ticket to another user                                   */
+/* Transfer a ticket to another user (Full anti-fraud transfer)        */
 /* ------------------------------------------------------------------ */
 export const transferTicket = async (req, res) => {
   const conn = await pool.getConnection();
   try {
     const { id } = req.params;
-    const { recipientEmail } = req.body;
-    if (!recipientEmail) {
+    const { recipientEmail, recipientName, recipientPhone } = req.body;
+    if (!recipientEmail && !recipientPhone) {
       conn.release();
-      return res.status(400).json({ message: 'Recipient email is required' });
+      return res.status(400).json({ message: 'Recipient name and email or phone number are required' });
     }
 
     const [ticketRows] = await conn.execute('SELECT * FROM tickets WHERE id = ?', [id]);
@@ -556,28 +605,65 @@ export const transferTicket = async (req, res) => {
       return res.status(400).json({ message: `Ticket is ${ticket.status} and cannot be transferred` });
     }
 
-    const [recipientRows] = await conn.execute('SELECT id, email FROM users WHERE email = ?', [recipientEmail]);
-    const recipient = recipientRows[0];
-    if (!recipient) {
-      conn.release();
-      return res.status(404).json({ message: 'Recipient not found. Ask them to create an account first.' });
+    // Lookup recipient by email or phone
+    let recipient = null;
+    if (recipientEmail && recipientEmail.trim()) {
+      const [emailRows] = await conn.execute('SELECT id, name, email, phone FROM users WHERE email = ?', [recipientEmail.trim()]);
+      if (emailRows.length > 0) recipient = emailRows[0];
     }
-    if (recipient.id === req.user.id) {
+    if (!recipient && recipientPhone && recipientPhone.trim()) {
+      const cleanPhone = recipientPhone.replace(/\s+/g, '');
+      const [phoneRows] = await conn.execute('SELECT id, name, email, phone FROM users WHERE phone = ?', [cleanPhone]);
+      if (phoneRows.length > 0) recipient = phoneRows[0];
+    }
+
+    await conn.beginTransaction();
+
+    // Auto-create attendee account if recipient is not registered yet
+    if (!recipient) {
+      const targetEmail = (recipientEmail && recipientEmail.trim()) || `${(recipientPhone || 'guest').replace(/\D/g, '')}@tribesandcliqs.app`;
+      const targetName = (recipientName && recipientName.trim()) || 'Event Attendee';
+      const [newU] = await conn.execute(
+        `INSERT INTO users (name, email, phone, role)
+         VALUES (?, ?, ?, 'attendee')`,
+        [targetName, targetEmail, recipientPhone ? recipientPhone.trim() : null],
+      );
+      recipient = { id: newU.insertId, name: targetName, email: targetEmail, phone: recipientPhone };
+    }
+
+    if (Number(recipient.id) === Number(req.user.id)) {
+      await conn.rollback();
       conn.release();
       return res.status(400).json({ message: 'Cannot transfer a ticket to yourself' });
     }
 
-    // Mark original ticket as transferred and issue a new active ticket to recipient.
-    await conn.beginTransaction();
+    // 1. Invalidate original ticket and mark as transferred (Old QR code is now invalid)
+    await conn.execute(
+      `UPDATE tickets SET status = 'transferred', transferred_to = ? WHERE id = ?`,
+      [recipient.id, id],
+    );
 
-    await conn.execute(`UPDATE tickets SET status = 'transferred' WHERE id = ?`, [id]);
+    // 2. Generate BRAND NEW ticket with BRAND NEW QR code and Ticket ID (Kwame blueprint)
+    const newNumber = `TRB-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
+    const newQrCode = `TRB-QR-${uuidv4()}`;
+    const finalAttendeeName = (recipientName && recipientName.trim()) || recipient.name || 'Gift Attendee';
 
-    const newNumber = `TC-${uuidv4().split('-')[0].toUpperCase()}`;
     const [result] = await conn.execute(
       `INSERT INTO tickets
-        (order_item_id, user_id, event_id, ticket_type_id, ticket_number, qr_code, seat_number, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'active')`,
-      [ticket.order_item_id, recipient.id, ticket.event_id, ticket.ticket_type_id, newNumber, ticket.qr_code, ticket.seat_number],
+        (order_item_id, user_id, event_id, ticket_type_id, ticket_number, qr_code, seat_number, status, attendee_name, attendee_email, attendee_phone)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
+      [
+        ticket.order_item_id,
+        recipient.id,
+        ticket.event_id,
+        ticket.ticket_type_id,
+        newNumber,
+        newQrCode,
+        ticket.seat_number,
+        finalAttendeeName,
+        recipient.email,
+        recipient.phone || recipientPhone || null,
+      ],
     );
 
     await conn.commit();
@@ -592,20 +678,20 @@ export const transferTicket = async (req, res) => {
       sendNotification({
         userId: recipient.id,
         title: 'Ticket Received!',
-        message: `${senderName} just transferred a ticket for "${eventTitle}" to you. Access it now under My Tickets!`,
+        message: `${senderName} transferred a digital ticket for "${eventTitle}" to you. Access your new ticket and QR code under My Tickets!`,
         type: 'ticket',
       }).catch(() => {});
 
       sendNotification({
         userId: req.user.id,
         title: 'Ticket Transferred',
-        message: `Your ticket for "${eventTitle}" was successfully transferred to ${recipient.email}.`,
+        message: `Your ticket for "${eventTitle}" was transferred to ${finalAttendeeName}. Your original QR code has been safely invalidated.`,
         type: 'ticket',
       }).catch(() => {});
 
       notifyAdmins({
         title: 'Ticket Transferred',
-        message: `${senderName} transferred ticket #${ticket.id} (${eventTitle}) to ${recipient.email}.`,
+        message: `${senderName} transferred ticket #${ticket.id} (${eventTitle}) to ${finalAttendeeName}.`,
         type: 'ticket',
         link: '/admin/events',
       }).catch(() => {});
@@ -616,10 +702,15 @@ export const transferTicket = async (req, res) => {
       action: 'transfer_ticket',
       entityType: 'ticket',
       entityId: id,
-      details: { from: req.user.id, to: recipient.id, newTicketId: result.insertId },
+      details: { from: req.user.id, to: recipient.id, newTicketId: result.insertId, newNumber },
     });
 
-    res.json({ message: 'Ticket transferred successfully', newTicketId: result.insertId });
+    res.json({
+      message: 'Ticket transferred successfully! The old QR code has been invalidated and a new pass issued.',
+      newTicketId: result.insertId,
+      newTicketNumber: newNumber,
+      recipientName: finalAttendeeName,
+    });
   } catch (err) {
     try { await conn.rollback(); } catch { /* ignore */ }
     conn.release();
@@ -668,26 +759,56 @@ export const verifyTicketByCode = async (req, res) => {
     const [rows] = await pool.execute(
       `SELECT t.id, t.user_id, t.ticket_number, t.qr_code, t.seat_number, t.status, t.checked_in_at,
               t.created_at, tt.name AS ticket_type, tt.price AS ticket_price,
-              u.name AS attendee_name, u.email AS attendee_email,
+              COALESCE(t.attendee_name, u.name) AS attendee_name,
+              COALESCE(t.attendee_email, u.email) AS attendee_email,
+              COALESCE(t.attendee_phone, u.phone) AS attendee_phone,
               e.id AS event_id, e.title AS event_title, e.venue AS event_venue, e.city AS event_city,
-              e.start_date, e.start_time, e.organizer_id, e.banner_image, e.ticket_template
+              e.start_date, e.start_time, e.organizer_id, e.banner_image, e.ticket_template,
+              o.payment_status, o.total_amount AS order_total
        FROM tickets t
        JOIN ticket_types tt ON tt.id = t.ticket_type_id
        JOIN events e ON e.id = t.event_id
        LEFT JOIN users u ON u.id = t.user_id
+       LEFT JOIN order_items oi ON oi.id = t.order_item_id
+       LEFT JOIN orders o ON o.id = oi.order_id
        WHERE t.ticket_number = ? OR t.qr_code = ? OR t.ticket_number = ? OR (?::bigint IS NOT NULL AND t.id = ?)`,
       [code, parsedQrCode, parsedTicketNumber, searchId, searchId || 0],
     );
     const ticket = rows[0];
-    if (!ticket) return res.status(404).json({ message: 'Ticket not found or invalid QR code' });
+    if (!ticket) {
+      return res.status(404).json({
+        valid: false,
+        status: 'not_found',
+        message: '❌ Invalid / Unrecognized Ticket',
+      });
+    }
 
     const currentUserId = req.user?.id ? Number(req.user.id) : null;
     const isOrganizer = currentUserId && (Number(ticket.organizer_id) === currentUserId);
     const isStaff = req.user?.role === 'admin' || req.user?.role === 'staff';
 
+    let validationState = 'valid';
+    let validationMessage = '✅ Valid Ticket — Entry Approved';
+
+    if (ticket.status === 'used') {
+      validationState = 'used';
+      validationMessage = '❌ Ticket Already Used';
+    } else if (ticket.status === 'cancelled') {
+      validationState = 'cancelled';
+      validationMessage = '❌ Ticket Cancelled — Entry Denied';
+    } else if (ticket.status === 'transferred') {
+      validationState = 'transferred';
+      validationMessage = '❌ Ticket Transferred — Old QR Code Invalidated';
+    } else if (ticket.payment_status && ticket.payment_status !== 'paid' && Number(ticket.order_total) > 0) {
+      validationState = 'unpaid';
+      validationMessage = '❌ Payment Unconfirmed — Admission Denied';
+    }
+
     res.json({
-      valid: ticket.status === 'active' || ticket.status === 'used',
-      canCheckIn: (isOrganizer || isStaff) && ticket.status === 'active',
+      valid: validationState === 'valid',
+      status: validationState,
+      statusMessage: validationMessage,
+      canCheckIn: (isOrganizer || isStaff) && validationState === 'valid',
       isOrganizerOrStaff: !!(isOrganizer || isStaff),
       ticket: {
         id: ticket.id,
@@ -698,6 +819,8 @@ export const verifyTicketByCode = async (req, res) => {
         checkedIn: ticket.status === 'used',
         checkedInAt: ticket.checked_in_at,
         attendeeName: ticket.attendee_name || 'Attendee',
+        attendeeEmail: ticket.attendee_email,
+        attendeePhone: ticket.attendee_phone,
         ticketType: ticket.ticket_type,
         price: ticket.ticket_price,
         seatNumber: ticket.seat_number || 'General Admission',
