@@ -4,7 +4,7 @@ import {
   publishEvent, unpublishEvent,
   getOrganizerEvents, getFeaturedEvents, getTrendingEvents, getRecommendedEvents,
   getCategories, getFeaturedOrganizers, getPublicOrganizerProfile,
-  toggleEventReminder, getEventReminderStatus, getUserReminders,
+  toggleEventReminder, getEventReminderStatus, getUserReminders, updateReminderPreferences, processRemindersManualTrigger,
 } from '../controllers/eventController.js';
 import { authenticate, authorize, optionalAuth } from '../middleware/auth.js';
 import { uploadSingle, uploadArray } from '../middleware/upload.js';
@@ -26,7 +26,9 @@ router.get('/organizers/:id', optionalAuth, getPublicOrganizerProfile);
 
 // Reminders
 router.get('/reminders/mine', authenticate, getUserReminders);
+router.post('/reminders/process', authenticate, authorize('admin', 'system_admin'), processRemindersManualTrigger);
 router.post('/:id/reminders', authenticate, writeLimiter, toggleEventReminder);
+router.put('/:id/reminders/preferences', authenticate, writeLimiter, updateReminderPreferences);
 router.get('/:id/reminders', optionalAuth, getEventReminderStatus);
 
 // Search & View Tracking (Personalized Recommendations)

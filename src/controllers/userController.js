@@ -410,6 +410,244 @@ export const getFollowingEvents = async (req, res) => {
 };
 
 /* ------------------------------------------------------------------ */
+/* Follow / Unfollow Artists                                          */
+/* ------------------------------------------------------------------ */
+export const followArtist = async (req, res) => {
+  try {
+    const artistName = decodeURIComponent(req.params.name || req.body.artistName || '').trim();
+    if (!artistName) return res.status(400).json({ message: 'Artist name is required' });
+
+    await pool.execute(
+      'INSERT INTO artist_follows (user_id, artist_name) VALUES (?, ?) ON CONFLICT DO NOTHING',
+      [req.user.id, artistName],
+    );
+    res.json({ message: `Now following ${artistName}`, following: true, isFollowing: true, artist: artistName });
+  } catch (err) {
+    console.error('[userController.followArtist]', err);
+    res.status(500).json({ message: 'Server error following artist' });
+  }
+};
+
+export const unfollowArtist = async (req, res) => {
+  try {
+    const artistName = decodeURIComponent(req.params.name || req.body?.artistName || req.body?.name || req.query?.name || '').trim();
+    if (!artistName) return res.status(400).json({ message: 'Artist name is required' });
+
+    await pool.execute(
+      'DELETE FROM artist_follows WHERE user_id = ? AND LOWER(artist_name) = LOWER(?)',
+      [req.user.id, artistName],
+    );
+    res.json({ message: `Unfollowed ${artistName}`, following: false, isFollowing: false, artist: artistName });
+  } catch (err) {
+    console.error('[userController.unfollowArtist]', err);
+    res.status(500).json({ message: 'Server error unfollowing artist' });
+  }
+};
+
+export const getFollowedArtists = async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      `SELECT id, artist_name, created_at FROM artist_follows WHERE user_id = ? ORDER BY created_at DESC`,
+      [req.user.id],
+    );
+    res.json({ artists: rows });
+  } catch (err) {
+    console.error('[userController.getFollowedArtists]', err);
+    res.status(500).json({ message: 'Server error fetching followed artists' });
+  }
+};
+
+export const checkArtistFollowStatus = async (req, res) => {
+  try {
+    const artistName = decodeURIComponent(req.params.name || req.query?.name || req.query?.artistName || '').trim();
+    const [rows] = await pool.execute(
+      'SELECT id FROM artist_follows WHERE user_id = ? AND LOWER(artist_name) = LOWER(?)',
+      [req.user.id, artistName],
+    );
+    const isFoll = rows.length > 0;
+    res.json({ following: isFoll, isFollowing: isFoll });
+  } catch (err) {
+    console.error('[userController.checkArtistFollowStatus]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+/* ------------------------------------------------------------------ */
+/* Follow / Unfollow Categories                                       */
+/* ------------------------------------------------------------------ */
+export const followCategory = async (req, res) => {
+  try {
+    const categoryName = decodeURIComponent(req.params.name || req.body.categoryName || '').trim();
+    if (!categoryName) return res.status(400).json({ message: 'Category name is required' });
+
+    await pool.execute(
+      'INSERT INTO category_follows (user_id, category_name) VALUES (?, ?) ON CONFLICT DO NOTHING',
+      [req.user.id, categoryName],
+    );
+
+    // Sync with user's favorite_categories JSONB
+    try {
+      const [uRows] = await pool.execute('SELECT favorite_categories FROM users WHERE id = ?', [req.user.id]);
+      if (uRows[0]) {
+        let favs = uRows[0].favorite_categories;
+        if (typeof favs === 'string') {
+          try { favs = JSON.parse(favs); } catch { favs = []; }
+        }
+        favs = Array.isArray(favs) ? favs : [];
+        if (!favs.some((c) => c.toLowerCase() === categoryName.toLowerCase())) {
+          favs.push(categoryName);
+          await pool.execute('UPDATE users SET favorite_categories = ? WHERE id = ?', [JSON.stringify(favs), req.user.id]);
+        }
+      }
+    } catch {
+      // non-fatal
+    }
+
+    res.json({ message: `Now following ${categoryName}`, following: true, isFollowing: true, category: categoryName });
+  } catch (err) {
+    console.error('[userController.followCategory]', err);
+    res.status(500).json({ message: 'Server error following category' });
+  }
+};
+
+export const unfollowCategory = async (req, res) => {
+  try {
+    const categoryName = decodeURIComponent(req.params.name || req.body?.categoryName || req.body?.name || req.query?.name || '').trim();
+    if (!categoryName) return res.status(400).json({ message: 'Category name is required' });
+
+    await pool.execute(
+      'DELETE FROM category_follows WHERE user_id = ? AND LOWER(category_name) = LOWER(?)',
+      [req.user.id, categoryName],
+    );
+
+    // Remove from favorite_categories JSONB as well
+    try {
+      const [uRows] = await pool.execute('SELECT favorite_categories FROM users WHERE id = ?', [req.user.id]);
+      if (uRows[0]) {
+        let favs = uRows[0].favorite_categories;
+        if (typeof favs === 'string') {
+          try { favs = JSON.parse(favs); } catch { favs = []; }
+        }
+        favs = Array.isArray(favs) ? favs : [];
+        favs = favs.filter((c) => c.toLowerCase() !== categoryName.toLowerCase());
+        await pool.execute('UPDATE users SET favorite_categories = ? WHERE id = ?', [JSON.stringify(favs), req.user.id]);
+      }
+    } catch {
+      // non-fatal
+    }
+
+    res.json({ message: `Unfollowed ${categoryName}`, following: false, isFollowing: false, category: categoryName });
+  } catch (err) {
+    console.error('[userController.unfollowCategory]', err);
+    res.status(500).json({ message: 'Server error unfollowing category' });
+  }
+};
+
+export const getFollowedCategories = async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      `SELECT id, category_name, created_at FROM category_follows WHERE user_id = ? ORDER BY created_at DESC`,
+      [req.user.id],
+    );
+    res.json({ categories: rows });
+  } catch (err) {
+    console.error('[userController.getFollowedCategories]', err);
+    res.status(500).json({ message: 'Server error fetching followed categories' });
+  }
+};
+
+export const checkCategoryFollowStatus = async (req, res) => {
+  try {
+    const categoryName = decodeURIComponent(req.params.name || req.query?.name || req.query?.categoryName || '').trim();
+    const [rows] = await pool.execute(
+      'SELECT id FROM category_follows WHERE user_id = ? AND LOWER(category_name) = LOWER(?)',
+      [req.user.id, categoryName],
+    );
+    const isFoll = rows.length > 0;
+    res.json({ following: isFoll, isFollowing: isFoll });
+  } catch (err) {
+    console.error('[userController.checkCategoryFollowStatus]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+/* ------------------------------------------------------------------ */
+/* Unified Following Summary (Organizers, Artists, Categories, Events)*/
+/* ------------------------------------------------------------------ */
+export const getFollowingSummary = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // Organizers
+    const [orgRows] = await pool.execute(
+      `SELECT of.organizer_id, of.created_at, u.name, u.avatar, op.organization_name
+       FROM organizer_follows of
+       JOIN users u ON u.id = of.organizer_id
+       LEFT JOIN organizer_profiles op ON op.user_id = of.organizer_id
+       WHERE of.follower_id = ?
+       ORDER BY of.created_at DESC`,
+      [userId],
+    );
+
+    // Artists
+    const [artRows] = await pool.execute(
+      `SELECT id, artist_name, created_at FROM artist_follows WHERE user_id = ? ORDER BY created_at DESC`,
+      [userId],
+    );
+
+    // Categories
+    const [catRows] = await pool.execute(
+      `SELECT id, category_name, created_at FROM category_follows WHERE user_id = ? ORDER BY created_at DESC`,
+      [userId],
+    );
+
+    // Favorites
+    const [favRows] = await pool.execute(
+      `SELECT f.event_id, f.created_at, e.title, e.banner_image, e.start_date, e.venue, e.city
+       FROM favorites f
+       JOIN events e ON e.id = f.event_id
+       WHERE f.user_id = ?
+       ORDER BY f.created_at DESC
+       LIMIT 10`,
+      [userId],
+    );
+
+    res.json({
+      organizers: orgRows.map((r) => ({
+        id: r.organizer_id,
+        organizer_id: r.organizer_id,
+        name: r.organization_name || r.name,
+        organization_name: r.organization_name || r.name,
+        avatar: r.avatar,
+        followedAt: r.created_at,
+      })),
+      artists: artRows.map((r) => ({
+        id: r.id,
+        name: r.artist_name,
+        artist_name: r.artist_name,
+        followedAt: r.created_at,
+      })),
+      categories: catRows.map((r) => ({
+        id: r.id,
+        name: r.category_name,
+        category_name: r.category_name,
+        followedAt: r.created_at,
+      })),
+      favorites: favRows,
+      counts: {
+        organizers: orgRows.length,
+        artists: artRows.length,
+        categories: catRows.length,
+        favorites: favRows.length,
+      },
+    });
+  } catch (err) {
+    console.error('[userController.getFollowingSummary]', err);
+    res.status(500).json({ message: 'Server error fetching following summary' });
+  }
+};
+
+/* ------------------------------------------------------------------ */
 /* Reviews                                                             */
 /* ------------------------------------------------------------------ */
 export const getReviews = async (req, res) => {

@@ -102,6 +102,22 @@ async function initDb() {
           created_at        TIMESTAMPTZ DEFAULT NOW(),
           UNIQUE(user_id, event_id)
         )`,
+        `CREATE TABLE IF NOT EXISTS artist_follows (
+          id                BIGSERIAL PRIMARY KEY,
+          user_id           BIGINT NOT NULL,
+          artist_name       VARCHAR(150) NOT NULL,
+          created_at        TIMESTAMPTZ DEFAULT NOW(),
+          UNIQUE(user_id, artist_name)
+        )`,
+        `CREATE TABLE IF NOT EXISTS category_follows (
+          id                BIGSERIAL PRIMARY KEY,
+          user_id           BIGINT NOT NULL,
+          category_name     VARCHAR(100) NOT NULL,
+          created_at        TIMESTAMPTZ DEFAULT NOW(),
+          UNIQUE(user_id, category_name)
+        )`,
+        `ALTER TABLE event_reminders ADD COLUMN IF NOT EXISTS preferences JSONB DEFAULT '{"sevenDays": true, "twentyFourHours": true, "oneHour": true, "salesOpening": true, "almostSoldOut": true, "timeChanged": true, "venueChanged": true, "cancelled": true}'`,
+        `ALTER TABLE event_reminders ADD COLUMN IF NOT EXISTS notified_stages JSONB DEFAULT '[]'`,
         `ALTER TABLE event_meetups ADD COLUMN IF NOT EXISTS type VARCHAR(50) DEFAULT 'general'`,
         `ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id VARCHAR(120)`,
         `ALTER TABLE users ADD COLUMN IF NOT EXISTS firebase_uid VARCHAR(120)`,

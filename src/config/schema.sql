@@ -283,6 +283,52 @@ CREATE TABLE IF NOT EXISTS organizer_follows (
 );
 
 CREATE INDEX IF NOT EXISTS idx_of_organizer ON organizer_follows(organizer_id);
+CREATE INDEX IF NOT EXISTS idx_of_follower ON organizer_follows(follower_id);
+
+-- ────────────────  ARTIST FOLLOWS  ────────────────
+CREATE TABLE IF NOT EXISTS artist_follows (
+  id            BIGSERIAL PRIMARY KEY,
+  user_id       BIGINT NOT NULL,
+  artist_name   VARCHAR(150) NOT NULL,
+  created_at    TIMESTAMPTZ DEFAULT NOW(),
+  CONSTRAINT uniq_artist_follow UNIQUE (user_id, artist_name),
+  CONSTRAINT fk_af_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_af_artist ON artist_follows(artist_name);
+CREATE INDEX IF NOT EXISTS idx_af_user ON artist_follows(user_id);
+
+-- ────────────────  CATEGORY FOLLOWS  ────────────────
+CREATE TABLE IF NOT EXISTS category_follows (
+  id            BIGSERIAL PRIMARY KEY,
+  user_id       BIGINT NOT NULL,
+  category_name VARCHAR(100) NOT NULL,
+  created_at    TIMESTAMPTZ DEFAULT NOW(),
+  CONSTRAINT uniq_cat_follow UNIQUE (user_id, category_name),
+  CONSTRAINT fk_cf_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_cf_category ON category_follows(category_name);
+CREATE INDEX IF NOT EXISTS idx_cf_user ON category_follows(user_id);
+
+-- ────────────────  EVENT REMINDERS  ────────────────
+CREATE TABLE IF NOT EXISTS event_reminders (
+  id                BIGSERIAL PRIMARY KEY,
+  user_id           BIGINT NOT NULL,
+  event_id          BIGINT NOT NULL,
+  remind_at         TIMESTAMPTZ,
+  email_sent        BOOLEAN DEFAULT FALSE,
+  sms_sent          BOOLEAN DEFAULT FALSE,
+  preferences       JSONB DEFAULT '{"sevenDays": true, "twentyFourHours": true, "oneHour": true, "salesOpening": true, "almostSoldOut": true, "timeChanged": true, "venueChanged": true, "cancelled": true}',
+  notified_stages   JSONB DEFAULT '[]',
+  created_at        TIMESTAMPTZ DEFAULT NOW(),
+  CONSTRAINT uniq_event_reminder UNIQUE (user_id, event_id),
+  CONSTRAINT fk_er_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_er_event FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_er_event ON event_reminders(event_id);
+CREATE INDEX IF NOT EXISTS idx_er_user ON event_reminders(user_id);
 
 -- ────────────────  EVENT MEET-UPS (group outings)  ────────────────
 CREATE TABLE IF NOT EXISTS event_meetups (

@@ -1,6 +1,7 @@
 import pool from '../config/db.js';
 import { logAudit } from '../utils/audit.js';
-import { notifyAdmins } from '../utils/notify.js';
+import { notifyAdmins, sendNotification } from '../utils/notify.js';
+import { notifyFollowersOfNewEvent, notifyReminderSubscribers, processEventReminders } from '../utils/eventReminders.js';
 import cache from '../utils/cache.js';
 
 // JSON columns (images, tags) arrive as strings from MySQL — normalise to
@@ -412,6 +413,13 @@ export const createEvent = async (req, res) => {
       link: '/admin/events',
     }).catch(() => {});
 
+    if (req.body.status === 'published') {
+      notifyFollowersOfNewEvent(
+        { id: eventId, title, city, category, tags: req.body.tags, organizer_id: organizerId },
+        req.user.name,
+      ).catch(() => {});
+    }
+
     conn.release();
     res.status(201).json({ message: 'Event created', eventId });
   } catch (err) {
@@ -634,6 +642,35 @@ export const updateEvent = async (req, res) => {
     await logAudit({ userId: organizerId, action: 'update_event', entityType: 'event', entityId: Number(id) });
     cache.clearPrefix('events');
 
+    // Lifecycle notifications for event reminder subscribers:
+    const newStartDate = req.body.start_date || req.body.startDate;
+    const newStartTime = req.body.start_time || req.body.startTime;
+    const oldStartDate = event.start_date ? new Date(event.start_date).toISOString().split('T')[0] : null;
+    const oldStartTime = event.start_time ? String(event.start_time).slice(0, 5) : null;
+
+    if ((newStartDate && newStartDate !== oldStartDate) || (newStartTime && newStartTime !== oldStartTime)) {
+      notifyReminderSubscribers(id, 'time_changed', {
+        title: `Event Schedule Changed: ${event.title}`,
+        message: `The schedule for "${event.title}" has been updated to ${newStartDate || oldStartDate} at ${newStartTime || oldStartTime || 'TBA'}.`,
+      }).catch(() => {});
+    }
+
+    const newVenue = req.body.venue;
+    const newCity = req.body.city;
+    if ((newVenue && newVenue !== event.venue) || (newCity && newCity !== event.city)) {
+      notifyReminderSubscribers(id, 'venue_changed', {
+        title: `Venue Changed: ${event.title}`,
+        message: `The venue for "${event.title}" has been moved to ${newVenue || event.venue}${newCity ? `, ${newCity}` : ''}.`,
+      }).catch(() => {});
+    }
+
+    if (req.body.status === 'cancelled' && event.status !== 'cancelled') {
+      notifyReminderSubscribers(id, 'event_cancelled', {
+        title: `Event Cancelled: ${event.title}`,
+        message: `We regret to inform you that "${event.title}" has been cancelled.`,
+      }).catch(() => {});
+    }
+
     res.json({ message: 'Event updated' });
   } catch (err) {
     console.error('[eventController.updateEvent]', err);
@@ -702,6 +739,14 @@ const setEventStatus = async (req, res, status) => {
       entityId: Number(id),
     });
     cache.clearPrefix('events');
+
+    if (status === 'published' && event.status !== 'published') {
+      notifyFollowersOfNewEvent({ ...event, status: 'published' }, req.user.name).catch(() => {});
+      notifyReminderSubscribers(id, 'sales_opening', {
+        title: `Ticket Sales Live: ${event.title}`,
+        message: `Tickets are now live for "${event.title}"! Grab your tickets before they sell out.`,
+      }).catch(() => {});
+    }
 
     res.json({
       message: status === 'published' ? 'Event published and live for ticket sales' : (status === 'draft' ? 'Event unpublished' : 'Event submitted for review'),
@@ -1330,7 +1375,7 @@ export const toggleEventReminder = async (req, res) => {
     if (!event) return res.status(404).json({ message: 'Event not found' });
 
     const [existing] = await pool.execute(
-      'SELECT id FROM event_reminders WHERE user_id = ? AND event_id = ?',
+      'SELECT id, preferences FROM event_reminders WHERE user_id = ? AND event_id = ?',
       [userId, id],
     );
 
@@ -1339,10 +1384,22 @@ export const toggleEventReminder = async (req, res) => {
       return res.json({ isReminded: false, message: 'Event reminder removed' });
     }
 
+    const rawPrefs = req.body?.preferences;
+    const preferences = {
+      sevenDays: rawPrefs?.sevenDays ?? true,
+      twentyFourHours: rawPrefs?.twentyFourHours ?? true,
+      oneHour: rawPrefs?.oneHour ?? true,
+      salesOpening: rawPrefs?.salesOpening ?? true,
+      almostSoldOut: rawPrefs?.almostSoldOut ?? true,
+      timeChanged: rawPrefs?.timeChanged ?? true,
+      venueChanged: rawPrefs?.venueChanged ?? true,
+      cancelled: rawPrefs?.cancelled ?? true,
+    };
+
     await pool.execute(
-      `INSERT INTO event_reminders (user_id, event_id, remind_at)
-       VALUES (?, ?, ?)`,
-      [userId, id, event.start_date],
+      `INSERT INTO event_reminders (user_id, event_id, remind_at, preferences, notified_stages)
+       VALUES (?, ?, ?, ?, '[]')`,
+      [userId, id, event.start_date, JSON.stringify(preferences)],
     );
 
     sendNotification({
@@ -1352,10 +1409,32 @@ export const toggleEventReminder = async (req, res) => {
       type: 'event',
     }).catch(() => {});
 
-    res.json({ isReminded: true, message: 'Event reminder set! We will notify you before the event.' });
+    res.json({
+      isReminded: true,
+      preferences,
+      message: 'Event reminder set! We will notify you at key milestones and schedule updates.',
+    });
   } catch (err) {
     console.error('[eventController.toggleEventReminder]', err);
     res.status(500).json({ message: 'Failed to update reminder' });
+  }
+};
+
+export const updateReminderPreferences = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const preferences = req.body.preferences;
+    if (!preferences) return res.status(400).json({ message: 'Preferences required' });
+
+    await pool.execute(
+      `UPDATE event_reminders SET preferences = ? WHERE user_id = ? AND event_id = ?`,
+      [JSON.stringify(preferences), userId, id],
+    );
+    res.json({ message: 'Reminder preferences updated', preferences });
+  } catch (err) {
+    console.error('[eventController.updateReminderPreferences]', err);
+    res.status(500).json({ message: 'Failed to update reminder preferences' });
   }
 };
 
@@ -1363,16 +1442,36 @@ export const getEventReminderStatus = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user?.id;
-    if (!userId) return res.json({ isReminded: false });
+    if (!userId) return res.json({ isReminded: false, preferences: null });
 
     const [rows] = await pool.execute(
-      'SELECT id FROM event_reminders WHERE user_id = ? AND event_id = ?',
+      'SELECT id, preferences FROM event_reminders WHERE user_id = ? AND event_id = ?',
       [userId, id],
     );
-    res.json({ isReminded: rows.length > 0 });
+
+    if (rows.length === 0) {
+      return res.json({ isReminded: false, preferences: null });
+    }
+
+    let prefs = rows[0].preferences;
+    if (typeof prefs === 'string') {
+      try { prefs = JSON.parse(prefs); } catch { prefs = null; }
+    }
+
+    res.json({ isReminded: true, preferences: prefs });
   } catch (err) {
     console.error('[eventController.getEventReminderStatus]', err);
     res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const processRemindersManualTrigger = async (_req, res) => {
+  try {
+    const result = await processEventReminders();
+    res.json({ message: 'Reminders processed successfully', result });
+  } catch (err) {
+    console.error('[eventController.processRemindersManualTrigger]', err);
+    res.status(500).json({ message: 'Server error processing reminders' });
   }
 };
 
@@ -1380,7 +1479,7 @@ export const getUserReminders = async (req, res) => {
   try {
     const userId = req.user.id;
     const [rows] = await pool.execute(
-      `SELECT er.id AS reminder_id, er.remind_at, er.created_at AS reminder_created_at,
+      `SELECT er.id AS reminder_id, er.remind_at, er.preferences, er.created_at AS reminder_created_at,
               e.id, e.title, e.slug, e.description, e.banner_image, e.venue, e.city,
               e.category, e.start_date, e.end_date, e.start_time, e.is_featured,
               u.name AS organizer_name,
@@ -1392,7 +1491,16 @@ export const getUserReminders = async (req, res) => {
        ORDER BY e.start_date ASC`,
       [userId],
     );
-    res.json({ reminders: rows });
+
+    const formatted = rows.map((r) => {
+      let prefs = r.preferences;
+      if (typeof prefs === 'string') {
+        try { prefs = JSON.parse(prefs); } catch { prefs = null; }
+      }
+      return { ...r, preferences: prefs };
+    });
+
+    res.json({ reminders: formatted });
   } catch (err) {
     console.error('[eventController.getUserReminders]', err);
     res.status(500).json({ message: 'Server error fetching user reminders' });
@@ -1587,6 +1695,6 @@ export default {
   getEvents, getEvent, trackEventView, trackSearchQuery, createEvent, updateEvent, deleteEvent,
   publishEvent, unpublishEvent,
   getOrganizerEvents, getFeaturedEvents, getTrendingEvents, getRecommendedEvents,
-  toggleEventReminder, getEventReminderStatus,
+  toggleEventReminder, getEventReminderStatus, updateReminderPreferences, getUserReminders, processRemindersManualTrigger,
   getCategories, getFeaturedOrganizers, getPublicOrganizerProfile,
 };

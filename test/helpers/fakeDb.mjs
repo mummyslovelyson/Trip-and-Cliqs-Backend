@@ -21,6 +21,7 @@ export function createFakeDb() {
     admin_user_notes: 1, user_activity_log: 1,
     pending_registrations: 1, system_settings: 1,
     uploaded_tickets: 1, wallet_transactions: 1, event_views: 1, search_history: 1,
+    artist_follows: 1, category_follows: 1, event_reminders: 1,
   };
   const tables = {
     users: [], events: [], ticket_types: [], notifications: [],
@@ -33,6 +34,7 @@ export function createFakeDb() {
     admin_user_notes: [], user_activity_log: [],
     pending_registrations: [], system_settings: [],
     uploaded_tickets: [], wallet_transactions: [], event_views: [], search_history: [],
+    artist_follows: [], category_follows: [], event_reminders: [],
   };
 
   const nowIso = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
@@ -109,6 +111,13 @@ export function createFakeDb() {
       const list = splitTop(inMatch[2], ',').map((s) => s.trim().replace(/^['"]|['"]$/g, ''));
       return { col, op: 'IN', list };
     }
+    const lowerMatch = cond.trim().match(/^LOWER\(([\w.`]+)\)\s*(=|!=|<>|LIKE)\s*(?:LOWER\((.+)\)|(.+))$/i);
+    if (lowerMatch) {
+      const col = lowerMatch[1].replace(/`/g, '').split('.').pop();
+      const op = lowerMatch[2].toUpperCase();
+      const token = (lowerMatch[3] || lowerMatch[4]).trim();
+      return { col, op, token, isLower: true };
+    }
     const m = cond.trim().match(/^([\w.`]+)\s*(=|!=|<>|>=|<=|>|<|LIKE)\s*(.+)$/i);
     if (!m) throw new Error(`Unsupported WHERE condition: ${cond}`);
     return {
@@ -122,24 +131,29 @@ export function createFakeDb() {
   // and consumed once per statement — never once per row.
   function resolveCond(cond, params, cursor) {
     if (cond.op === 'IN') return cond;
-    return { col: cond.col, op: cond.op, want: evalToken(cond.token, params, cursor) };
+    return { col: cond.col, op: cond.op, isLower: cond.isLower, want: evalToken(cond.token, params, cursor) };
   }
 
   function matches(cond, row) {
-    const got = row[cond.col];
+    let got = row[cond.col];
+    let want = cond.want;
+    if (cond.isLower) {
+      got = String(got ?? '').toLowerCase();
+      want = String(want ?? '').toLowerCase();
+    }
     if (cond.op === 'IN') {
       return cond.list.includes(String(got));
     }
     switch (cond.op) {
-      case '=': return got == cond.want;
+      case '=': return got == want;
       case '!=':
-      case '<>': return got != cond.want;
-      case '>': return got > cond.want;
-      case '>=': return got >= cond.want;
-      case '<': return got < cond.want;
-      case '<=': return got <= cond.want;
+      case '<>': return got != want;
+      case '>': return got > want;
+      case '>=': return got >= want;
+      case '<': return got < want;
+      case '<=': return got <= want;
       case 'LIKE': {
-        const pattern = String(cond.want ?? '').toLowerCase().replace(/%/g, '');
+        const pattern = String(want ?? '').toLowerCase().replace(/%/g, '');
         return String(got ?? '').toLowerCase().includes(pattern);
       }
       default: throw new Error(`Unsupported operator: ${cond.op}`);
@@ -248,9 +262,11 @@ export function createFakeDb() {
       const andConditions = splitTop(group, 'AND');
       return andConditions.map((c) => resolveCond(parseCond(c), params, cursor));
     });
-    let rows = tables[table].filter((row) =>
-      parsedOrGroups.some((group) => group.every((c) => matches(c, row)))
-    );
+    let rows = parsedOrGroups.length === 0
+      ? [...(tables[table] || [])]
+      : (tables[table] || []).filter((row) =>
+          parsedOrGroups.some((group) => group.every((c) => matches(c, row)))
+        );
 
     // JOIN users → merge organizer fields.
     if (/JOIN\s+users\s+\w+\s+ON\s+u\.id\s*=\s*e\.organizer_id/i.test(sql)) {

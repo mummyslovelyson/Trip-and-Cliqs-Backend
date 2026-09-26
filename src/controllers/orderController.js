@@ -332,6 +332,30 @@ async function completeOrder(orderId, reference) {
     type: 'payment',
     link: '/admin/payments',
   }).catch(() => {});
+
+  // Check if tickets are almost sold out for reminder subscribers
+  if (order.event_id) {
+    try {
+      const [capacityStats] = await pool.execute(
+        `SELECT COALESCE(SUM(quantity), 0) AS total_capacity,
+                COALESCE(SUM(quantity_sold), 0) AS total_sold
+         FROM ticket_types WHERE event_id = ? AND is_active = TRUE`,
+        [order.event_id],
+      );
+      const totalCap = Number(capacityStats[0]?.total_capacity || 0);
+      const totalSold = Number(capacityStats[0]?.total_sold || 0);
+      const remaining = totalCap - totalSold;
+      if (totalCap > 0 && remaining > 0 && (remaining <= 20 || (remaining / totalCap) <= 0.15)) {
+        const { notifyReminderSubscribers } = await import('../utils/eventReminders.js');
+        notifyReminderSubscribers(order.event_id, 'almost_sold_out', {
+          title: `Tickets Almost Sold Out: ${eventTitle || 'Event'}!`,
+          message: `Hurry! Only ${remaining} ticket${remaining === 1 ? '' : 's'} remaining for ${eventTitle || 'this event'}. Get yours before they are gone!`,
+        }).catch((err) => console.error('[orderController.almostSoldOutReminder]', err));
+      }
+    } catch (err) {
+      console.error('[orderController.checkAlmostSoldOut]', err);
+    }
+  }
 };
 
 /* ------------------------------------------------------------------ */
