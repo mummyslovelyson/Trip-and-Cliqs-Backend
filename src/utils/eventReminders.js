@@ -147,10 +147,14 @@ export const notifyReminderSubscribers = async (eventId, triggerType, { title, m
       [eventId],
     );
 
-    if (!subscribers.length) return 0;
+    let eventTitle = subscribers[0]?.event_title;
+    if (!eventTitle) {
+      const [eRows] = await pool.execute('SELECT title FROM events WHERE id = ?', [eventId]);
+      eventTitle = eRows[0]?.title || 'Event';
+    }
 
-    const notifTitle = title || `Update: ${subscribers[0].event_title}`;
-    const notifMessage = message || `There is an update regarding "${subscribers[0].event_title}".`;
+    const notifTitle = title || `Update: ${eventTitle}`;
+    const notifMessage = message || `There is an update regarding "${eventTitle}".`;
 
     const targetUserIds = [];
     for (const sub of subscribers) {
@@ -167,7 +171,26 @@ export const notifyReminderSubscribers = async (eventId, triggerType, { title, m
       if (triggerType === 'sales_opening' && prefs.salesOpening === false) continue;
       if (triggerType === 'almost_sold_out' && prefs.almostSoldOut === false) continue;
 
-      targetUserIds.push(sub.user_id);
+      if (!targetUserIds.includes(sub.user_id)) {
+        targetUserIds.push(sub.user_id);
+      }
+    }
+
+    // For critical changes (event schedule/venue change or cancellation), also notify all ticket holders!
+    if (['time_changed', 'venue_changed', 'event_cancelled'].includes(triggerType)) {
+      try {
+        const [ticketHolders] = await pool.execute(
+          `SELECT DISTINCT user_id FROM tickets WHERE event_id = ? AND status IN ('valid', 'used', 'active')`,
+          [eventId]
+        );
+        for (const holder of ticketHolders) {
+          if (holder.user_id && !targetUserIds.includes(holder.user_id)) {
+            targetUserIds.push(holder.user_id);
+          }
+        }
+      } catch (err) {
+        console.error('[notifyReminderSubscribers.ticketHolders]', err.message);
+      }
     }
 
     if (targetUserIds.length > 0) {

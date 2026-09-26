@@ -103,7 +103,7 @@ CREATE TABLE IF NOT EXISTS events (
   status         TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','pending','published','cancelled','completed','rejected','suspended')),
   is_featured    BOOLEAN NOT NULL DEFAULT FALSE,
   visibility     TEXT NOT NULL DEFAULT 'public' CHECK (visibility IN ('public','private')),
-  approval_status TEXT DEFAULT 'pending' CHECK (approval_status IN ('pending','approved','rejected')),
+  approval_status TEXT DEFAULT 'pending' CHECK (approval_status IN ('pending','approved','rejected','changes_requested')),
   rejection_reason TEXT,
   view_count     INT DEFAULT 0,
   created_at     TIMESTAMPTZ DEFAULT NOW(),

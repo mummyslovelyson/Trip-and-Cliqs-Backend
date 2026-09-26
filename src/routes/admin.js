@@ -3,7 +3,7 @@ import {
   getDashboardStats, getUsers, getUser, updateUser, suspendUser, unsuspendUser, verifyUser, deleteUser, approveOrganizer, rejectOrganizer, resetUserPassword, createAdminUser,
   getUserManagementStats, getUserActivity, getUserSessions, forceLogoutUser, addAdminNote, getAdminNotes, deleteAdminNote,
   exportUsers, bulkRoleChange, bulkDeleteUsers, getUserStats,
-  getEvents, approveEvent, rejectEvent, featureEvent, suspendEvent, unsuspendEvent, adminDeleteEvent,
+  getEvents, approveEvent, rejectEvent, requestEventChanges, featureEvent, suspendEvent, unsuspendEvent, adminDeleteEvent,
   getCategories, createCategory, updateCategory, deleteCategory,
   getPayments, getPayment, refundPayment, getWithdrawals, approveWithdrawal, rejectWithdrawal,
   getReports, getRevenueReport, getGrowthReport,
@@ -63,6 +63,8 @@ router.post('/users/bulk/delete', destructiveLimiter, bulkDeleteUsers);
 router.get('/events', getEvents);
 router.put('/events/:id/approve', writeLimiter, approveEvent);
 router.post('/events/:id/approve', writeLimiter, approveEvent);
+router.put('/events/:id/request-changes', writeLimiter, requestEventChanges);
+router.post('/events/:id/request-changes', writeLimiter, requestEventChanges);
 router.put('/events/:id/reject', writeLimiter, rejectEvent);
 router.post('/events/:id/reject', writeLimiter, rejectEvent);
 router.post('/events/:id/feature', writeLimiter, featureEvent);

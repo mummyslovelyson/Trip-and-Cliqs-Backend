@@ -13,17 +13,20 @@ import textPdf from '../utils/pdf.js';
  * Validate and price a coupon for an event.
  * Returns { valid, discount } where discount is the monetary amount to subtract.
  */
-const applyCoupon = async (eventId, code, subtotal) => {
+const applyCoupon = async (eventId, code, subtotal, totalQuantity = 1) => {
   if (!code) return { valid: false, discount: 0 };
   const [rows] = await pool.execute(
-    `SELECT * FROM coupons WHERE event_id = ? AND code = ? AND is_active = TRUE`,
+    `SELECT * FROM coupons WHERE (event_id = ? OR event_id IS NULL) AND UPPER(code) = UPPER(?) AND is_active = TRUE`,
     [eventId, code],
   );
   const coupon = rows[0];
   if (!coupon) return { valid: false, discount: 0, error: 'Invalid coupon code' };
-  if (coupon.used_count >= coupon.max_uses) return { valid: false, discount: 0, error: 'Coupon usage limit reached' };
+  if (coupon.max_uses > 0 && coupon.used_count >= coupon.max_uses) return { valid: false, discount: 0, error: 'Coupon usage limit reached' };
   if (coupon.valid_to && new Date(coupon.valid_to) < new Date()) return { valid: false, discount: 0, error: 'Coupon expired' };
   if (coupon.valid_from && new Date(coupon.valid_from) > new Date()) return { valid: false, discount: 0, error: 'Coupon not yet active' };
+  if (coupon.min_quantity && Number(totalQuantity) < Number(coupon.min_quantity)) {
+    return { valid: false, discount: 0, error: `Minimum of ${coupon.min_quantity} tickets required to use this group discount` };
+  }
 
   let discount = 0;
   if (coupon.discount_type === 'percentage') {
@@ -113,8 +116,9 @@ export const createOrder = async (req, res) => {
     // Coupon
     let discount = 0;
     let coupon = null;
+    const totalOrderTickets = items.reduce((sum, item) => sum + (Number(item.quantity) || 1), 0);
     if (couponCode) {
-      const result = await applyCoupon(eventId, couponCode, subtotal);
+      const result = await applyCoupon(eventId, couponCode, subtotal, totalOrderTickets);
       if (!result.valid) {
         await conn.rollback();
         conn.release();
@@ -307,8 +311,9 @@ async function completeOrder(orderId, reference) {
 
   const [userRows] = await pool.execute('SELECT id, name, email, phone FROM users WHERE id = ?', [order.user_id]);
   const user = userRows[0];
-  const [eventRows] = await pool.execute('SELECT title FROM events WHERE id = ?', [order.event_id]);
+  const [eventRows] = await pool.execute('SELECT title, organizer_id FROM events WHERE id = ?', [order.event_id]);
   const eventTitle = eventRows[0]?.title;
+  const organizerId = eventRows[0]?.organizer_id;
 
   if (user?.email) {
     sendTicketConfirmationEmail(user.email, {
@@ -319,12 +324,34 @@ async function completeOrder(orderId, reference) {
     });
   }
   if (user?.phone) sendTicketConfirmationSMS(user.phone, reference);
+
+  // 1. User Notification: Purchase successful
   sendNotification({
     userId: order.user_id,
-    title: 'Payment confirmed',
-    message: `Your payment for "${eventTitle || 'your event'}" was confirmed. Your tickets are ready.`,
-    type: 'payment',
+    title: 'Purchase successful',
+    message: `Your ticket purchase for "${eventTitle || 'your event'}" was successful! Your tickets are ready in My Tickets.`,
+    type: 'ticket',
+    link: '/tickets',
   });
+
+  // 2. Organizer Notifications: New ticket sale & Payment received
+  if (organizerId) {
+    sendNotification({
+      userId: organizerId,
+      title: 'New ticket sale',
+      message: `You have a new ticket sale for "${eventTitle || 'your event'}"! Total: GHS ${Number(order.total_amount).toFixed(2)}.`,
+      type: 'ticket',
+      link: '/organizer/orders',
+    });
+
+    sendNotification({
+      userId: organizerId,
+      title: 'Payment received',
+      message: `Payment received of GHS ${Number(order.total_amount).toFixed(2)} for "${eventTitle || 'your event'}".`,
+      type: 'payment',
+      link: '/organizer/reports',
+    });
+  }
 
   notifyAdmins({
     title: 'Ticket Purchase Completed',
@@ -333,7 +360,7 @@ async function completeOrder(orderId, reference) {
     link: '/admin/payments',
   }).catch(() => {});
 
-  // Check if tickets are almost sold out for reminder subscribers
+  // 3. Check if tickets are almost sold out for reminder subscribers
   if (order.event_id) {
     try {
       const [capacityStats] = await pool.execute(
@@ -348,8 +375,8 @@ async function completeOrder(orderId, reference) {
       if (totalCap > 0 && remaining > 0 && (remaining <= 20 || (remaining / totalCap) <= 0.15)) {
         const { notifyReminderSubscribers } = await import('../utils/eventReminders.js');
         notifyReminderSubscribers(order.event_id, 'almost_sold_out', {
-          title: `Tickets Almost Sold Out: ${eventTitle || 'Event'}!`,
-          message: `Hurry! Only ${remaining} ticket${remaining === 1 ? '' : 's'} remaining for ${eventTitle || 'this event'}. Get yours before they are gone!`,
+          title: `Ticket almost sold out: ${eventTitle || 'Event'}`,
+          message: `Only ${remaining} ticket${remaining === 1 ? '' : 's'} remaining for "${eventTitle || 'Event'}". Grab yours before it's gone!`,
         }).catch((err) => console.error('[orderController.almostSoldOutReminder]', err));
       }
     } catch (err) {
@@ -363,13 +390,14 @@ async function completeOrder(orderId, reference) {
 /* ------------------------------------------------------------------ */
 export const applyCouponHandler = async (req, res) => {
   try {
-    const { code, eventId, amount } = req.body;
+    const { code, eventId, amount, quantity, totalQuantity } = req.body;
     if (!code || !eventId) {
       return res.status(400).json({ message: 'code and eventId are required' });
     }
 
     const subtotal = Number(amount) || 0;
-    const result = await applyCoupon(eventId, code, subtotal);
+    const ticketCount = Number(quantity) || Number(totalQuantity) || 1;
+    const result = await applyCoupon(eventId, code, subtotal, ticketCount);
     if (!result.valid) {
       return res.status(400).json({ message: result.error || 'Invalid coupon code' });
     }

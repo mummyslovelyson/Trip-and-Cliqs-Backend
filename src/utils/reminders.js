@@ -73,7 +73,7 @@ export async function runReminderJob() {
         await pool.execute(
           `INSERT INTO notifications (user_id, title, message, type, link, is_read)
            VALUES (?, ?, ?, 'reminder', ?, 0)`,
-          [userId, 'Event reminder', `"${event.title}" starts ${when}${where}. Don't miss it!`, link],
+          [userId, 'Ticket reminder', `"${event.title}" starts ${when}${where}. Don't miss it! Check your ticket in My Tickets.`, link],
         );
         created += 1;
       }

@@ -568,7 +568,13 @@ export const getEvents = async (req, res) => {
     const { status, page = 1, limit = 20 } = req.query;
     const conditions = [];
     const params = [];
-    if (status && status !== 'all') { conditions.push('e.status = ?'); params.push(status); }
+    if (status === 'changes_requested') {
+      conditions.push('e.approval_status = ?');
+      params.push('changes_requested');
+    } else if (status && status !== 'all') {
+      conditions.push('e.status = ?');
+      params.push(status);
+    }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const pageNum = Math.max(parseInt(page, 10) || 1, 1);
@@ -599,7 +605,7 @@ export const approveEvent = async (req, res) => {
   try {
     const { id } = req.params;
     await pool.execute(
-      `UPDATE events SET status = 'published', approval_status = 'approved' WHERE id = ?`,
+      `UPDATE events SET status = 'published', approval_status = 'approved', rejection_reason = NULL WHERE id = ?`,
       [id],
     );
     const [rows] = await pool.execute(
@@ -623,6 +629,71 @@ export const approveEvent = async (req, res) => {
     res.json({ message: 'Event approved and published' });
   } catch (err) {
     console.error('[adminController.approveEvent]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const requestEventChanges = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason, notes, feedback } = req.body;
+    const feedbackText = String(reason || notes || feedback || 'Please review and adjust event details').trim();
+
+    await pool.execute(
+      `UPDATE events SET status = 'draft', approval_status = 'changes_requested', rejection_reason = ? WHERE id = ?`,
+      [feedbackText, id],
+    );
+
+    const [rows] = await pool.execute(
+      `SELECT e.organizer_id, e.title, u.email, u.phone
+       FROM events e JOIN users u ON u.id = e.organizer_id
+       WHERE e.id = ?`,
+      [id],
+    );
+
+    if (rows[0]) {
+      sendNotification({
+        userId: rows[0].organizer_id,
+        title: 'Changes requested for your event',
+        message: `Admin requested changes for "${rows[0].title}": ${feedbackText}`,
+        type: 'event',
+      });
+      if (rows[0].email) {
+        sendEmail(
+          rows[0].email,
+          `Changes requested: ${rows[0].title} — Tribes & Cliqs`,
+          `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <h2 style="color: #111417;">Event Review Feedback</h2>
+            <p>Hello,</p>
+            <p>Our review team reviewed your event submission for <strong>${rows[0].title}</strong> and has requested a few adjustments before it can be published:</p>
+            <div style="background: #FFFBEB; border-left: 4px solid #F59E0B; padding: 14px 18px; margin: 20px 0; border-radius: 4px;">
+              <strong style="color: #92400E; display: block; margin-bottom: 6px;">Admin Feedback:</strong>
+              <p style="color: #78350F; margin: 0;">${feedbackText}</p>
+            </div>
+            <p>Please log in to your organizer dashboard to make the requested edits and resubmit for review.</p>
+            <p style="margin-top: 24px; color: #6B7278; font-size: 13px;">Tribes & Cliqs Event Operations Team</p>
+          </div>`
+        ).catch(() => {});
+      }
+      if (rows[0].phone) {
+        sendSMS(
+          rows[0].phone,
+          `Tribes & Cliqs: Admin requested changes on "${rows[0].title}". Feedback: ${feedbackText.slice(0, 80)}. Check dashboard to edit and resubmit.`
+        ).catch(() => {});
+      }
+    }
+
+    await logAudit({
+      userId: req.user.id,
+      action: 'request_event_changes',
+      entityType: 'event',
+      entityId: Number(id),
+      details: { reason: feedbackText }
+    });
+
+    res.json({ message: 'Changes requested from organizer', feedback: feedbackText });
+  } catch (err) {
+    console.error('[adminController.requestEventChanges]', err);
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -729,10 +800,11 @@ export const featureEvent = async (req, res) => {
 export const rejectEvent = async (req, res) => {
   try {
     const { id } = req.params;
-    const { reason } = req.body;
+    const { reason } = req.body || {};
+    const reasonText = String(reason || 'Violates platform guidelines').trim();
     await pool.execute(
-      `UPDATE events SET status = 'rejected', approval_status = 'rejected' WHERE id = ?`,
-      [id],
+      `UPDATE events SET status = 'rejected', approval_status = 'rejected', rejection_reason = ? WHERE id = ?`,
+      [reasonText, id],
     );
     const [rows] = await pool.execute(
       `SELECT e.organizer_id, e.title, u.email
@@ -3015,7 +3087,7 @@ export const getPublicMobileConfig = async (req, res) => {
 export default {
   getDashboardStats, getUsers, getUser, updateUser, suspendUser, unsuspendUser, verifyUser, deleteUser, approveOrganizer, rejectOrganizer, resetUserPassword, createAdminUser,
   getUserManagementStats, getUserActivity, getUserSessions, getUserStats, forceLogoutUser, addAdminNote, getAdminNotes, deleteAdminNote, exportUsers, bulkRoleChange, bulkDeleteUsers,
-  getEvents, approveEvent, rejectEvent, featureEvent, suspendEvent, unsuspendEvent, adminDeleteEvent,
+  getEvents, approveEvent, rejectEvent, requestEventChanges, featureEvent, suspendEvent, unsuspendEvent, adminDeleteEvent,
   getCategories, createCategory, updateCategory, deleteCategory,
   getPayments, getPayment, refundPayment, getWithdrawals, approveWithdrawal, rejectWithdrawal,
   getReports, getRevenueReport, getGrowthReport,

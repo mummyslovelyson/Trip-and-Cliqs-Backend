@@ -52,6 +52,53 @@ export const getTicketTypes = async (req, res) => {
         tt.uploaded_tickets = [];
         tt.uploadedTickets = [];
       }
+
+      // Compute ticket monitoring breakdown (Kwame Blueprint Sec. 17)
+      try {
+        const [statusRows] = await pool.execute(
+          `SELECT 
+             COUNT(CASE WHEN t.status IN ('active', 'used') THEN 1 END) AS sold_count,
+             COUNT(CASE WHEN t.status = 'cancelled' THEN 1 END) AS cancelled_count
+           FROM tickets t WHERE t.ticket_type_id = ?`,
+          [tt.id],
+        );
+        const [orderRows] = await pool.execute(
+          `SELECT 
+             COUNT(CASE WHEN o.payment_status = 'refunded' OR o.order_status = 'refunded' THEN 1 END) AS refunded_count,
+             COUNT(CASE WHEN o.payment_status = 'pending' THEN 1 END) AS reserved_count,
+             COALESCE(SUM(CASE WHEN o.payment_status = 'completed' THEN oi.subtotal ELSE 0 END), 0) AS actual_revenue
+           FROM order_items oi
+           JOIN orders o ON o.id = oi.order_id
+           WHERE oi.ticket_type_id = ?`,
+          [tt.id],
+        );
+
+        const sold = Math.max(Number(tt.quantity_sold) || 0, Number(statusRows?.[0]?.sold_count) || 0);
+        const total = Number(tt.quantity) || 0;
+        const remaining = Math.max(0, total - sold);
+        const reserved = Number(orderRows?.[0]?.reserved_count) || 0;
+        const cancelled = Number(statusRows?.[0]?.cancelled_count) || 0;
+        const refunded = Number(orderRows?.[0]?.refunded_count) || 0;
+        const rev = Number(orderRows?.[0]?.actual_revenue) > 0 ? Number(orderRows[0].actual_revenue) : (sold * (Number(tt.price) || 0));
+
+        tt.total = total;
+        tt.sold = sold;
+        tt.remaining = remaining;
+        tt.reserved = reserved;
+        tt.cancelled = cancelled;
+        tt.refunded = refunded;
+        tt.revenue = rev;
+      } catch {
+        const sold = Number(tt.quantity_sold) || 0;
+        const total = Number(tt.quantity) || 0;
+        tt.total = total;
+        tt.sold = sold;
+        tt.remaining = Math.max(0, total - sold);
+        tt.reserved = 0;
+        tt.cancelled = 0;
+        tt.refunded = 0;
+        tt.revenue = sold * (Number(tt.price) || 0);
+      }
     }
 
     res.json(rows || []);

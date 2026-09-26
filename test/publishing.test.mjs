@@ -130,6 +130,11 @@ test('organizer registration creates a pending-approval organizer account', asyn
       password: 'Org@Pass1234',
       role: 'organizer',
       organizationName: 'Accra Events Co',
+      category: 'Music & Arts',
+      city: 'Accra',
+      phone: '+233240001122',
+      description: 'Premier event collective in West Africa.',
+      websiteUrl: 'https://accraevents.co',
     },
   });
   assert.equal(reg.status, 201);
@@ -179,7 +184,7 @@ test('public registration rejects admin/staff roles', async () => {
   );
 });
 
-test('creating an event with status "published" publishes it immediately with ticket types', async () => {
+test('creating an event routes to pending review for admin moderation', async () => {
   const r = await api('POST', '/api/events', {
     token: organizerToken,
     body: eventPayload({
@@ -190,11 +195,17 @@ test('creating an event with status "published" publishes it immediately with ti
   assert.equal(r.status, 201);
   pendingEventId = r.json.eventId;
   const ev = db.tables.events.find((e) => e.id === pendingEventId);
-  assert.equal(ev.status, 'published', 'event is published immediately');
-  assert.equal(ev.approval_status, 'approved', 'event is approved immediately');
+  assert.equal(ev.status, 'pending', 'organizers cannot bypass review; status is pending');
+  assert.equal(ev.approval_status, 'pending', 'approval_status is pending');
 });
 
-test('published events are immediately visible to the public with tickets ready for sale', async () => {
+test('admin approves pending event, which publishes it and makes it live to the public', async () => {
+  const app = await api('POST', `/api/admin/events/${pendingEventId}/approve`, { token: adminToken });
+  assert.equal(app.status, 200);
+  const ev = db.tables.events.find((e) => e.id === pendingEventId);
+  assert.equal(ev.status, 'published');
+  assert.equal(ev.approval_status, 'approved');
+
   const list = await api('GET', '/api/events');
   assert.equal(list.status, 200);
   assert.ok(
@@ -237,100 +248,77 @@ test('draft events are hidden from anonymous users but visible to owner and admi
   assert.equal(asAdmin.status, 200);
 });
 
-test('organizer can publish a draft event directly — goes live for ticket sales', async () => {
+test('organizer submits draft for review — status transitions to pending', async () => {
   const r = await api('PATCH', `/api/events/${rejectedEventId}/publish`, { token: organizerToken });
   assert.equal(r.status, 200);
-  assert.equal(r.json.status, 'published');
-  assert.equal(db.tables.events.find((e) => e.id === rejectedEventId).status, 'published');
-  const audit = db.tables.audit_logs.find(
-    (a) => a.action === 'publish_event' && a.entity_id === rejectedEventId,
-  );
-  assert.ok(audit, 'expected a publish_event audit entry');
-
-  // Verify it is now publicly visible
-  const single = await api('GET', `/api/events/${rejectedEventId}`);
-  assert.equal(single.status, 200);
-  assert.equal(single.json.status, 'published');
+  assert.equal(r.json.status, 'pending');
+  assert.equal(db.tables.events.find((e) => e.id === rejectedEventId).status, 'pending');
+  assert.equal(db.tables.events.find((e) => e.id === rejectedEventId).approval_status, 'pending');
 });
 
-test('organizer can unpublish an event back to draft', async () => {
-  const r = await api('PATCH', `/api/events/${rejectedEventId}/unpublish`, { token: organizerToken });
+test('admin can request changes on pending event', async () => {
+  const r = await api('POST', `/api/admin/events/${rejectedEventId}/request-changes`, {
+    token: adminToken,
+    body: { reason: 'Please upload higher-resolution flyer image and specify dress code' },
+  });
   assert.equal(r.status, 200);
-  assert.equal(r.json.status, 'draft');
-  assert.equal(db.tables.events.find((e) => e.id === rejectedEventId).status, 'draft');
-  const audit = db.tables.audit_logs.find(
-    (a) => a.action === 'unpublish_event' && a.entity_id === rejectedEventId,
+  const ev = db.tables.events.find((e) => e.id === rejectedEventId);
+  assert.equal(ev.approval_status, 'changes_requested');
+  assert.equal(ev.status, 'draft');
+  assert.equal(ev.rejection_reason, 'Please upload higher-resolution flyer image and specify dress code');
+
+  await sleep(50);
+  const notif = db.tables.notifications.find(
+    (n) => n.user_id === organizerId && n.title.includes('Changes requested'),
   );
-  assert.ok(audit, 'expected an unpublish_event audit entry');
-
-  const single = await api('GET', `/api/events/${rejectedEventId}`);
-  assert.equal(single.status, 404);
+  assert.ok(notif, 'organizer receives in-app changes requested notification');
+  assert.ok(notif.message.includes('higher-resolution flyer'), 'feedback is included in notification');
 });
 
-test('approve/reject endpoints are admin-only', async () => {
-  const r = await api('POST', `/api/admin/events/${rejectedEventId}/approve`, { token: organizerToken });
-  assert.equal(r.status, 403, 'organizers must not reach admin moderation');
+test('organizer updates event and resubmits for review', async () => {
+  const edit = await api('PUT', `/api/events/${rejectedEventId}`, {
+    token: organizerToken,
+    body: { title: 'Draft Gala (HD)', dress_code: 'Black Tie' },
+  });
+  assert.equal(edit.status, 200);
+
+  const resubmit = await api('PATCH', `/api/events/${rejectedEventId}/publish`, { token: organizerToken });
+  assert.equal(resubmit.status, 200);
+  assert.equal(resubmit.json.status, 'pending');
+  assert.equal(db.tables.events.find((e) => e.id === rejectedEventId).status, 'pending');
+  assert.equal(db.tables.events.find((e) => e.id === rejectedEventId).approval_status, 'pending');
 });
 
-test('admin approval publishes the event and notifies the organizer', async () => {
+test('admin approval publishes the event after review', async () => {
   const r = await api('POST', `/api/admin/events/${rejectedEventId}/approve`, { token: adminToken });
   assert.equal(r.status, 200);
-  assert.equal(db.tables.events.find((e) => e.id === rejectedEventId).status, 'published');
-  await sleep(50); // notification insert is fire-and-forget
+  const ev = db.tables.events.find((e) => e.id === rejectedEventId);
+  assert.equal(ev.status, 'published');
+  assert.equal(ev.approval_status, 'approved');
+
+  await sleep(50);
   const notif = db.tables.notifications.find(
     (n) => n.user_id === organizerId && n.title.includes('approved'),
   );
   assert.ok(notif, 'organizer should get an in-app approval notification');
-  assert.ok(notif.message.includes('Draft Gala'), 'notification names the event');
-  const audit = db.tables.audit_logs.find(
-    (a) => a.action === 'approve_event' && a.entity_id === rejectedEventId,
-  );
-  assert.ok(audit, 'expected an approve_event audit entry');
 });
 
-test('admin rejection marks the event rejected and notifies with the reason', async () => {
+test('admin rejection marks the event rejected with reason', async () => {
   const r = await api('POST', `/api/admin/events/${rejectedEventId}/reject`, {
     token: adminToken,
-    body: { reason: 'Insufficient details' },
+    body: { reason: 'Violates platform guidelines' },
   });
   assert.equal(r.status, 200);
-  assert.equal(db.tables.events.find((e) => e.id === rejectedEventId).status, 'rejected');
-  await sleep(50);
-  const notif = db.tables.notifications.find(
-    (n) => n.user_id === organizerId && n.title.includes('rejected'),
-  );
-  assert.ok(notif, 'organizer should get an in-app rejection notification');
-  assert.ok(notif.message.includes('Insufficient details'), 'rejection reason carried through');
-  const audit = db.tables.audit_logs.find(
-    (a) => a.action === 'reject_event' && a.entity_id === rejectedEventId,
-  );
-  assert.ok(audit, 'expected a reject_event audit entry');
-  assert.equal(JSON.parse(audit.details).reason, 'Insufficient details');
+  const ev = db.tables.events.find((e) => e.id === rejectedEventId);
+  assert.equal(ev.status, 'rejected');
+  assert.equal(ev.approval_status, 'rejected');
+  assert.equal(ev.rejection_reason, 'Violates platform guidelines');
 });
 
-test('rejected events stay hidden from the public but visible to their owner', async () => {
+test('rejected events stay hidden from the public but visible to owner', async () => {
   const single = await api('GET', `/api/events/${rejectedEventId}`);
   assert.equal(single.status, 404);
   const asOwner = await api('GET', `/api/events/${rejectedEventId}`, { token: organizerToken });
   assert.equal(asOwner.status, 200);
   assert.equal(asOwner.json.status, 'rejected');
-});
-
-test('organizer can edit a rejected event and publish directly', async () => {
-  const edit = await api('PUT', `/api/events/${rejectedEventId}`, {
-    token: organizerToken,
-    body: { title: 'Draft Gala (Revised)', capacity: 800 },
-  });
-  assert.equal(edit.status, 200);
-  const stored = db.tables.events.find((e) => e.id === rejectedEventId);
-  assert.equal(stored.title, 'Draft Gala (Revised)', 'content edits apply');
-  assert.equal(stored.status, 'rejected', 'edits must not change moderation status');
-
-  const resubmit = await api('PATCH', `/api/events/${rejectedEventId}/publish`, { token: organizerToken });
-  assert.equal(resubmit.status, 200);
-  assert.equal(
-    db.tables.events.find((e) => e.id === rejectedEventId).status,
-    'published',
-    'organizer direct publish puts event live',
-  );
 });

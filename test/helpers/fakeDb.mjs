@@ -92,7 +92,7 @@ export function createFakeDb() {
     if (/^false$/i.test(token)) return 0;
     if (/^null$/i.test(token)) return null;
     if (/^CURDATE\(\)$/.test(token) || /^CURRENT_DATE\(\)$/.test(token) || /^CURRENT_DATE$/.test(token)) return today();
-    if (/^NOW\(\)/i.test(token)) {
+    if (/^NOW(\(\))?/i.test(token)) {
       const m = token.match(/INTERVAL\s*'(\d+)\s*(minute|hour|day)s?'/i);
       if (m) {
         const amt = Number(m[1]);
@@ -119,8 +119,12 @@ export function createFakeDb() {
       const list = splitTop(inMatch[2], ',').map((s) => s.trim().replace(/^['"]|['"]$/g, ''));
       return { col, op: 'IN', list };
     }
-    // Now safe to strip wrapping parens for simple conditions.
-    cond = raw.replace(/^\(+|\)+$/g, '').trim();
+    // Now safe to strip outer wrapping parens for simple conditions if both start and end with paren
+    if (raw.startsWith('(') && raw.endsWith(')') && !raw.slice(1, -1).includes(')')) {
+      cond = raw.slice(1, -1).trim();
+    } else {
+      cond = raw;
+    }
     const nullMatch = cond.match(/^([\w.`]+)\s+IS\s+(NOT\s+)?NULL$/i);
     if (nullMatch) {
       return { col: nullMatch[1].replace(/`/g, '').split('.').pop(), op: nullMatch[2] ? 'IS_NOT_NULL' : 'IS_NULL', token: '' };

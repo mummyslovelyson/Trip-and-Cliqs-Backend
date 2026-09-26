@@ -322,17 +322,17 @@ export const createEvent = async (req, res) => {
       return res.status(400).json({ message: 'Missing required event fields' });
     }
 
-    // Organizers can save a draft, submit for admin approval, or publish directly
+    // Organizers can save a draft or submit for review. Only admins can directly publish.
     let status = 'draft';
     let approval_status = 'pending';
-    if (req.body.status === 'published') {
+    if (req.user.role === 'admin' && req.body.status === 'published') {
       status = 'published';
       approval_status = 'approved';
-    } else if (req.body.status === 'pending' || req.body.status === 'submitted' || req.body.status === 'submit_for_approval') {
-      status = 'pending';
+    } else if (req.body.status === 'draft') {
+      status = 'draft';
       approval_status = 'pending';
     } else {
-      status = 'draft';
+      status = 'pending';
       approval_status = 'pending';
     }
 
@@ -720,7 +720,7 @@ export const updateEvent = async (req, res) => {
 
     if ((newStartDate && newStartDate !== oldStartDate) || (newStartTime && newStartTime !== oldStartTime)) {
       notifyReminderSubscribers(id, 'time_changed', {
-        title: `Event Schedule Changed: ${event.title}`,
+        title: `Event changed: ${event.title}`,
         message: `The schedule for "${event.title}" has been updated to ${newStartDate || oldStartDate} at ${newStartTime || oldStartTime || 'TBA'}.`,
       }).catch(() => {});
     }
@@ -729,14 +729,14 @@ export const updateEvent = async (req, res) => {
     const newCity = req.body.city;
     if ((newVenue && newVenue !== event.venue) || (newCity && newCity !== event.city)) {
       notifyReminderSubscribers(id, 'venue_changed', {
-        title: `Venue Changed: ${event.title}`,
+        title: `Event changed: ${event.title}`,
         message: `The venue for "${event.title}" has been moved to ${newVenue || event.venue}${newCity ? `, ${newCity}` : ''}.`,
       }).catch(() => {});
     }
 
     if (req.body.status === 'cancelled' && event.status !== 'cancelled') {
       notifyReminderSubscribers(id, 'event_cancelled', {
-        title: `Event Cancelled: ${event.title}`,
+        title: `Event cancelled: ${event.title}`,
         message: `We regret to inform you that "${event.title}" has been cancelled.`,
       }).catch(() => {});
     }
@@ -800,17 +800,39 @@ const setEventStatus = async (req, res, status) => {
       return res.status(403).json({ message: 'You can only manage your own events' });
     }
 
-    const approval_status = status === 'published' ? 'approved' : 'pending';
-    await pool.execute(`UPDATE events SET status = ?, approval_status = ? WHERE id = ?`, [status, approval_status, id]);
+    // Organizers cannot publish directly without admin approval.
+    // When an organizer requests to publish, it submits the event for review (pending).
+    let targetStatus = status;
+    let targetApprovalStatus = status === 'published' ? 'approved' : 'pending';
+
+    if (status === 'published' && req.user.role !== 'admin') {
+      targetStatus = 'pending';
+      targetApprovalStatus = 'pending';
+    }
+
+    await pool.execute(
+      `UPDATE events SET status = ?, approval_status = ?, rejection_reason = NULL WHERE id = ?`,
+      [targetStatus, targetApprovalStatus, id]
+    );
+
+    if (targetStatus === 'pending') {
+      notifyAdmins({
+        title: 'Event Submitted for Review',
+        message: `Organizer "${req.user.name || 'Organizer'}" submitted "${event.title}" for review.`,
+        type: 'event',
+        link: '/admin/events',
+      }).catch(() => {});
+    }
+
     await logAudit({
       userId: req.user.id,
-      action: status === 'published' ? 'publish_event' : (status === 'draft' ? 'unpublish_event' : 'submit_event_for_review'),
+      action: targetStatus === 'published' ? 'publish_event' : (targetStatus === 'draft' ? 'unpublish_event' : 'submit_event_for_review'),
       entityType: 'event',
       entityId: Number(id),
     });
     cache.clearPrefix('events');
 
-    if (status === 'published' && event.status !== 'published') {
+    if (targetStatus === 'published' && event.status !== 'published') {
       notifyFollowersOfNewEvent({ ...event, status: 'published' }, req.user.name).catch(() => {});
       notifyReminderSubscribers(id, 'sales_opening', {
         title: `Ticket Sales Live: ${event.title}`,
@@ -819,8 +841,11 @@ const setEventStatus = async (req, res, status) => {
     }
 
     res.json({
-      message: status === 'published' ? 'Event published and live for ticket sales' : (status === 'draft' ? 'Event unpublished' : 'Event submitted for review'),
-      status,
+      message: targetStatus === 'published'
+        ? 'Event published and live for ticket sales'
+        : (targetStatus === 'draft' ? 'Event saved as draft' : 'Event submitted for review by admin'),
+      status: targetStatus,
+      approval_status: targetApprovalStatus,
     });
   } catch (err) {
     console.error('[eventController.setEventStatus]', err);
@@ -842,8 +867,12 @@ export const getOrganizerEvents = async (req, res) => {
     const conditions = ['e.organizer_id = ?'];
     const params = [organizerId];
     if (status && status !== 'all') {
-      conditions.push('e.status = ?');
-      params.push(status);
+      if (status === 'changes_requested') {
+        conditions.push("e.approval_status = 'changes_requested'");
+      } else {
+        conditions.push('e.status = ?');
+        params.push(status);
+      }
     }
 
     const [rows] = await pool.execute(

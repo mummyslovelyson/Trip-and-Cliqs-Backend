@@ -79,6 +79,8 @@ async function initDb() {
         `ALTER TABLE events ADD COLUMN IF NOT EXISTS ticket_template VARCHAR(500)`,
         `ALTER TABLE events ADD COLUMN IF NOT EXISTS location_type VARCHAR(20) DEFAULT 'physical'`,
         `ALTER TABLE events ADD COLUMN IF NOT EXISTS gps_location VARCHAR(255)`,
+        `ALTER TABLE events DROP CONSTRAINT IF EXISTS events_approval_status_check`,
+        `ALTER TABLE events ADD CONSTRAINT events_approval_status_check CHECK (approval_status IN ('pending','approved','rejected','changes_requested'))`,
         `ALTER TABLE pending_registrations ADD COLUMN IF NOT EXISTS metadata JSONB`,
         `CREATE TABLE IF NOT EXISTS pending_registrations (
           id                BIGSERIAL PRIMARY KEY,
@@ -128,6 +130,7 @@ async function initDb() {
         `ALTER TABLE ticket_types ADD COLUMN IF NOT EXISTS early_bird_price DECIMAL(10,2)`,
         `ALTER TABLE ticket_types ADD COLUMN IF NOT EXISTS section_type VARCHAR(50) DEFAULT 'general'`,
         `ALTER TABLE ticket_types ADD COLUMN IF NOT EXISTS perks JSONB`,
+        `ALTER TABLE coupons ADD COLUMN IF NOT EXISTS min_quantity INT DEFAULT 1`,
         `ALTER TABLE orders ADD COLUMN IF NOT EXISTS invoice_number VARCHAR(64)`,
         `ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS rejection_reason VARCHAR(255)`,
         `ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS notes TEXT`,
