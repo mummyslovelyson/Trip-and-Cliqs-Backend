@@ -7,6 +7,7 @@ import {
   followArtist, unfollowArtist, getFollowedArtists, checkArtistFollowStatus,
   followCategory, unfollowCategory, getFollowedCategories, checkCategoryFollowStatus,
   getFollowingSummary,
+  followUser, unfollowUser, checkUserFollow, getFriendsList, searchFriends,
   getReviews, createReview, deleteReview,
 } from '../controllers/userController.js';
 import { authenticate } from '../middleware/auth.js';
@@ -15,6 +16,17 @@ import { uploadSingle } from '../middleware/upload.js';
 const router = Router();
 
 router.use(authenticate);
+
+// Friends & Tribes (Social)
+router.get('/friends/list', getFriendsList);
+router.get('/friends/search', searchFriends);
+router.get('/friends/:id/status', checkUserFollow);
+router.get('/:id/follow-status', checkUserFollow);
+router.post('/friends/:id/follow', followUser);
+router.delete('/friends/:id/follow', unfollowUser);
+router.post('/:id/follow', followUser);
+router.delete('/:id/follow', unfollowUser);
+
 
 // Profile
 router.get('/profile', getProfile);

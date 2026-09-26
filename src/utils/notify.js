@@ -1,6 +1,6 @@
 import pool from '../config/db.js';
 
-const VALID_TYPES = new Set(['ticket', 'reminder', 'update', 'price_change', 'announcement', 'system', 'marketing', 'payment', 'refund', 'info', 'account', 'withdrawal', 'support', 'event']);
+const VALID_TYPES = new Set(['ticket', 'reminder', 'update', 'price_change', 'announcement', 'system', 'marketing', 'payment', 'refund', 'info', 'account', 'withdrawal', 'support', 'event', 'social', 'invite']);
 
 /**
  * Insert a notification for a user.

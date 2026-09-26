@@ -2,6 +2,8 @@ import bcrypt from 'bcryptjs';
 import pool from '../config/db.js';
 import { logAudit } from '../utils/audit.js';
 import { validatePassword } from '../utils/password.js';
+import { sendNotification } from '../utils/notify.js';
+
 
 /* ------------------------------------------------------------------ */
 /* Notification preference helpers                                     */
@@ -737,10 +739,161 @@ export const deleteReview = async (req, res) => {
   }
 };
 
+/* ------------------------------------------------------------------ */
+/* Social: Follow Friends & Cliq Connections                           */
+/* ------------------------------------------------------------------ */
+export const followUser = async (req, res) => {
+  try {
+    const followerId = req.user.id;
+    const followingId = Number(req.params.id || req.body.userId);
+    if (!followingId || isNaN(followingId)) return res.status(400).json({ message: 'Valid user ID required' });
+    if (followerId === followingId) return res.status(400).json({ message: 'You cannot follow yourself' });
+
+    const [targetUser] = await pool.execute('SELECT id, name FROM users WHERE id = ?', [followingId]);
+    if (!targetUser.length) return res.status(404).json({ message: 'User not found' });
+
+    await pool.execute(
+      'INSERT INTO user_follows (follower_id, following_id) VALUES (?, ?) ON CONFLICT DO NOTHING',
+      [followerId, followingId],
+    );
+
+    sendNotification({
+      userId: followingId,
+      title: 'New Tribe Member',
+      message: `${req.user.name || 'A user'} started following you on Tribes & Cliqs!`,
+      type: 'social',
+    }).catch(() => {});
+
+    res.status(201).json({
+      message: `Now following ${targetUser[0].name}`,
+      following: true,
+      isFollowing: true,
+      targetUserId: followingId,
+    });
+
+  } catch (err) {
+    console.error('[userController.followUser]', err);
+    res.status(500).json({ message: 'Server error following user' });
+  }
+};
+
+export const unfollowUser = async (req, res) => {
+  try {
+    const followerId = req.user.id;
+    const followingId = Number(req.params.id || req.body.userId);
+    if (!followingId || isNaN(followingId)) return res.status(400).json({ message: 'Valid user ID required' });
+
+    await pool.execute(
+      'DELETE FROM user_follows WHERE follower_id = ? AND following_id = ?',
+      [followerId, followingId],
+    );
+    res.json({
+      message: 'Unfollowed successfully',
+      following: false,
+      isFollowing: false,
+      targetUserId: followingId,
+    });
+  } catch (err) {
+    console.error('[userController.unfollowUser]', err);
+    res.status(500).json({ message: 'Server error unfollowing user' });
+  }
+};
+
+export const checkUserFollow = async (req, res) => {
+  try {
+    const followerId = req.user?.id;
+    const followingId = Number(req.params.id);
+    if (!followerId || !followingId) return res.json({ following: false, isFollowing: false });
+
+    const [rows] = await pool.execute(
+      'SELECT id FROM user_follows WHERE follower_id = ? AND following_id = ?',
+      [followerId, followingId],
+    );
+    const isFoll = rows.length > 0;
+    res.json({ following: isFoll, isFollowing: isFoll });
+  } catch (err) {
+    console.error('[userController.checkUserFollow]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const getFriendsList = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    // Users that current user follows (friends)
+    const [followingRows] = await pool.execute(
+      `SELECT u.id, u.name, u.email, COALESCE(u.avatar_url, u.avatar) AS avatar, u.role, uf.created_at AS followed_at
+       FROM user_follows uf
+       JOIN users u ON u.id = uf.following_id
+       WHERE uf.follower_id = ?
+       ORDER BY uf.created_at DESC`,
+      [userId],
+    );
+
+    // Users following current user
+    const [followerRows] = await pool.execute(
+      `SELECT u.id, u.name, u.email, COALESCE(u.avatar_url, u.avatar) AS avatar, u.role, uf.created_at AS followed_at
+       FROM user_follows uf
+       JOIN users u ON u.id = uf.follower_id
+       WHERE uf.following_id = ?
+       ORDER BY uf.created_at DESC`,
+      [userId],
+    );
+
+    res.json({
+      following: followingRows,
+      followers: followerRows,
+      counts: {
+        following: followingRows.length,
+        followers: followerRows.length,
+      },
+    });
+  } catch (err) {
+    console.error('[userController.getFriendsList]', err);
+    res.status(500).json({ message: 'Server error fetching friends' });
+  }
+};
+
+export const searchFriends = async (req, res) => {
+  try {
+    const q = (req.query.q || '').trim().toLowerCase();
+    const currentUserId = req.user.id;
+    if (!q) {
+      const [rows] = await pool.execute(
+        `SELECT u.id, u.name, u.email, COALESCE(u.avatar_url, u.avatar) AS avatar, u.role,
+                EXISTS(SELECT 1 FROM user_follows WHERE follower_id = ? AND following_id = u.id) AS is_following
+         FROM users u
+         WHERE u.id <> ? AND u.status = 'active'
+         LIMIT 20`,
+        [currentUserId, currentUserId],
+      );
+      return res.json({ users: rows });
+    }
+
+    const [rows] = await pool.execute(
+      `SELECT u.id, u.name, u.email, COALESCE(u.avatar_url, u.avatar) AS avatar, u.role,
+              EXISTS(SELECT 1 FROM user_follows WHERE follower_id = ? AND following_id = u.id) AS is_following
+       FROM users u
+       WHERE u.id <> ? AND u.status = 'active' AND (LOWER(u.name) LIKE ? OR LOWER(u.email) LIKE ?)
+       LIMIT 20`,
+      [currentUserId, currentUserId, `%${q}%`, `%${q}%`],
+    );
+    res.json({ users: rows });
+  } catch (err) {
+    console.error('[userController.searchFriends]', err);
+    res.status(500).json({ message: 'Server error searching friends' });
+  }
+};
+
 export default {
   getProfile, updateProfile, changePassword,
   getNotifications, markNotificationRead, markAllNotificationsRead, deleteNotification,
   getFavorites, toggleFavorite,
   followOrganizer, unfollowOrganizer, getFollowing, getFollowingEvents,
+  followArtist, unfollowArtist, getFollowedArtists, checkArtistFollowStatus,
+  followCategory, unfollowCategory, getFollowedCategories, checkCategoryFollowStatus,
+  getFollowingSummary,
+  followUser, unfollowUser, checkUserFollow, getFriendsList, searchFriends,
   getReviews, createReview, deleteReview,
 };
+

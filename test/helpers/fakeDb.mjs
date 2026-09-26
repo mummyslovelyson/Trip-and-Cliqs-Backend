@@ -22,6 +22,7 @@ export function createFakeDb() {
     pending_registrations: 1, system_settings: 1,
     uploaded_tickets: 1, wallet_transactions: 1, event_views: 1, search_history: 1,
     artist_follows: 1, category_follows: 1, event_reminders: 1,
+    user_follows: 1, event_invites: 1, meetup_messages: 1, event_discussions: 1,
   };
   const tables = {
     users: [], events: [], ticket_types: [], notifications: [],
@@ -35,6 +36,7 @@ export function createFakeDb() {
     pending_registrations: [], system_settings: [],
     uploaded_tickets: [], wallet_transactions: [], event_views: [], search_history: [],
     artist_follows: [], category_follows: [], event_reminders: [],
+    user_follows: [], event_invites: [], meetup_messages: [], event_discussions: [],
   };
 
   const nowIso = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
@@ -289,6 +291,39 @@ export function createFakeDb() {
         return { ...l, seller_name: u?.name ?? null, seller_avatar: u?.avatar ?? null };
       });
     }
+
+    // JOIN users u ON u.id = t.user_id (tickets & attendees)
+    if (/JOIN\s+users\s+u\s+ON\s+u\.id\s*=\s*t\.user_id/i.test(sql)) {
+      rows = rows.map((t) => {
+        const u = tables.users.find((x) => x.id === t.user_id);
+        return {
+          ...t,
+          id: u?.id ?? t.user_id,
+          name: u?.name ?? null,
+          avatar: u?.avatar ?? null,
+          role: u?.role ?? 'attendee',
+        };
+      });
+    }
+
+    // JOIN users u ON u.id = uf.following_id or follower_id (friends & tribes)
+    if (/JOIN\s+users\s+u\s+ON\s+u\.id\s*=\s*uf\.(following_id|follower_id)/i.test(sql)) {
+      const isFollowing = /uf\.following_id/i.test(sql);
+      rows = rows.map((uf) => {
+        const targetId = isFollowing ? uf.following_id : uf.follower_id;
+        const u = tables.users.find((x) => x.id === targetId);
+        return {
+          ...uf,
+          id: u?.id ?? targetId,
+          name: u?.name ?? null,
+          email: u?.email ?? null,
+          avatar: u?.avatar ?? null,
+          role: u?.role ?? 'attendee',
+        };
+      });
+    }
+
+
 
     // JOIN events e ON e.id = <main>.event_id → merge event fields.
     if (/JOIN\s+events\s+e\s+ON\s+e\.id\s*=\s*(\w+)\.event_id/i.test(sql)) {
