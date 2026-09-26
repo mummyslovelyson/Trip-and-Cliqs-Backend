@@ -284,7 +284,7 @@ export const generateTicketsForOrder = async (orderId) => {
 /* ------------------------------------------------------------------ */
 /* Internal: mark an order completed, generate tickets and notify      */
 /* ------------------------------------------------------------------ */
-async function completeOrder(orderId, reference) {
+export async function completeOrder(orderId, reference) {
   // Atomically claim the completion. The Paystack webhook and the browser
   // callback can fire within the same second; without this guard both would
   // see 'pending' and mint duplicate tickets.
