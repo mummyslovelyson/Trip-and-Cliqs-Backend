@@ -1587,7 +1587,7 @@ export const createAgentBookingHoldHandler = async (req, res) => {
       callbackUrl,
     });
 
-    res.json(holdData);
+    res.json({ success: true, booking: holdData, ...holdData });
   } catch (err) {
     console.error('[createAgentBookingHoldHandler]', err);
     res.status(400).json({ message: err.message });
