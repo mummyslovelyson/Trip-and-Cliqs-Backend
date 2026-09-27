@@ -874,6 +874,19 @@ export const handleChatMessage = async (req, res) => {
         });
       }
 
+      if (pendingBooking.status === 'reserved' && pendingBooking.authorizationUrl) {
+        return res.json({
+          reply: `Your tickets for **${pendingBooking.eventTitle || 'the event'}** are reserved! Please tap **Confirm & Pay** below to finalize your Mobile Money or Card payment:`,
+          intent: 'PAYMENT_PENDING',
+          booking: pendingBooking,
+          actions: [
+            { type: 'PAY_NOW', label: `Confirm & Pay GHS ${Number(pendingBooking.total || 0).toFixed(2)}`, url: pendingBooking.authorizationUrl },
+            { type: 'VERIFY_PAYMENT', label: 'I Have Paid / Verify Payment', reference: pendingBooking.reference },
+          ],
+          suggestions: ['I have paid', 'Contact Support'],
+        });
+      }
+
       const targetEventId = pendingBooking.eventId || eventId;
       const targetTierId = pendingBooking.tierId;
       const targetQty = pendingBooking.quantity || 1;
@@ -1137,13 +1150,34 @@ export const handleChatMessage = async (req, res) => {
     }
 
     // =========================================================================
-    // 8. BOOKING: SELECT TICKET & IN-CHAT ORDER SUMMARY
+    // 8. AUTONOMOUS BOOKING: SEARCH THROUGH, SELECT TICKET & PREPARE PAYMENT
     // =========================================================================
-    const isBookingIntent =
+    const wantsExplicitBooking =
       lower.includes('book') ||
       lower.includes('buy ticket') ||
+      lower.includes('buy tickets') ||
       lower.includes('reserve ticket') ||
-      lower.includes('get ticket');
+      lower.includes('reserve tickets') ||
+      lower.includes('purchase ticket') ||
+      lower.includes('purchase tickets') ||
+      lower.includes('purchase') ||
+      lower.includes('get ticket') ||
+      lower.includes('get tickets') ||
+      lower.includes('ticket for') ||
+      lower.includes('tickets for');
+
+    const wantsAttendance =
+      lower.includes('attend') ||
+      lower.includes('attends') ||
+      lower.includes('attending') ||
+      lower.includes('go to') ||
+      lower.includes('going to') ||
+      lower.includes('want to go') ||
+      lower.includes('take me to') ||
+      ((lower.includes('kumasi') || lower.includes('accra')) &&
+        (lower.includes('want') || lower.includes('need') || lower.includes('find me') || lower.includes('get me') || lower.includes('show')));
+
+    const isBookingIntent = wantsExplicitBooking || wantsAttendance;
 
     if (isBookingIntent) {
       // Find candidate event: either activeEvent, or matching title in message, or candidate search
@@ -1162,12 +1196,74 @@ export const handleChatMessage = async (req, res) => {
       const reqTierName = extractTierName(rawMessage);
       const reqQty = extractQuantity(rawMessage) || 1;
 
-      if (!targetEv && (reqCity || lower.includes('concert') || lower.includes('party'))) {
-        const matchingEvs = await searchEvents({
-          city: reqCity,
-          maxPrice: reqBudget,
-          ticketType: reqTierName || '',
-        });
+      // Extract date if mentioned
+      let reqStartDate = '';
+      let reqEndDate = '';
+      if (lower.includes('this weekend') || lower.includes('the weekend')) {
+        const wk = getWeekendRange();
+        reqStartDate = wk.start;
+        reqEndDate = wk.end;
+      } else if (lower.includes('next friday')) {
+        reqStartDate = getNextDayOfWeekDate(5);
+        reqEndDate = reqStartDate;
+      } else if (lower.includes('today') || lower.includes('tonight')) {
+        reqStartDate = new Date().toISOString().slice(0, 10);
+        reqEndDate = reqStartDate;
+      } else if (lower.includes('tomorrow')) {
+        const d = new Date();
+        d.setDate(d.getDate() + 1);
+        reqStartDate = d.toISOString().slice(0, 10);
+        reqEndDate = reqStartDate;
+      }
+
+      // Extract category
+      let reqCat = '';
+      if (lower.includes('concert') || lower.includes('music') || lower.includes('afrobeat') || lower.includes('amapiano') || lower.includes('rave')) reqCat = 'Music';
+      else if (lower.includes('comedy') || lower.includes('standup')) reqCat = 'Comedy';
+      else if (lower.includes('tech') || lower.includes('technology')) reqCat = 'Technology';
+      else if (lower.includes('business') || lower.includes('networking')) reqCat = 'Business';
+      else if (lower.includes('party') || lower.includes('nightlife')) reqCat = 'Party';
+
+      // Targeted search across cities (e.g. Kumasi or Accra)
+      const citiesToSearch = [];
+      if (lower.includes('kumasi')) citiesToSearch.push('Kumasi');
+      if (lower.includes('accra') || lower.includes('osu') || lower.includes('east legon')) citiesToSearch.push('Accra');
+      if (lower.includes('takoradi')) citiesToSearch.push('Takoradi');
+      if (lower.includes('tamale')) citiesToSearch.push('Tamale');
+      if (citiesToSearch.length === 0 && reqCity) citiesToSearch.push(reqCity);
+      if (citiesToSearch.length === 0) citiesToSearch.push('Kumasi', 'Accra');
+
+      let matchingEvs = [];
+      if (!targetEv) {
+        for (const city of citiesToSearch) {
+          const res = await searchEvents({
+            city,
+            category: reqCat,
+            startDate: reqStartDate,
+            endDate: reqEndDate,
+            maxPrice: reqBudget,
+            ticketType: reqTierName || '',
+          });
+          if (res.length > 0) {
+            matchingEvs.push(...res);
+          }
+        }
+
+        // Fallback: search any upcoming events in target cities
+        if (matchingEvs.length === 0 && citiesToSearch.length > 0) {
+          for (const city of citiesToSearch) {
+            const res = await searchEvents({ city });
+            if (res.length > 0) {
+              matchingEvs.push(...res);
+            }
+          }
+        }
+
+        // Fallback to live published events
+        if (matchingEvs.length === 0 && liveEvents.length > 0) {
+          matchingEvs = liveEvents;
+        }
+
         if (matchingEvs.length > 0) {
           targetEv = await getSingleEventContext(matchingEvs[0].id);
         }
@@ -1175,16 +1271,20 @@ export const handleChatMessage = async (req, res) => {
 
       if (targetEv) {
         const tiers = targetEv.ticket_tiers || [];
+        const availableTiers = tiers.filter((t) => (Number(t.quantity) - Number(t.quantity_sold)) > 0);
         let selectedTier = null;
 
         if (reqTierName) {
-          selectedTier = tiers.find((t) => t.name.toLowerCase().includes(reqTierName.toLowerCase()));
+          selectedTier = availableTiers.find((t) => t.name.toLowerCase().includes(reqTierName.toLowerCase()));
         }
         if (!selectedTier) {
-          selectedTier = tiers.find((t) => lower.includes(t.name.toLowerCase()));
+          selectedTier = availableTiers.find((t) => lower.includes(t.name.toLowerCase()));
         }
-
-        // If tier not specified and multiple tiers exist, pick first or prompt
+        // Prefer lowest price / Regular tier
+        if (!selectedTier && availableTiers.length > 0) {
+          const sorted = [...availableTiers].sort((a, b) => Number(a.price) - Number(b.price));
+          selectedTier = sorted[0];
+        }
         if (!selectedTier && tiers.length > 0) {
           selectedTier = tiers[0];
         }
@@ -1228,15 +1328,41 @@ export const handleChatMessage = async (req, res) => {
             ? ` I have also scheduled an event reminder for you 1 day before the show.`
             : '';
 
+          const eventCards = (matchingEvs.length > 0 ? matchingEvs : [targetEv]).slice(0, 3).map((e) => ({
+            id: e.id,
+            title: e.title,
+            image: e.banner_image,
+            date: e.start_date,
+            time: e.start_time,
+            venue: e.venue,
+            city: e.city,
+            category: e.category,
+            minPrice: Number(e.min_price || selectedTier.price || 0),
+          }));
+
+          const isVoiceMode = mode === 'voice' || context.mode === 'voice' || context.isVoice;
+          const intentToUse = (lower.includes('this weekend') && !wantsExplicitBooking && !reqTierName)
+            ? 'SEARCH_EVENTS'
+            : 'BOOKING_SUMMARY';
+
+          const voiceReply = `I found ${targetEv.title} in ${targetEv.city || 'Ghana'}. I've prepared your order for ${reqQty} ${selectedTier.name} ticket for GHS ${total.toFixed(2)}. Say confirm or tap Confirm & Pay below to complete your payment!`;
+          const chatReply = `I've searched through events in **${targetEv.city || 'Ghana'}** and selected **${targetEv.title}** for you! I have prepared your ticket order for **${reqQty} × ${selectedTier.name}** tickets.${reminderNote}\n\n• **Event:** ${targetEv.title}\n• **Date:** ${targetEv.start_date} ${targetEv.start_time ? 'at ' + targetEv.start_time : ''}\n• **Venue:** ${targetEv.venue || targetEv.city}\n• **${reqQty} × ${selectedTier.name}** — GHS ${subtotal.toFixed(2)}\n• **Subtotal:** GHS ${subtotal.toFixed(2)}\n• **Service Fee:** GHS ${serviceFee.toFixed(2)}\n──────────────────\n• **Total:** **GHS ${total.toFixed(2)}**\n\nYour tickets can be reserved for 10 minutes once confirmed. Please review and tap **Confirm & Pay** below to proceed:`;
+
           return res.json({
-            reply: `I've prepared your order for **${targetEv.title}**! **${reqQty} × ${selectedTier.name}** tickets are available at **GHS ${unitPrice.toFixed(2)}** each.${reminderNote}\n\n**${reqQty} × ${selectedTier.name}** — GHS ${subtotal.toFixed(2)}\n**Service fee** — GHS ${serviceFee.toFixed(2)}\n──────────────────\n**Total:** **GHS ${total.toFixed(2)}**\n\nYour tickets can be reserved for 10 minutes once confirmed. Please review and tap **Confirm & Pay** below to proceed:`,
-            intent: 'BOOKING_SUMMARY',
+            reply: isVoiceMode ? voiceReply : chatReply,
+            intent: intentToUse,
             booking: bookingSummary,
+            events: eventCards,
             actions: [
               { type: 'CONTINUE_PAYMENT', label: `Confirm & Pay GHS ${total.toFixed(2)}`, data: bookingSummary },
+              user ? null : { type: 'NAVIGATE', label: 'Log In to Confirm Order', path: '/login' },
               { type: 'NAVIGATE', label: 'View Full Event Page', path: `/events/${targetEv.id}` },
+            ].filter(Boolean),
+            suggestions: [
+              `Confirm & Pay GHS ${total.toFixed(2)}`,
+              'Change ticket quantity',
+              'Check refund policy',
             ],
-            suggestions: [`Confirm & Pay GHS ${total.toFixed(2)}`, 'Change ticket quantity', 'Check refund policy'],
           });
         }
       }

@@ -152,3 +152,35 @@ test('Cliq AI: Security - Strictly rejects unverified "I have paid" claim', asyn
   assert.ok(jsonOutput);
   assert.notEqual(jsonOutput.intent, 'PAYMENT_CONFIRMED', 'Unverified payment must never be marked confirmed');
 });
+
+test('Cliq AI: Autonomous attend request in Kumasi or Accra searches, secures reservation hold, and prepares payment confirmation', async () => {
+  const [users] = await pool.execute("SELECT id, name, email FROM users LIMIT 1");
+  const testUser = users && users.length > 0 ? users[0] : { id: 1, name: 'Kofi Manu', email: 'kofi@example.com' };
+
+  let jsonOutput = null;
+  const req = {
+    body: {
+      message: 'I want to attend an event at Kumasi or Accra',
+      conversationHistory: [],
+      mode: 'voice',
+    },
+    user: testUser,
+  };
+  const res = {
+    json: (d) => { jsonOutput = d; return d; },
+    status: () => res,
+  };
+
+  await handleChatMessage(req, res);
+  assert.ok(jsonOutput, 'Expected JSON response');
+  assert.ok(jsonOutput.reply, 'Expected reply message');
+  assert.ok(
+    jsonOutput.booking.status === 'summary' || jsonOutput.booking.status === 'reserved',
+    'Expected order summary or hold reservation'
+  );
+  assert.ok(jsonOutput.booking.total > 0, 'Expected positive total amount');
+  assert.ok(
+    jsonOutput.actions.some((a) => a.type === 'PAY_NOW' || a.type === 'CONTINUE_PAYMENT'),
+    'Expected payment confirmation action'
+  );
+});
