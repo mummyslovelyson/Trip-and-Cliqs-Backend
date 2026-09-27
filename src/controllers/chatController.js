@@ -1,4 +1,25 @@
 import pool from '../config/db.js';
+import agentTools, {
+  search_events,
+  get_event_details,
+  get_ticket_types,
+  check_ticket_availability,
+  calculate_order_total,
+  get_payment_methods,
+  reserve_tickets,
+  create_order,
+  check_payment_status,
+  verify_payment,
+  issue_ticket,
+  get_user_tickets,
+  get_user_upcoming_events,
+  get_user_spending,
+  transfer_ticket,
+  cancel_order,
+  request_refund,
+  send_ticket,
+  schedule_event_reminder,
+} from '../services/agentTools.js';
 import {
   rankEventsWithML,
   classifySentimentAndUrgency,
@@ -8,6 +29,8 @@ import { initializeTransaction, verifyTransaction } from '../utils/paystack.js';
 import { sendTicketConfirmationEmail } from '../utils/email.js';
 import { sendTicketConfirmationSMS } from '../utils/sms.js';
 import { completeOrder } from './orderController.js';
+
+export { agentTools };
 
 const getGeminiApiKey = () => process.env.GEMINI_API_KEY || '';
 const GEMINI_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-flash-latest'];
@@ -190,7 +213,7 @@ async function getUserTicketsContext(userId, limit = 5) {
 /**
  * Monthly spending aggregation
  */
-async function getUserMonthlySpending(userId) {
+export async function getUserMonthlySpending(userId) {
   if (!userId) return null;
   try {
     const now = new Date();
@@ -228,7 +251,7 @@ async function getUserMonthlySpending(userId) {
 /**
  * Next upcoming event for attendee
  */
-async function getUserNextUpcomingEvent(userId) {
+export async function getUserNextUpcomingEvent(userId) {
   if (!userId) return null;
   try {
     const today = new Date().toISOString().slice(0, 10);
@@ -334,7 +357,7 @@ async function getAITrainingContext() {
 /**
  * Parameterized Event Search in database
  */
-async function searchEvents({
+export async function searchEvents({
   query = '',
   category = '',
   city = '',
@@ -458,9 +481,9 @@ export async function createAgentBookingHold({ userId, eventId, ticketTypeId, qu
   const orderId = orderResult.insertId;
 
   await pool.execute(
-    `INSERT INTO order_items (order_id, ticket_type_id, quantity, unit_price)
-     VALUES (?, ?, ?, ?)`,
-    [orderId, ticketTypeId, quantity, unitPrice]
+    `INSERT INTO order_items (order_id, ticket_type_id, quantity, unit_price, subtotal)
+     VALUES (?, ?, ?, ?, ?)`,
+    [orderId, ticketTypeId, quantity, unitPrice, subtotal]
   );
 
   let authorizationUrl = null;
@@ -829,6 +852,11 @@ export const handleChatMessage = async (req, res) => {
     // 2. CONTINUE TO PAYMENT / RESERVATION HOLD (10-minute countdown)
     // =========================================================================
     const wantsContinuePayment =
+      lower === 'yes' ||
+      lower.startsWith('yes,') ||
+      lower.includes('confirm') ||
+      lower.includes('confirm & pay') ||
+      lower.includes('confirm and pay') ||
       lower.includes('continue to payment') ||
       lower.includes('proceed to pay') ||
       lower.includes('proceed to payment') ||
@@ -860,14 +888,14 @@ export const handleChatMessage = async (req, res) => {
         });
 
         return res.json({
-          reply: `Your **${holdData.quantity} × ${holdData.tierName}** tickets for **${holdData.eventTitle}** have been reserved for **10 minutes**.\n\nPlease complete payment below using Mobile Money (MTN MoMo, Telecel Cash, AT Money) or Card.`,
+          reply: `I've selected **${holdData.quantity} × ${holdData.tierName}** tickets and prepared your order for **${holdData.eventTitle}**. The total is **GHS ${holdData.total.toFixed(2)}**.\n\nYour tickets are reserved for **10 minutes**. I've prepared the payment. Please review and complete your payment below:`,
           intent: 'PAYMENT_PENDING',
           booking: {
             ...holdData,
             status: 'reserved',
           },
           actions: [
-            holdData.authorizationUrl ? { type: 'PAY_NOW', label: `Pay GHS ${holdData.total.toFixed(2)} with Paystack / MoMo`, url: holdData.authorizationUrl } : null,
+            holdData.authorizationUrl ? { type: 'PAY_NOW', label: `Confirm & Pay GHS ${holdData.total.toFixed(2)}`, url: holdData.authorizationUrl } : null,
             { type: 'VERIFY_PAYMENT', label: 'I Have Paid / Verify Payment', reference: holdData.reference },
           ].filter(Boolean),
           suggestions: ['I have paid', 'What happens if timer expires?', 'Contact Support'],
@@ -1000,7 +1028,7 @@ export const handleChatMessage = async (req, res) => {
 
     if (wantsRefund) {
       return res.json({
-        reply: `If you cannot attend anymore, Tribes & Cliqs offers two options:\n\n1. **Official Refund:** Organizers process refunds for eligible requests submitted prior to the event cut-off.\n2. **Verified Resale:** You can list your ticket on our marketplace to recover your money instantly!\n\nClick below to open your tickets and choose an option.`,
+        reply: `If you cannot attend, Tribes & Cliqs offers two verified options:\n\n1. **Official Refund:** Organizers process refunds for eligible requests submitted prior to the event cut-off.\n2. **Verified Resale:** You can list your ticket on our marketplace to recover your money instantly!\n\nClick below to open your tickets and choose an option.`,
         intent: 'REFUND_INFO',
         actions: [
           { type: 'NAVIGATE', label: 'Manage Tickets & Request Refund', path: '/attendee/tickets' },
@@ -1024,6 +1052,87 @@ export const handleChatMessage = async (req, res) => {
         intent: 'TRANSFER',
         actions: [{ type: 'NAVIGATE', label: 'Go to My Tickets', path: '/attendee/tickets' }],
         suggestions: ['Show my tickets', 'Can I resell my ticket?', 'Contact Support'],
+      });
+    }
+
+    // =========================================================================
+    // 7.1. AFTER-SALES: EVENT REMINDER SCHEDULING ("remind me one day before")
+    // =========================================================================
+    const wantsReminder =
+      lower.includes('remind me') ||
+      lower.includes('set a reminder') ||
+      lower.includes('schedule a reminder') ||
+      lower.includes('set reminder');
+
+    if (wantsReminder) {
+      if (!user) {
+        return res.json({
+          reply: `Please log in to schedule automated reminders for your upcoming events.`,
+          intent: 'NAVIGATE',
+          actions: [{ type: 'NAVIGATE', label: 'Log In', path: '/login' }],
+        });
+      }
+
+      let reminderDays = 1;
+      const dayMatch = lower.match(/([0-9]+)\s*day/);
+      if (dayMatch) reminderDays = parseInt(dayMatch[1], 10);
+      else if (lower.includes('two day') || lower.includes('2 day')) reminderDays = 2;
+      else if (lower.includes('one day') || lower.includes('1 day')) reminderDays = 1;
+
+      let targetEventId = eventId || context.booking?.eventId;
+      if (!targetEventId) {
+        const nextEv = await get_user_upcoming_events({ userId: user.id });
+        if (nextEv) targetEventId = nextEv.eventId;
+      }
+
+      if (targetEventId) {
+        const rem = await schedule_event_reminder({
+          eventId: targetEventId,
+          userId: user.id,
+          daysBefore: reminderDays,
+        });
+        return res.json({
+          reply: `Reminder set! I will notify you **${reminderDays === 1 ? '1 day' : `${reminderDays} days`}** before **${rem.eventTitle}**. You will receive an in-app alert!`,
+          intent: 'REMINDER_SET',
+          suggestions: ['Show my active tickets', 'When is my next event?'],
+        });
+      }
+    }
+
+    // =========================================================================
+    // 7.2. AFTER-SALES: WHAT EVENTS AM I ATTENDING THIS MONTH?
+    // =========================================================================
+    const wantsEventsThisMonth =
+      lower.includes('what events am i attending') ||
+      lower.includes('events am i attending') ||
+      lower.includes('events this month') ||
+      lower.includes('what events am i going to');
+
+    if (wantsEventsThisMonth) {
+      if (!user) {
+        return res.json({
+          reply: `Please log in to check the events you are attending this month.`,
+          intent: 'NAVIGATE',
+          actions: [{ type: 'NAVIGATE', label: 'Log In', path: '/login' }],
+        });
+      }
+
+      const tickets = await get_user_tickets({ userId: user.id, limit: 10 });
+      if (tickets.length === 0) {
+        return res.json({
+          reply: `You don't have any tickets booked for this month yet, **${user.name || ''}**. Want me to find concerts happening in Kumasi or Accra this weekend?`,
+          intent: 'GET_TICKETS',
+          suggestions: ['Concerts in Kumasi this weekend', 'Concerts in Accra', 'Free events'],
+        });
+      }
+
+      const eventsList = tickets.map((t) => `• **${t.event_title}** — ${t.start_date} at ${t.event_venue || t.event_city} (${t.ticket_type_name})`).join('\n');
+      return res.json({
+        reply: `Here are the events you're attending this month, **${user.name || ''}**:\n\n${eventsList}\n\nYour QR passes are available in **My Tickets**.`,
+        intent: 'GET_TICKETS',
+        tickets,
+        actions: [{ type: 'NAVIGATE', label: 'View All in My Tickets', path: '/attendee/tickets' }],
+        suggestions: ['When is my next event?', 'Transfer a ticket', 'How much have I spent on events this month?'],
       });
     }
 
@@ -1103,17 +1212,31 @@ export const handleChatMessage = async (req, res) => {
             subtotal,
             serviceFee,
             total,
+            paymentMethod: 'MTN MoMo',
           };
 
+          const wantsReminderWithBooking = lower.includes('remind me');
+          if (wantsReminderWithBooking && user?.id) {
+            schedule_event_reminder({
+              eventId: targetEv.id,
+              userId: user.id,
+              daysBefore: 1,
+            }).catch(() => {});
+          }
+
+          const reminderNote = wantsReminderWithBooking
+            ? ` I have also scheduled an event reminder for you 1 day before the show.`
+            : '';
+
           return res.json({
-            reply: `Got it. **${reqQty} × ${selectedTier.name}** ticket${reqQty === 1 ? '' : 's'} are available at **GHS ${unitPrice.toFixed(2)}** each for **${targetEv.title}**.\n\n**${reqQty} × ${selectedTier.name}**\n**Unit Price:** GHS ${unitPrice.toFixed(2)}\n──────────────────\n**Subtotal:** GHS ${subtotal.toFixed(2)}\n**Service Fee:** GHS ${serviceFee.toFixed(2)}\n**Total:** GHS ${total.toFixed(2)}\n\nClick **Continue to Payment** below to reserve your tickets for 10 minutes and complete checkout.`,
+            reply: `I've prepared your order for **${targetEv.title}**! **${reqQty} × ${selectedTier.name}** tickets are available at **GHS ${unitPrice.toFixed(2)}** each.${reminderNote}\n\n**${reqQty} × ${selectedTier.name}** — GHS ${subtotal.toFixed(2)}\n**Service fee** — GHS ${serviceFee.toFixed(2)}\n──────────────────\n**Total:** **GHS ${total.toFixed(2)}**\n\nYour tickets can be reserved for 10 minutes once confirmed. Please review and tap **Confirm & Pay** below to proceed:`,
             intent: 'BOOKING_SUMMARY',
             booking: bookingSummary,
             actions: [
-              { type: 'CONTINUE_PAYMENT', label: 'Continue to Payment', data: bookingSummary },
+              { type: 'CONTINUE_PAYMENT', label: `Confirm & Pay GHS ${total.toFixed(2)}`, data: bookingSummary },
               { type: 'NAVIGATE', label: 'View Full Event Page', path: `/events/${targetEv.id}` },
             ],
-            suggestions: ['Continue to Payment', 'Change ticket quantity', 'Check refund policy'],
+            suggestions: [`Confirm & Pay GHS ${total.toFixed(2)}`, 'Change ticket quantity', 'Check refund policy'],
           });
         }
       }
@@ -1268,9 +1391,19 @@ export const handleChatMessage = async (req, res) => {
       `• [ID: ${e.id}] "${e.title}" | Date: ${e.start_date} ${e.start_time || ''} | Venue: ${e.venue || e.city} | Category: ${e.category} | From: GHS ${e.min_price}`
     ).join('\n');
 
-    const systemInstruction = `You are Cliqs Agent, the official AI Booking Agent for Tribes & Cliqs.
-You help users discover events, choose ticket tiers, make reservations, verify payments, and handle after-sales.
-Be concise (2-3 sentences), warm, accurate, and actionable. Do NOT use emojis.
+    const systemInstruction = `You are Cliq AI, your personal event booking assistant for Tribes & Cliqs.
+Motto: Tell Cliq what you want, and Cliq handles the rest.
+You help users through the complete conversational event lifecycle:
+1. Identify event desires: category, city (e.g. Accra, Kumasi), dates (weekends, next Friday), budget, ticket tier (VIP, VVIP, Regular), and quantity.
+2. Search live events and check ticket inventory & availability.
+3. Make personalized recommendations.
+4. Prepare orders with line-item breakdowns and 10-minute ticket reservations.
+5. Guide the user to confirm their order and complete Paystack / Mobile Money payment.
+6. Verify transactions via the backend gateway.
+7. Issue tickets with unique QR entry passes.
+8. Handle after-sales: show tickets, calculate spending, transfer passes, request refunds, and schedule event reminders.
+Tone: Warm, efficient, polite, concise (2-3 sentences max).
+Do NOT use emojis in raw text output.
 Current User: ${user ? `${user.name} (${user.email})` : 'Guest User'}.
 Available Events:
 ${liveEventsSummary || 'None'}`;
