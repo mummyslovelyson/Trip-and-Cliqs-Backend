@@ -423,7 +423,8 @@ export const getUserTickets = async (req, res) => {
     const [rows] = await pool.execute(
       `SELECT t.*, tt.name AS ticket_type_name, tt.price AS ticket_price,
               COALESCE(oi.unit_price, tt.price, 0) AS unit_price,
-              e.title AS event_title, e.venue AS event_venue, e.city AS event_city, e.start_date, e.start_time,
+              e.title AS event_title, e.venue AS event_venue, e.city AS event_city,
+              e.start_date, e.end_date, e.start_time, e.end_time, e.status AS event_status,
               e.banner_image, e.ticket_template,
               COALESCE(t.attendee_name, u.name) AS attendee_name,
               COALESCE(t.attendee_email, u.email) AS attendee_email,
@@ -1026,13 +1027,24 @@ export const getTickets = async (req, res) => {
     const [countRows] = await pool.execute(`SELECT COUNT(*) AS total FROM tickets t ${where}`, params);
 
     const [rows] = await pool.execute(
-      `SELECT t.*, tt.name AS ticket_type_name, e.title AS event_title,
-              e.venue AS event_venue, e.start_date, e.start_time, e.banner_image,
-              u.name AS owner_name, u.email AS owner_email
+      `SELECT t.*, tt.name AS ticket_type_name, tt.price AS ticket_price,
+              COALESCE(oi.unit_price, tt.price, 0) AS unit_price,
+              e.title AS event_title, e.venue AS event_venue, e.city AS event_city,
+              e.start_date, e.end_date, e.start_time, e.end_time, e.status AS event_status,
+              e.banner_image, e.ticket_template,
+              COALESCE(t.attendee_name, u.name) AS attendee_name,
+              COALESCE(t.attendee_email, u.email) AS attendee_email,
+              COALESCE(t.attendee_phone, u.phone) AS attendee_phone,
+              u.name AS owner_name, u.email AS owner_email,
+              o.id AS order_id, o.payment_reference, o.payment_method, o.payment_status,
+              o.invoice_number, o.discount_amount AS order_discount, o.total_amount AS order_total,
+              o.created_at AS order_created_at
        FROM tickets t
-       JOIN ticket_types tt ON tt.id = t.ticket_type_id
-       JOIN events e ON e.id = t.event_id
-       JOIN users u ON u.id = t.user_id
+       LEFT JOIN ticket_types tt ON tt.id = t.ticket_type_id
+       LEFT JOIN order_items oi ON oi.id = t.order_item_id
+       LEFT JOIN orders o ON o.id = oi.order_id
+       LEFT JOIN events e ON e.id = t.event_id
+       LEFT JOIN users u ON u.id = t.user_id
        ${where}
        ORDER BY t.created_at DESC
        LIMIT ${limitNum} OFFSET ${offset}`,

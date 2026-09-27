@@ -22,7 +22,12 @@ router.get('/types/:id/inventory', authenticate, authorize('organizer', 'admin')
 router.delete('/types/:id', authenticate, authorize('organizer', 'admin'), writeLimiter, deleteTicketType);
 
 // Attendee — tickets
-router.get('/', authenticate, getTickets);
+router.get('/', authenticate, (req, res, next) => {
+  if (req.user.role === 'admin' && (req.query.page || req.query.status || req.query.eventId)) {
+    return getTickets(req, res, next);
+  }
+  return getUserTickets(req, res, next);
+});
 router.get('/me', authenticate, getUserTickets);
 router.get('/:id', authenticate, getTicketById);
 router.get('/:id/download', authenticate, downloadTicket);

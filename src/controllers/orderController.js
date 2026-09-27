@@ -897,8 +897,12 @@ export const verifyPayment = async (req, res) => {
     const order = rows[0];
     if (!order) return res.status(404).json({ message: 'Order not found for that reference' });
 
-    if (verifyResult.data.status === 'success' && order.payment_status !== 'completed') {
-      await completeOrder(order.id, reference);
+    if (verifyResult.data.status === 'success') {
+      if (order.payment_status !== 'completed') {
+        await completeOrder(order.id, reference);
+      } else {
+        await generateTicketsForOrder(order.id);
+      }
     }
 
     // Fetch tickets and event data for the completed order so the attendee can view them immediately
@@ -906,13 +910,13 @@ export const verifyPayment = async (req, res) => {
     let eventInfo = null;
 
     try {
-      const [ticketRows] = await pool.execute(
+      let [ticketRows] = await pool.execute(
         `SELECT t.id, t.ticket_number, t.qr_code, t.status, t.seat_number, t.created_at,
                 t.ticket_file_url, t.ticket_file_name,
                 tt.name AS ticket_type_name, COALESCE(oi.unit_price, tt.price, 0) AS price,
                 COALESCE(oi.unit_price, tt.price, 0) AS unit_price,
                 e.id AS event_id, e.title AS event_title, e.venue AS event_venue, e.location AS event_location,
-                e.start_date, e.end_date, e.start_time, e.banner_image, e.ticket_template,
+                e.start_date, e.end_date, e.start_time, e.end_time, e.banner_image, e.ticket_template,
                 u.name AS attendee_name, u.email AS attendee_email
          FROM tickets t
          LEFT JOIN ticket_types tt ON tt.id = t.ticket_type_id
@@ -923,6 +927,28 @@ export const verifyPayment = async (req, res) => {
          ORDER BY t.id ASC`,
         [order.id, order.id],
       );
+
+      if (!ticketRows || ticketRows.length === 0) {
+        await generateTicketsForOrder(order.id);
+        const [refetched] = await pool.execute(
+          `SELECT t.id, t.ticket_number, t.qr_code, t.status, t.seat_number, t.created_at,
+                  t.ticket_file_url, t.ticket_file_name,
+                  tt.name AS ticket_type_name, COALESCE(oi.unit_price, tt.price, 0) AS price,
+                  COALESCE(oi.unit_price, tt.price, 0) AS unit_price,
+                  e.id AS event_id, e.title AS event_title, e.venue AS event_venue, e.location AS event_location,
+                  e.start_date, e.end_date, e.start_time, e.end_time, e.banner_image, e.ticket_template,
+                  u.name AS attendee_name, u.email AS attendee_email
+           FROM tickets t
+           LEFT JOIN ticket_types tt ON tt.id = t.ticket_type_id
+           LEFT JOIN events e ON e.id = t.event_id
+           LEFT JOIN users u ON u.id = t.user_id
+           LEFT JOIN order_items oi ON oi.id = t.order_item_id
+           WHERE oi.order_id = ? OR t.order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)
+           ORDER BY t.id ASC`,
+          [order.id, order.id],
+        );
+        ticketRows = refetched;
+      }
 
       tickets = (ticketRows || []).map((t) => ({
         id: t.id,
