@@ -13,7 +13,7 @@
 const buckets = new Map();
 
 const WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS, 10) || 60_000;
-const MAX = parseInt(process.env.RATE_LIMIT_MAX, 10) || (process.env.NODE_ENV === 'production' ? 120 : 600);
+const MAX = parseInt(process.env.RATE_LIMIT_MAX, 10) || (process.env.NODE_ENV === 'production' ? 300 : 600);
 
 // Sweep stale entries every 2 minutes so memory stays bounded.
 const sweep = setInterval(() => {
