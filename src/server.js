@@ -47,7 +47,7 @@ const SHUTDOWN_TIMEOUT_MS = parseInt(process.env.SHUTDOWN_TIMEOUT_MS, 10) || 30_
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: 'cross-origin' },
-    crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
+    crossOriginOpenerPolicy: { policy: 'unsafe-none' },
     hsts: { maxAge: 15552000, includeSubDomains: true, preload: true },
     contentSecurityPolicy: process.env.NODE_ENV === 'production' ? undefined : false,
     referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
