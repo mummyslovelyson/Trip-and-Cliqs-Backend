@@ -3,6 +3,8 @@ import pool from '../config/db.js';
 import { logAudit } from '../utils/audit.js';
 import textPdf from '../utils/pdf.js';
 import { sendNotification, notifyAdmins } from '../utils/notify.js';
+import { sendTicketTransferEmail } from '../utils/email.js';
+import { sendSMS } from '../utils/sms.js';
 
 /* ------------------------------------------------------------------ */
 /* Get ticket types for an event (public)                              */
@@ -420,6 +422,25 @@ export const getUserTickets = async (req, res) => {
       console.warn('[ticketController.getUserTickets] Auto-heal notice:', healErr.message);
     }
 
+    // Auto-claim any tickets transferred to the logged-in user's email or phone
+    if (req.user?.email) {
+      try {
+        await pool.execute(
+          `UPDATE tickets 
+           SET user_id = ? 
+           WHERE (
+             LOWER(attendee_email) = LOWER(?)
+             OR (attendee_phone IS NOT NULL AND attendee_phone != '' AND attendee_phone = ?)
+           )
+           AND status = 'active'
+           AND user_id != ?`,
+          [req.user.id, req.user.email.trim(), req.user.phone || '', req.user.id],
+        );
+      } catch (claimErr) {
+        console.warn('[ticketController.getUserTickets] Auto-claim notice:', claimErr.message);
+      }
+    }
+
     const [rows] = await pool.execute(
       `SELECT t.*, tt.name AS ticket_type_name, tt.price AS ticket_price,
               COALESCE(oi.unit_price, tt.price, 0) AS unit_price,
@@ -429,6 +450,7 @@ export const getUserTickets = async (req, res) => {
               COALESCE(t.attendee_name, u.name) AS attendee_name,
               COALESCE(t.attendee_email, u.email) AS attendee_email,
               COALESCE(t.attendee_phone, u.phone) AS attendee_phone,
+              CASE WHEN t.order_item_id IS NULL OR (o.user_id IS NOT NULL AND o.user_id != t.user_id) THEN 1 ELSE 0 END AS is_transferred_to_me,
               o.id AS order_id, o.payment_reference, o.payment_method, o.payment_status,
               o.invoice_number, o.discount_amount AS order_discount, o.total_amount AS order_total,
               o.created_at AS order_created_at
@@ -719,17 +741,57 @@ export const transferTicket = async (req, res) => {
 
     // Notify recipient and sender
     try {
-      const [eventRows] = await pool.execute('SELECT title FROM events WHERE id = ?', [ticket.event_id]);
-      const eventTitle = eventRows[0]?.title || 'your event';
+      const [eventRows] = await pool.execute(
+        'SELECT title, venue, city, start_date, start_time FROM events WHERE id = ?',
+        [ticket.event_id],
+      );
+      const [tierRows] = await pool.execute(
+        'SELECT name FROM ticket_types WHERE id = ?',
+        [ticket.ticket_type_id],
+      );
+      const ev = eventRows[0] || {};
+      const eventTitle = ev.title || 'your event';
       const senderName = req.user.name || req.user.email || 'A friend';
+      const eventDate = ev.start_date
+        ? `${new Date(ev.start_date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}${ev.start_time ? ` at ${ev.start_time}` : ''}`
+        : 'Upcoming';
+      const eventVenue = [ev.venue, ev.city].filter(Boolean).join(', ') || 'Venue TBA';
+      const frontendUrl = process.env.FRONTEND_URL || 'https://tribesandcliqs.vercel.app';
 
+      // 1. In-app notification to recipient
       sendNotification({
         userId: recipient.id,
-        title: 'Ticket Received!',
+        title: 'Ticket Received! 🎟️',
         message: `${senderName} transferred a digital ticket for "${eventTitle}" to you. Access your new ticket and QR code under My Tickets!`,
         type: 'ticket',
       }).catch(() => {});
 
+      // 2. Email notification to recipient
+      const targetEmail = recipient.email || recipientEmail;
+      if (targetEmail && targetEmail.includes('@') && !targetEmail.endsWith('@tribesandcliqs.app')) {
+        sendTicketTransferEmail({
+          to: targetEmail,
+          recipientName: finalAttendeeName,
+          senderName,
+          eventTitle,
+          ticketNumber: newNumber,
+          ticketTier: tierRows[0]?.name || 'General Admission',
+          venue: eventVenue,
+          eventDate,
+          ticketUrl: `${frontendUrl}/my-tickets`,
+        }).catch((err) => console.warn('[transferTicket] Email failed:', err.message));
+      }
+
+      // 3. SMS notification to recipient if phone provided
+      const targetPhone = recipient.phone || recipientPhone;
+      if (targetPhone) {
+        sendSMS(
+          targetPhone,
+          `Tribes & Cliqs: ${senderName} sent you a ticket for "${eventTitle}"! Ticket #${newNumber}. Access your QR pass at ${frontendUrl}/my-tickets`
+        ).catch((err) => console.warn('[transferTicket] SMS failed:', err.message));
+      }
+
+      // 4. In-app notification to sender
       sendNotification({
         userId: req.user.id,
         title: 'Ticket Transferred',
@@ -737,13 +799,16 @@ export const transferTicket = async (req, res) => {
         type: 'ticket',
       }).catch(() => {});
 
+      // 5. Admin notification
       notifyAdmins({
         title: 'Ticket Transferred',
         message: `${senderName} transferred ticket #${ticket.id} (${eventTitle}) to ${finalAttendeeName}.`,
         type: 'ticket',
         link: '/admin/events',
       }).catch(() => {});
-    } catch { /* ignore notification errors */ }
+    } catch (notifErr) {
+      console.warn('[transferTicket] Notification notice:', notifErr.message);
+    }
 
     await logAudit({
       userId: req.user.id,

@@ -230,4 +230,105 @@ export const sendMarketingEmail = async (to, subject, htmlContent) =>
     text: subject,
   });
 
+export const sendTicketTransferEmail = async ({
+  to,
+  recipientName = 'Friend',
+  senderName = 'A friend',
+  eventTitle = 'Live Event',
+  ticketNumber = '',
+  ticketTier = 'General Admission',
+  venue = 'Venue TBA',
+  eventDate = 'Upcoming',
+  ticketUrl = null,
+}) => {
+  const link = ticketUrl || `${FRONTEND_URL}/my-tickets`;
+  const cleanEvent = escapeHtml(eventTitle);
+  const cleanSender = escapeHtml(senderName);
+  const cleanRecipient = escapeHtml(recipientName);
+  const cleanVenue = escapeHtml(venue);
+
+  return sendEmail({
+    to,
+    subject: `🎟️ You received a ticket from ${cleanSender} for "${cleanEvent}"!`,
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:580px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
+        <div style="text-align:center;margin-bottom:24px;">
+          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(178,20,20,0.15);color:#ff4444;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">Ticket Transferred</span>
+        </div>
+        <h2 style="margin-top:0;color:#FFFFFF;text-align:center;font-size:22px;">You Got a Ticket!</h2>
+        <p style="color:#A1A1AA;line-height:1.6;font-size:15px;text-align:center;">
+          Hi ${cleanRecipient}, <strong>${cleanSender}</strong> has transferred an official entry ticket to you for:
+        </p>
+
+        <div style="margin:24px 0;padding:24px;background:#1C232B;border-radius:14px;border:1px solid #363F48;">
+          <h3 style="margin:0 0 12px 0;color:#FFFFFF;font-size:18px;">${cleanEvent}</h3>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Ticket Tier:</strong> ${escapeHtml(ticketTier)}</p>
+          ${ticketNumber ? `<p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Ticket #:</strong> <code style="background:#111417;padding:3px 6px;border-radius:4px;font-family:monospace;color:#FBBF24;">${ticketNumber}</code></p>` : ''}
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Date:</strong> ${escapeHtml(eventDate)}</p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Venue:</strong> ${cleanVenue}</p>
+        </div>
+
+        <div style="text-align:center;margin:32px 0;">
+          <a href="${link}" style="display:inline-block;padding:14px 32px;background:#b21414;color:#FFFFFF;font-weight:bold;border-radius:10px;text-decoration:none;font-size:15px;box-shadow:0 6px 20px rgba(178,20,20,0.4);">
+            View My Ticket &amp; QR Pass
+          </a>
+        </div>
+
+        <p style="color:#64748B;font-size:12px;text-align:center;line-height:1.5;margin-bottom:0;">
+          Log into Tribes &amp; Cliqs with <strong>${escapeHtml(to)}</strong> to view, download, or present your entry QR code at the gates.
+        </p>
+      </div>`,
+    text: `You received a ticket from ${senderName} for "${eventTitle}"!\n\nTicket: ${ticketNumber}\nVenue: ${venue}\nDate: ${eventDate}\n\nAccess your ticket here: ${link}`,
+  });
+};
+
+export const sendEventInviteEmail = async ({
+  to,
+  recipientName = 'Friend',
+  senderName = 'A friend',
+  eventTitle = 'Live Event',
+  venue = 'Venue TBA',
+  eventDate = 'Upcoming',
+  note = null,
+  eventUrl = null,
+}) => {
+  const link = eventUrl || `${FRONTEND_URL}/events`;
+  const cleanEvent = escapeHtml(eventTitle);
+  const cleanSender = escapeHtml(senderName);
+  const cleanRecipient = escapeHtml(recipientName);
+
+  return sendEmail({
+    to,
+    subject: `✨ ${cleanSender} invited you to "${cleanEvent}"!`,
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:580px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
+        <div style="text-align:center;margin-bottom:24px;">
+          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(234,179,8,0.15);color:#FBBF24;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">Event Invitation</span>
+        </div>
+        <h2 style="margin-top:0;color:#FFFFFF;text-align:center;font-size:22px;">You're Invited!</h2>
+        <p style="color:#A1A1AA;line-height:1.6;font-size:15px;text-align:center;">
+          Hi ${cleanRecipient}, <strong>${cleanSender}</strong> wants you to join their Tribe at:
+        </p>
+
+        <div style="margin:24px 0;padding:24px;background:#1C232B;border-radius:14px;border:1px solid #363F48;">
+          <h3 style="margin:0 0 12px 0;color:#FFFFFF;font-size:18px;">${cleanEvent}</h3>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Date:</strong> ${escapeHtml(eventDate)}</p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Venue:</strong> ${escapeHtml(venue)}</p>
+          ${note ? `<div style="margin-top:14px;padding:12px;border-radius:8px;background:#14191E;border-left:3px solid #b21414;color:#E2E8F0;font-style:italic;font-size:13px;">"${escapeHtml(note)}"</div>` : ''}
+        </div>
+
+        <div style="text-align:center;margin:32px 0;">
+          <a href="${link}" style="display:inline-block;padding:14px 32px;background:#b21414;color:#FFFFFF;font-weight:bold;border-radius:10px;text-decoration:none;font-size:15px;box-shadow:0 6px 20px rgba(178,20,20,0.4);">
+            View Event &amp; Join In
+          </a>
+        </div>
+
+        <p style="color:#64748B;font-size:12px;text-align:center;line-height:1.5;margin-bottom:0;">
+          Discover more upcoming experiences and connect with your Tribe on Tribes &amp; Cliqs.
+        </p>
+      </div>`,
+    text: `${senderName} invited you to "${eventTitle}"!\n\nVenue: ${venue}\nDate: ${eventDate}\n${note ? `Note: "${note}"\n` : ''}\nView event details: ${link}`,
+  });
+};
+
 export default sendEmail;

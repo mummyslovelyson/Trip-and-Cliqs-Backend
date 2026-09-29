@@ -1,5 +1,7 @@
 import pool from '../config/db.js';
 import { sendNotification } from '../utils/notify.js';
+import { sendEventInviteEmail } from '../utils/email.js';
+import { sendSMS } from '../utils/sms.js';
 
 
 /* ------------------------------------------------------------------ */
@@ -354,43 +356,167 @@ export const getFriendsAttending = async (req, res) => {
 export const inviteFriendsToEvent = async (req, res) => {
   try {
     const eventId = Number(req.params.eventId);
-    const { recipientIds, meetupId, note } = req.body || {};
+    const { recipientIds = [], emails = [], phones = [], meetupId, note } = req.body || {};
 
-    if (!Array.isArray(recipientIds) || recipientIds.length === 0) {
-      return res.status(400).json({ message: 'Please select at least one friend to invite' });
+    const hasIds = Array.isArray(recipientIds) && recipientIds.length > 0;
+    const hasEmails = Array.isArray(emails) && emails.length > 0;
+    const hasPhones = Array.isArray(phones) && phones.length > 0;
+
+    if (!hasIds && !hasEmails && !hasPhones) {
+      return res.status(400).json({ message: 'Please select friends or enter email/phone to invite' });
     }
 
-    const [events] = await pool.execute('SELECT id, title FROM events WHERE id = ?', [eventId]);
+    const [events] = await pool.execute(
+      'SELECT id, title, venue, city, start_date, start_time FROM events WHERE id = ?',
+      [eventId],
+    );
     const event = events[0];
     if (!event) return res.status(404).json({ message: 'Event not found' });
 
-    const senderName = req.user.name || 'A friend';
+    const senderName = req.user.name || req.user.email || 'A friend';
     const cleanNote = note ? String(note).trim().slice(0, 250) : null;
     const cleanMeetupId = meetupId ? Number(meetupId) : null;
+    const frontendUrl = process.env.FRONTEND_URL || 'https://tribesandcliqsevent.vercel.app';
+    const eventUrl = `${frontendUrl}/events/${eventId}${cleanMeetupId ? `?meetup=${cleanMeetupId}` : ''}`;
+    const eventDate = event.start_date
+      ? `${new Date(event.start_date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}${event.start_time ? ` at ${event.start_time}` : ''}`
+      : 'Upcoming';
+    const eventVenue = [event.venue, event.city].filter(Boolean).join(', ') || 'Venue TBA';
 
     const invited = [];
-    for (const rawId of recipientIds) {
-      const recipientId = Number(rawId);
-      if (!recipientId || recipientId === req.user.id) continue;
 
-      await pool.execute(
-        `INSERT INTO event_invites (event_id, sender_id, recipient_id, meetup_id, status, note)
-         VALUES (?, ?, ?, ?, 'pending', ?)`,
-        [eventId, req.user.id, recipientId, cleanMeetupId, cleanNote],
-      );
+    // 1. Process explicit user IDs (Tribe connections / followers)
+    if (hasIds) {
+      for (const rawId of recipientIds) {
+        const recipientId = Number(rawId);
+        if (!recipientId || recipientId === req.user.id) continue;
 
-      await sendNotification({
-        userId: recipientId,
-        type: 'invite',
-        title: 'Event Invitation',
-        message: `${senderName} invited you to "${event.title}"${cleanNote ? `: "${cleanNote}"` : ''}`,
-      });
+        await pool.execute(
+          `INSERT INTO event_invites (event_id, sender_id, recipient_id, meetup_id, status, note)
+           VALUES (?, ?, ?, ?, 'pending', ?)`,
+          [eventId, req.user.id, recipientId, cleanMeetupId, cleanNote],
+        );
 
-      invited.push(recipientId);
+        // Fetch user info to send email/SMS
+        const [uRows] = await pool.execute('SELECT id, name, email, phone FROM users WHERE id = ?', [recipientId]);
+        const recipientUser = uRows[0];
+
+        // In-app notification
+        sendNotification({
+          userId: recipientId,
+          type: 'invite',
+          title: 'Event Invitation',
+          message: `${senderName} invited you to "${event.title}"${cleanNote ? `: "${cleanNote}"` : ''}`,
+        }).catch(() => {});
+
+        // Email notification
+        if (recipientUser?.email && recipientUser.email.includes('@') && !recipientUser.email.endsWith('@tribesandcliqs.app')) {
+          sendEventInviteEmail({
+            to: recipientUser.email,
+            recipientName: recipientUser.name || 'Friend',
+            senderName,
+            eventTitle: event.title,
+            venue: eventVenue,
+            eventDate,
+            note: cleanNote,
+            eventUrl,
+          }).catch((err) => console.warn('[inviteFriendsToEvent] Email failed:', err.message));
+        }
+
+        // SMS notification
+        if (recipientUser?.phone) {
+          sendSMS(
+            recipientUser.phone,
+            `Tribes & Cliqs: ${senderName} invited you to "${event.title}"! Join your Tribe: ${eventUrl}`
+          ).catch((err) => console.warn('[inviteFriendsToEvent] SMS failed:', err.message));
+        }
+
+        invited.push(recipientId);
+      }
+    }
+
+    // 2. Process external emails
+    if (hasEmails) {
+      for (const rawEmail of emails) {
+        const cleanEmail = String(rawEmail || '').trim().toLowerCase();
+        if (!cleanEmail || !cleanEmail.includes('@') || cleanEmail === (req.user.email || '').toLowerCase()) continue;
+
+        // Lookup or auto-create attendee user record
+        let [uRows] = await pool.execute('SELECT id, name, email, phone FROM users WHERE LOWER(email) = ?', [cleanEmail]);
+        let recId = uRows[0]?.id;
+        let recName = uRows[0]?.name || 'Friend';
+
+        if (!recId) {
+          const [ins] = await pool.execute(
+            `INSERT INTO users (name, email, role) VALUES (?, ?, 'attendee')`,
+            ['Friend', cleanEmail],
+          );
+          recId = ins.insertId;
+        }
+
+        await pool.execute(
+          `INSERT INTO event_invites (event_id, sender_id, recipient_id, meetup_id, status, note)
+           VALUES (?, ?, ?, ?, 'pending', ?)`,
+          [eventId, req.user.id, recId, cleanMeetupId, cleanNote],
+        );
+
+        sendNotification({
+          userId: recId,
+          type: 'invite',
+          title: 'Event Invitation',
+          message: `${senderName} invited you to "${event.title}"${cleanNote ? `: "${cleanNote}"` : ''}`,
+        }).catch(() => {});
+
+        sendEventInviteEmail({
+          to: cleanEmail,
+          recipientName: recName,
+          senderName,
+          eventTitle: event.title,
+          venue: eventVenue,
+          eventDate,
+          note: cleanNote,
+          eventUrl,
+        }).catch((err) => console.warn('[inviteFriendsToEvent] Email failed:', err.message));
+
+        invited.push(recId);
+      }
+    }
+
+    // 3. Process external phones
+    if (hasPhones) {
+      for (const rawPhone of phones) {
+        const cleanPhone = String(rawPhone || '').trim();
+        if (!cleanPhone) continue;
+
+        let [uRows] = await pool.execute('SELECT id, name, email, phone FROM users WHERE phone = ?', [cleanPhone]);
+        let recId = uRows[0]?.id;
+
+        if (!recId) {
+          const dummyEmail = `${cleanPhone.replace(/\D/g, '')}@tribesandcliqs.app`;
+          const [ins] = await pool.execute(
+            `INSERT INTO users (name, email, phone, role) VALUES (?, ?, ?, 'attendee')`,
+            ['Friend', dummyEmail, cleanPhone],
+          );
+          recId = ins.insertId;
+        }
+
+        await pool.execute(
+          `INSERT INTO event_invites (event_id, sender_id, recipient_id, meetup_id, status, note)
+           VALUES (?, ?, ?, ?, 'pending', ?)`,
+          [eventId, req.user.id, recId, cleanMeetupId, cleanNote],
+        );
+
+        sendSMS(
+          cleanPhone,
+          `Tribes & Cliqs: ${senderName} invited you to "${event.title}"! Join your Tribe: ${eventUrl}`
+        ).catch((err) => console.warn('[inviteFriendsToEvent] SMS failed:', err.message));
+
+        invited.push(recId);
+      }
     }
 
     res.status(201).json({
-      message: `Invited ${invited.length} friend${invited.length === 1 ? '' : 's'}!`,
+      message: `Invitations sent to ${invited.length} friend${invited.length === 1 ? '' : 's'}!`,
       invitedCount: invited.length,
       invited,
     });
@@ -403,6 +529,20 @@ export const inviteFriendsToEvent = async (req, res) => {
 export const getMyEventInvites = async (req, res) => {
   try {
     const userId = req.user.id;
+
+    // Auto-link any invites created for this email before registration
+    if (req.user?.email) {
+      try {
+        await pool.execute(
+          `UPDATE event_invites ei
+           JOIN users u ON LOWER(u.email) = LOWER(?)
+           SET ei.recipient_id = ?
+           WHERE ei.recipient_id = u.id AND ei.recipient_id != ?`,
+          [req.user.email.trim(), userId, userId],
+        );
+      } catch { /* ignore */ }
+    }
+
     const [invites] = await pool.execute(
       `SELECT * FROM event_invites WHERE recipient_id = ? ORDER BY created_at DESC`,
       [userId],
