@@ -10,6 +10,14 @@ import { getSmsApiKey, getPaystackSecretKey, clearSettingsCache } from '../utils
 import { logAudit } from '../utils/audit.js';
 import { validatePassword } from '../utils/password.js';
 import { refundTransaction } from '../utils/paystack.js';
+import {
+  voiceModel,
+  DEFAULT_PHONETIC_LEXICON,
+  DEFAULT_TRAINING_SAMPLES,
+  correctVoicePhonetics,
+  formatVoiceUtterance,
+  analyzeVoiceEmotion,
+} from '../utils/voiceMLEngine.js';
 
 /* ------------------------------------------------------------------ */
 /* Dashboard stats                                                     */
@@ -2745,6 +2753,399 @@ ${eventsSummary}
   }
 };
 
+/* ------------------------------------------------------------------ */
+/* Voice Agent Deep Learning & ML Training Management                */
+/* ------------------------------------------------------------------ */
+
+let voiceTablesInitialized = false;
+
+export async function ensureVoiceTables() {
+  if (voiceTablesInitialized) return;
+  try {
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS voice_model_config (
+        setting_key VARCHAR(100) PRIMARY KEY,
+        setting_value TEXT NOT NULL,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS voice_pronunciation_lexicon (
+        id BIGSERIAL PRIMARY KEY,
+        heard VARCHAR(255) NOT NULL,
+        replacement VARCHAR(255) NOT NULL,
+        category VARCHAR(100) DEFAULT 'general',
+        is_active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS voice_training_samples (
+        id BIGSERIAL PRIMARY KEY,
+        text TEXT NOT NULL,
+        intent VARCHAR(100) NOT NULL,
+        is_active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+
+    // Seed default phonetic lexicon if empty
+    const [lexRows] = await pool.execute(`SELECT COUNT(*) AS total FROM voice_pronunciation_lexicon`);
+    const lexTotal = parseInt(lexRows?.[0]?.total || 0, 10);
+    if (lexTotal === 0) {
+      for (const item of DEFAULT_PHONETIC_LEXICON) {
+        await pool.execute(
+          `INSERT INTO voice_pronunciation_lexicon (heard, replacement, category, is_active)
+           VALUES (?, ?, ?, TRUE)`,
+          [item.heard, item.replacement, item.category || 'general']
+        );
+      }
+    }
+
+    // Seed default voice training samples if empty
+    const [sampleRows] = await pool.execute(`SELECT COUNT(*) AS total FROM voice_training_samples`);
+    const sampleTotal = parseInt(sampleRows?.[0]?.total || 0, 10);
+    if (sampleTotal === 0) {
+      for (const s of DEFAULT_TRAINING_SAMPLES) {
+        await pool.execute(
+          `INSERT INTO voice_training_samples (text, intent, is_active)
+           VALUES (?, ?, TRUE)`,
+          [s.text, s.intent]
+        );
+      }
+    }
+
+    voiceTablesInitialized = true;
+  } catch (err) {
+    console.error('[ensureVoiceTables] error:', err.message);
+  }
+}
+
+export const getVoiceModelData = async (_req, res) => {
+  try {
+    await ensureVoiceTables();
+
+    const [lexicon] = await pool.execute(
+      `SELECT * FROM voice_pronunciation_lexicon ORDER BY id DESC`
+    );
+
+    const [samples] = await pool.execute(
+      `SELECT * FROM voice_training_samples ORDER BY id DESC`
+    );
+
+    const [configRows] = await pool.execute(
+      `SELECT setting_key, setting_value FROM voice_model_config`
+    );
+
+    const config = {};
+    for (const row of configRows || []) {
+      config[row.setting_key] = row.setting_value;
+    }
+
+    res.json({
+      modelMetrics: {
+        version: config.voice_model_version || voiceModel.version,
+        accuracy: config.voice_accuracy ? parseFloat(config.voice_accuracy) : voiceModel.accuracy,
+        totalSamples: samples?.length || voiceModel.totalSamples,
+        classesCount: voiceModel.classes.length,
+        trainedAt: config.voice_trained_at || voiceModel.trainedAt,
+        confidenceThreshold: config.voice_confidence_threshold ? parseFloat(config.voice_confidence_threshold) : 0.55,
+        cadence: config.voice_cadence || 'direct_punchy',
+        speechRate: config.voice_speech_rate ? parseFloat(config.voice_speech_rate) : 1.05,
+        pitch: config.voice_pitch ? parseFloat(config.voice_pitch) : 1.0,
+        language: config.voice_language || 'en-GH',
+      },
+      pronunciationLexicon: lexicon || [],
+      trainingSamples: samples || [],
+      classes: voiceModel.classes,
+    });
+  } catch (err) {
+    console.error('[adminController.getVoiceModelData]', err);
+    res.status(500).json({ message: 'Failed to fetch voice model data' });
+  }
+};
+
+export const trainVoiceModel = async (req, res) => {
+  try {
+    await ensureVoiceTables();
+
+    const [samples] = await pool.execute(
+      `SELECT text, intent FROM voice_training_samples WHERE is_active = TRUE`
+    );
+
+    const dataset = (samples || []).map((s) => ({ text: s.text, intent: s.intent }));
+    const result = voiceModel.train(dataset.length > 0 ? dataset : DEFAULT_TRAINING_SAMPLES);
+
+    await pool.execute(
+      `INSERT INTO voice_model_config (setting_key, setting_value, updated_at)
+       VALUES ('voice_accuracy', ?, NOW())
+       ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = NOW()`,
+      [String(result.accuracy)]
+    );
+
+    await pool.execute(
+      `INSERT INTO voice_model_config (setting_key, setting_value, updated_at)
+       VALUES ('voice_trained_at', ?, NOW())
+       ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = NOW()`,
+      [result.trainedAt]
+    );
+
+    await pool.execute(
+      `INSERT INTO voice_model_config (setting_key, setting_value, updated_at)
+       VALUES ('voice_total_samples', ?, NOW())
+       ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = NOW()`,
+      [String(result.samplesTrained)]
+    );
+
+    await logAudit({
+      userId: req.user?.id,
+      action: 'train_voice_model',
+      entityType: 'voice_model',
+      details: result,
+    });
+
+    res.json({
+      message: `Voice Agent intent model successfully retrained on ${result.samplesTrained} utterances!`,
+      metrics: result,
+    });
+  } catch (err) {
+    console.error('[adminController.trainVoiceModel]', err);
+    res.status(500).json({ message: 'Failed to retrain voice agent model' });
+  }
+};
+
+export const updateVoiceModelSettings = async (req, res) => {
+  try {
+    await ensureVoiceTables();
+    const {
+      confidenceThreshold = 0.55,
+      cadence = 'direct_punchy',
+      speechRate = 1.05,
+      pitch = 1.0,
+      language = 'en-GH',
+    } = req.body;
+
+    const entries = [
+      ['voice_confidence_threshold', String(confidenceThreshold)],
+      ['voice_cadence', String(cadence)],
+      ['voice_speech_rate', String(speechRate)],
+      ['voice_pitch', String(pitch)],
+      ['voice_language', String(language)],
+    ];
+
+    for (const [k, v] of entries) {
+      await pool.execute(
+        `INSERT INTO voice_model_config (setting_key, setting_value, updated_at)
+         VALUES (?, ?, NOW())
+         ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = NOW()`,
+        [k, v]
+      );
+    }
+
+    voiceModel.confidenceThreshold = Number(confidenceThreshold) || 0.55;
+
+    await logAudit({
+      userId: req.user?.id,
+      action: 'update_voice_model_settings',
+      entityType: 'voice_model',
+      details: { confidenceThreshold, cadence, speechRate, pitch, language },
+    });
+
+    res.json({ message: 'Voice agent hyperparameters and settings updated successfully' });
+  } catch (err) {
+    console.error('[adminController.updateVoiceModelSettings]', err);
+    res.status(500).json({ message: 'Failed to update voice settings' });
+  }
+};
+
+export const createVoicePronunciationRule = async (req, res) => {
+  try {
+    await ensureVoiceTables();
+    const { heard, replacement, category = 'general' } = req.body;
+    if (!heard || !replacement) {
+      return res.status(400).json({ message: 'Heard phrase and phonetic replacement are required' });
+    }
+
+    const [result] = await pool.execute(
+      `INSERT INTO voice_pronunciation_lexicon (heard, replacement, category, is_active)
+       VALUES (?, ?, ?, TRUE)`,
+      [heard.trim().toLowerCase(), replacement.trim(), category.trim()]
+    );
+
+    res.status(201).json({
+      message: 'Pronunciation rule added',
+      rule: {
+        id: result.insertId,
+        heard: heard.trim().toLowerCase(),
+        replacement: replacement.trim(),
+        category,
+        is_active: true,
+      },
+    });
+  } catch (err) {
+    console.error('[adminController.createVoicePronunciationRule]', err);
+    res.status(500).json({ message: 'Failed to add pronunciation rule' });
+  }
+};
+
+export const deleteVoicePronunciationRule = async (req, res) => {
+  try {
+    await ensureVoiceTables();
+    const { id } = req.params;
+    await pool.execute(`DELETE FROM voice_pronunciation_lexicon WHERE id = ?`, [id]);
+    res.json({ message: 'Pronunciation rule removed' });
+  } catch (err) {
+    console.error('[adminController.deleteVoicePronunciationRule]', err);
+    res.status(500).json({ message: 'Failed to delete pronunciation rule' });
+  }
+};
+
+export const createVoiceTrainingSample = async (req, res) => {
+  try {
+    await ensureVoiceTables();
+    const { text, intent } = req.body;
+    if (!text || !intent) {
+      return res.status(400).json({ message: 'Utterance text and target intent are required' });
+    }
+
+    const [result] = await pool.execute(
+      `INSERT INTO voice_training_samples (text, intent, is_active)
+       VALUES (?, ?, TRUE)`,
+      [text.trim(), intent.trim()]
+    );
+
+    // Auto-retrain in-memory model
+    const [samples] = await pool.execute(
+      `SELECT text, intent FROM voice_training_samples WHERE is_active = TRUE`
+    );
+    const updatedMetrics = voiceModel.train(samples || []);
+
+    res.status(201).json({
+      message: 'Voice training sample added and model updated',
+      sample: {
+        id: result.insertId,
+        text: text.trim(),
+        intent: intent.trim(),
+        is_active: true,
+      },
+      metrics: updatedMetrics,
+    });
+  } catch (err) {
+    console.error('[adminController.createVoiceTrainingSample]', err);
+    res.status(500).json({ message: 'Failed to add voice training sample' });
+  }
+};
+
+export const deleteVoiceTrainingSample = async (req, res) => {
+  try {
+    await ensureVoiceTables();
+    const { id } = req.params;
+    await pool.execute(`DELETE FROM voice_training_samples WHERE id = ?`, [id]);
+
+    // Retrain in-memory model after deletion
+    const [samples] = await pool.execute(
+      `SELECT text, intent FROM voice_training_samples WHERE is_active = TRUE`
+    );
+    const updatedMetrics = voiceModel.train(samples.length > 0 ? samples : DEFAULT_TRAINING_SAMPLES);
+
+    res.json({ message: 'Training sample removed', metrics: updatedMetrics });
+  } catch (err) {
+    console.error('[adminController.deleteVoiceTrainingSample]', err);
+    res.status(500).json({ message: 'Failed to delete voice training sample' });
+  }
+};
+
+export const testVoiceModel = async (req, res) => {
+  try {
+    await ensureVoiceTables();
+    const { message } = req.body;
+    const testUtterance = (message || '').trim();
+    if (!testUtterance) {
+      return res.status(400).json({ message: 'Test message or speech transcript is required' });
+    }
+
+    const [lexiconRows] = await pool.execute(
+      `SELECT heard, replacement, category FROM voice_pronunciation_lexicon WHERE is_active = TRUE`
+    );
+
+    // 1. Phonetic entity correction
+    const phoneticResult = correctVoicePhonetics(testUtterance, lexiconRows || []);
+
+    // 2. Intent prediction & probability distribution
+    const intentResult = voiceModel.predict(testUtterance, true, lexiconRows || []);
+
+    // 3. Emotion / Urgency analysis
+    const emotionResult = analyzeVoiceEmotion(testUtterance);
+
+    // 4. Synthesized natural voice response preview
+    let sampleReply = '';
+    switch (intentResult.intent) {
+      case 'BOOK_TICKETS':
+        sampleReply = `I've prepared your ticket reservation for the requested event. Total is 150 Ghana Cedis. Say confirm to complete payment.`;
+        break;
+      case 'SEARCH_EVENTS':
+        sampleReply = `I found upcoming concerts and events in Ghana matching your request. Here are the top picks for you.`;
+        break;
+      case 'CONFIRM_PAYMENT':
+        sampleReply = `Your tickets are reserved for 10 minutes. Opening secure Mobile Money and card checkout now.`;
+        break;
+      case 'VERIFY_TRANSACTION':
+        sampleReply = `Checking transaction status with the payment provider. Your tickets will appear in My Tickets once confirmed.`;
+        break;
+      case 'VIEW_MY_TICKETS':
+        sampleReply = `Here are your active event tickets and digital QR passes ready for gate check-in.`;
+        break;
+      case 'SPENDING_ANALYTICS':
+        sampleReply = `You have spent 450 Ghana Cedis across 3 events this month.`;
+        break;
+      case 'EVENT_SCHEDULE':
+        sampleReply = `Your next event is coming up on Friday at 8 PM at Untamed Empire.`;
+        break;
+      case 'RESEND_TICKETS':
+        sampleReply = `I've resent your digital entry pass to your verified email and phone number.`;
+        break;
+      case 'REFUND_DISPUTE':
+        sampleReply = `If you cannot attend, you can list your ticket on our verified resale marketplace or submit an official refund request.`;
+        break;
+      case 'CUSTOMER_SUPPORT':
+        sampleReply = `I'm connecting you with our human support desk immediately to resolve your issue.`;
+        break;
+      default:
+        sampleReply = `Hello! Welcome to Tribes and Cliqs. What events or tickets can I help you with today?`;
+    }
+
+    const synthesizedSpeech = formatVoiceUtterance(sampleReply);
+
+    res.json({
+      rawTranscript: testUtterance,
+      phoneticNormalization: {
+        correctedText: phoneticResult.corrected,
+        changesApplied: phoneticResult.changes,
+      },
+      intentClassification: {
+        predictedIntent: intentResult.intent,
+        confidenceScore: intentResult.confidence,
+        secondBestIntent: intentResult.secondIntent,
+        secondConfidence: intentResult.secondConfidence,
+        isLowConfidence: intentResult.isLowConfidence,
+        probabilityDistribution: intentResult.probabilities,
+      },
+      emotionAnalysis: emotionResult,
+      synthesizedVoiceOutput: synthesizedSpeech,
+      modelInfo: {
+        version: voiceModel.version,
+        threshold: voiceModel.confidenceThreshold,
+        totalTrainedSamples: voiceModel.totalSamples,
+      },
+    });
+  } catch (err) {
+    console.error('[adminController.testVoiceModel]', err);
+    res.status(500).json({ message: 'Voice model diagnostic test failed' });
+  }
+};
+
 export const getBotConversations = async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
@@ -3095,6 +3496,7 @@ export default {
   sendAnnouncement, getAdminAnnouncements, getNotificationTemplates, getAdminNotifications, markAdminNotificationsRead, deleteAdminNotification, getAuditLogs, getSystemSettings, updateSystemSettings,
   getContentPages, createContentPage, updateContentPage, deleteContentPage,
   getAITrainingData, createAIKnowledgeItem, updateAIKnowledgeItem, deleteAIKnowledgeItem, updateAISettings, testAIPrompt,
+  getVoiceModelData, trainVoiceModel, updateVoiceModelSettings, createVoicePronunciationRule, deleteVoicePronunciationRule, createVoiceTrainingSample, deleteVoiceTrainingSample, testVoiceModel,
   getBotConversations, deleteBotConversation,
   getMobileAppConfig, updateMobileAppSettings, createMobileAppBanner, updateMobileAppBanner, deleteMobileAppBanner, getPublicMobileConfig,
 };

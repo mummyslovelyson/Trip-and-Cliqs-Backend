@@ -25,6 +25,12 @@ import {
   classifySentimentAndUrgency,
   predictEventDemand,
 } from '../utils/mlEngine.js';
+import {
+  voiceModel,
+  correctVoicePhonetics,
+  formatVoiceUtterance,
+  analyzeVoiceEmotion,
+} from '../utils/voiceMLEngine.js';
 import { initializeTransaction, verifyTransaction } from '../utils/paystack.js';
 import { sendTicketConfirmationEmail } from '../utils/email.js';
 import { sendTicketConfirmationSMS } from '../utils/sms.js';
@@ -747,24 +753,63 @@ export const handleChatMessage = async (req, res) => {
     const currentPath = context.currentPath || context.pathname || '';
     let eventId = context.eventId || null;
 
+    const isVoice = mode === 'voice' || context.mode === 'voice' || Boolean(context.isVoice);
+    let processedMessage = rawMessage;
+    let voicePhonetics = null;
+    let voicePrediction = null;
+    let voiceEmotion = null;
+
+    if (isVoice) {
+      let lexiconRows = [];
+      try {
+        const [lex] = await pool.execute(`SELECT heard, replacement, category FROM voice_pronunciation_lexicon WHERE is_active = TRUE`);
+        lexiconRows = lex || [];
+      } catch {}
+      voicePhonetics = correctVoicePhonetics(rawMessage, lexiconRows);
+      processedMessage = voicePhonetics.corrected || rawMessage;
+      voicePrediction = voiceModel.predict(processedMessage, false);
+      voiceEmotion = analyzeVoiceEmotion(rawMessage);
+    }
+
     const originalJson = res.json.bind(res);
     res.json = (data) => {
       if (data && data.reply) {
+        if (isVoice) {
+          data.voiceReply = formatVoiceUtterance(data.reply);
+          if (mode === 'voice') {
+            data.reply = data.voiceReply;
+          }
+          data.voiceDiagnostics = {
+            confidence: voicePrediction?.confidence,
+            predictedIntent: voicePrediction?.intent,
+            correctedTranscript: voicePhonetics?.corrected,
+            phoneticChanges: voicePhonetics?.changes || [],
+            emotion: voiceEmotion?.emotion,
+          };
+        }
+
         logBotConversation({
           userId: user?.id,
           userName: user?.name,
           userEmail: user?.email,
           sessionId: req.headers?.['x-session-id'] || context?.sessionId,
-          mode: (mode && mode !== 'chat' ? mode : (context?.mode || (context?.isVoice ? 'voice' : 'chat'))),
-          question: rawMessage,
-          answer: data.reply,
-          intent: data.intent || 'GENERAL',
+          mode: isVoice ? 'voice' : 'chat',
+          question: isVoice && voicePhonetics?.corrected && voicePhonetics.corrected !== rawMessage
+            ? `${rawMessage} [Normalized: ${voicePhonetics.corrected}]`
+            : rawMessage,
+          answer: data.voiceReply || data.reply,
+          intent: data.intent || voicePrediction?.intent || 'GENERAL',
           pagePath: currentPath || '/',
           metadata: {
             eventsCount: data.events?.length || 0,
             ticketsCount: data.tickets?.length || 0,
             hasBooking: Boolean(data.booking),
             bookingStatus: data.booking?.status || null,
+            isVoice,
+            voiceIntent: voicePrediction?.intent || null,
+            voiceConfidence: voicePrediction?.confidence || null,
+            voiceEmotion: voiceEmotion?.emotion || null,
+            phoneticChangesCount: voicePhonetics?.changes?.length || 0,
           },
         }).catch(() => {});
       }
@@ -785,8 +830,8 @@ export const handleChatMessage = async (req, res) => {
       user?.role === 'organizer' ? getOrganizerStatsContext(user.id) : Promise.resolve(null),
     ]);
 
-    const lower = rawMessage.toLowerCase();
-    const mlAnalysis = classifySentimentAndUrgency(rawMessage);
+    const lower = processedMessage.toLowerCase();
+    const mlAnalysis = classifySentimentAndUrgency(processedMessage);
 
     // =========================================================================
     // 1. PAYMENT VERIFICATION (Crucial Security Rule: AI does NOT blindly trust "I have paid")
@@ -1517,8 +1562,13 @@ export const handleChatMessage = async (req, res) => {
       `• [ID: ${e.id}] "${e.title}" | Date: ${e.start_date} ${e.start_time || ''} | Venue: ${e.venue || e.city} | Category: ${e.category} | From: GHS ${e.min_price}`
     ).join('\n');
 
+    const voiceToneRule = isVoice
+      ? `IMPORTANT VOICE AGENT DIRECTIVE: The user is speaking directly via microphone. Respond strictly in natural, human conversational spoken English (1 to 2 sentences max). Absolutely NO markdown bolding (**), asterisks (*), bullet points (•), brackets, or raw code. Say 'Ghana Cedis' instead of 'GHS', and 'V.I.P.' instead of VIP.`
+      : `Tone: Warm, efficient, polite, concise (2-3 sentences max).\nDo NOT use emojis in raw text output.`;
+
     const systemInstruction = `You are Cliq AI, your personal event booking assistant for Tribes & Cliqs.
 Motto: Tell Cliq what you want, and Cliq handles the rest.
+${voiceToneRule}
 You help users through the complete conversational event lifecycle:
 1. Identify event desires: category, city (e.g. Accra, Kumasi), dates (weekends, next Friday), budget, ticket tier (VIP, VVIP, Regular), and quantity.
 2. Search live events and check ticket inventory & availability.
@@ -1528,13 +1578,11 @@ You help users through the complete conversational event lifecycle:
 6. Verify transactions via the backend gateway.
 7. Issue tickets with unique QR entry passes.
 8. Handle after-sales: show tickets, calculate spending, transfer passes, request refunds, and schedule event reminders.
-Tone: Warm, efficient, polite, concise (2-3 sentences max).
-Do NOT use emojis in raw text output.
 Current User: ${user ? `${user.name} (${user.email})` : 'Guest User'}.
 Available Events:
 ${liveEventsSummary || 'None'}`;
 
-    const contents = [{ role: 'user', parts: [{ text: rawMessage }] }];
+    const contents = [{ role: 'user', parts: [{ text: processedMessage }] }];
     const geminiRes = await callGemini(contents, systemInstruction, aiContext.temperature);
 
     let replyText = '';

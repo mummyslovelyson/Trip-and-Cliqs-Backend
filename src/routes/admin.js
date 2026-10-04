@@ -12,6 +12,7 @@ import {
   testEmailSetting, testSmsSetting, getSmsBalanceSetting, testPaystackSetting,
   getContentPages, createContentPage, updateContentPage, deleteContentPage,
   getAITrainingData, createAIKnowledgeItem, updateAIKnowledgeItem, deleteAIKnowledgeItem, updateAISettings, testAIPrompt,
+  getVoiceModelData, trainVoiceModel, updateVoiceModelSettings, createVoicePronunciationRule, deleteVoicePronunciationRule, createVoiceTrainingSample, deleteVoiceTrainingSample, testVoiceModel,
   getBotConversations, deleteBotConversation,
   getMobileAppConfig, updateMobileAppSettings, createMobileAppBanner, updateMobileAppBanner, deleteMobileAppBanner,
 } from '../controllers/adminController.js';
@@ -135,6 +136,16 @@ router.put('/ai/knowledge/:id', writeLimiter, updateAIKnowledgeItem);
 router.delete('/ai/knowledge/:id', destructiveLimiter, deleteAIKnowledgeItem);
 router.put('/ai/settings', writeLimiter, updateAISettings);
 router.post('/ai/test', writeLimiter, testAIPrompt);
+
+// Voice Agent Deep Learning & ML Model Management
+router.get('/ai/voice-model', getVoiceModelData);
+router.post('/ai/voice-model/train', writeLimiter, trainVoiceModel);
+router.put('/ai/voice-model/settings', writeLimiter, updateVoiceModelSettings);
+router.post('/ai/voice-model/pronunciation', writeLimiter, createVoicePronunciationRule);
+router.delete('/ai/voice-model/pronunciation/:id', destructiveLimiter, deleteVoicePronunciationRule);
+router.post('/ai/voice-model/sample', writeLimiter, createVoiceTrainingSample);
+router.delete('/ai/voice-model/sample/:id', destructiveLimiter, deleteVoiceTrainingSample);
+router.post('/ai/voice-model/test', writeLimiter, testVoiceModel);
 
 // Bot & Voice Agent Conversations Logs
 router.get('/chat-logs', getBotConversations);
