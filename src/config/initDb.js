@@ -59,6 +59,29 @@ async function initDb() {
   try {
     const schemaPath = path.join(__dirname, 'schema.sql');
     if (fs.existsSync(schemaPath)) {
+      // Ensure existing tables have newly added columns before index creation in schema.sql
+      const preMigrations = [
+        `ALTER TABLE refunds ADD COLUMN IF NOT EXISTS policy_circumstance VARCHAR(80)`,
+        `ALTER TABLE refunds ADD COLUMN IF NOT EXISTS clause_number INT`,
+        `ALTER TABLE refunds ADD COLUMN IF NOT EXISTS organizer_id BIGINT`,
+        `ALTER TABLE refunds ADD COLUMN IF NOT EXISTS event_id BIGINT`,
+        `ALTER TABLE refunds ADD COLUMN IF NOT EXISTS organizer_deadline TIMESTAMPTZ`,
+        `ALTER TABLE refunds ADD COLUMN IF NOT EXISTS organizer_response TEXT`,
+        `ALTER TABLE refunds ADD COLUMN IF NOT EXISTS organizer_responded_at TIMESTAMPTZ`,
+        `ALTER TABLE refunds ADD COLUMN IF NOT EXISTS admin_notes TEXT`,
+        `ALTER TABLE refunds ADD COLUMN IF NOT EXISTS initiated_by VARCHAR(50) DEFAULT 'buyer'`,
+        `ALTER TABLE refunds ADD COLUMN IF NOT EXISTS paystack_reference VARCHAR(100)`,
+        `ALTER TABLE orders ADD COLUMN IF NOT EXISTS refund_requested_at TIMESTAMPTZ`,
+        `ALTER TABLE orders ADD COLUMN IF NOT EXISTS refund_request_status VARCHAR(50)`,
+      ];
+      for (const preSql of preMigrations) {
+        try {
+          await connection.query(preSql);
+        } catch {
+          // ignore if table doesn't exist yet (schema.sql will create it)
+        }
+      }
+
       console.log('Executing schema.sql...');
       const schemaSql = fs.readFileSync(schemaPath, 'utf8');
       await connection.query(schemaSql);
