@@ -10,6 +10,7 @@ import { getSmsApiKey, getPaystackSecretKey, clearSettingsCache } from '../utils
 import { logAudit } from '../utils/audit.js';
 import { validatePassword } from '../utils/password.js';
 import { refundTransaction } from '../utils/paystack.js';
+import { REFUND_POLICY_CIRCUMSTANCES, getPolicyClause, formatPolicyCitation } from '../constants/refundPolicy.js';
 import {
   voiceModel,
   DEFAULT_PHONETIC_LEXICON,
@@ -952,12 +953,23 @@ export const getPayments = async (req, res) => {
     const [rows] = await pool.execute(
       `SELECT o.id, o.payment_reference AS reference, o.total_amount AS amount,
               o.discount_amount, o.payment_method, o.payment_status AS status,
+              o.refund_request_status, o.refund_requested_at,
               o.created_at, o.updated_at,
               e.id AS event_id, e.title AS event_title,
-              u.id AS user_id, u.name AS buyer_name, u.email AS buyer_email, u.phone AS buyer_phone
+              u.id AS user_id, u.name AS buyer_name, u.email AS buyer_email, u.phone AS buyer_phone,
+              r.id AS refund_id, r.status AS refund_status, r.policy_circumstance,
+              r.clause_number, r.organizer_deadline, r.reason AS refund_reason,
+              r.admin_notes AS refund_admin_notes
        FROM orders o
        LEFT JOIN events e ON e.id = o.event_id
        LEFT JOIN users u ON u.id = o.user_id
+       LEFT JOIN LATERAL (
+         SELECT id, status, policy_circumstance, clause_number, organizer_deadline, reason, admin_notes
+         FROM refunds
+         WHERE order_id = o.id
+         ORDER BY id DESC
+         LIMIT 1
+       ) r ON TRUE
        ${where}
        ORDER BY o.created_at DESC
        LIMIT ${limitNum} OFFSET ${offset}`,
@@ -1001,27 +1013,41 @@ export const getPayments = async (req, res) => {
       console.warn('[adminController.getPayments] summary metrics note:', metricErr.message);
     }
 
-    const formatted = rows.map((r) => ({
-      id: r.id,
-      reference: r.reference || `#${r.id}`,
-      amount: Number(r.amount),
-      discountAmount: Number(r.discount_amount || 0),
-      netAmount: Number(r.amount) - Number(r.discount_amount || 0),
-      method: r.payment_method || 'card',
-      paymentMethod: r.payment_method || 'card',
-      status: r.status,
-      currency: 'GHS',
-      createdAt: r.created_at,
-      date: r.created_at,
-      eventId: r.event_id,
-      eventTitle: r.event_title || '—',
-      userId: r.user_id,
-      userName: r.buyer_name || 'Guest',
-      userEmail: r.buyer_email || '—',
-      userPhone: r.buyer_phone || '',
-      user: { name: r.buyer_name || 'Guest', email: r.buyer_email || '—' },
-      event: { title: r.event_title || '—' },
-    }));
+    const formatted = rows.map((r) => {
+      const clause = getPolicyClause(r.policy_circumstance || r.clause_number);
+      return {
+        id: r.id,
+        reference: r.reference || `#${r.id}`,
+        amount: Number(r.amount),
+        discountAmount: Number(r.discount_amount || 0),
+        netAmount: Number(r.amount) - Number(r.discount_amount || 0),
+        method: r.payment_method || 'card',
+        paymentMethod: r.payment_method || 'card',
+        status: r.status,
+        currency: 'GHS',
+        createdAt: r.created_at,
+        date: r.created_at,
+        eventId: r.event_id,
+        eventTitle: r.event_title || '—',
+        userId: r.user_id,
+        userName: r.buyer_name || 'Guest',
+        userEmail: r.buyer_email || '—',
+        userPhone: r.buyer_phone || '',
+        user: { name: r.buyer_name || 'Guest', email: r.buyer_email || '—' },
+        event: { title: r.event_title || '—' },
+        refundId: r.refund_id || null,
+        refundStatus: r.refund_status || null,
+        policyCircumstance: r.policy_circumstance || null,
+        clauseNumber: r.clause_number || clause?.clauseNumber || null,
+        policyClause: clause || null,
+        policyTitle: clause ? `Clause ${clause.clauseNumber}: ${clause.shortTitle}` : null,
+        organizerDeadline: r.organizer_deadline || null,
+        refundReason: r.refund_reason || null,
+        refundAdminNotes: r.refund_admin_notes || null,
+        refundRequestStatus: r.refund_request_status || null,
+        refundRequestedAt: r.refund_requested_at || null,
+      };
+    });
 
     res.json({
       payments: formatted,
@@ -2044,11 +2070,12 @@ export const getPayment = async (req, res) => {
 export const refundPayment = async (req, res) => {
   try {
     const { id } = req.params;
-    const { reason } = req.body || {};
+    const { reason, circumstance, policyCircumstance, adminNotes } = req.body || {};
 
     const [rows] = await pool.execute(
-      `SELECT o.*, u.name AS buyer_name, u.email AS buyer_email
+      `SELECT o.*, u.name AS buyer_name, u.email AS buyer_email, e.title AS event_title, e.organizer_id
        FROM orders o
+       LEFT JOIN events e ON e.id = o.event_id
        LEFT JOIN users u ON u.id = o.user_id
        WHERE CAST(o.id AS TEXT) = ? OR o.payment_reference = ?`,
       [String(id), String(id)],
@@ -2063,6 +2090,11 @@ export const refundPayment = async (req, res) => {
       return res.status(400).json({ message: 'Only completed orders can be refunded' });
     }
 
+    const selectedCircumstance = circumstance || policyCircumstance || '1_ORGANIZER_AUTHORIZED';
+    const policyClause = getPolicyClause(selectedCircumstance);
+    const clauseNum = policyClause?.clauseNumber || 1;
+    const citation = formatPolicyCitation(selectedCircumstance);
+
     if (order.payment_reference) {
       const refundResult = await refundTransaction(order.payment_reference, Number(order.total_amount));
       if (!refundResult.status) {
@@ -2070,31 +2102,167 @@ export const refundPayment = async (req, res) => {
       }
     }
 
-    await pool.execute(`UPDATE orders SET payment_status = 'refunded', updated_at = NOW() WHERE id = ?`, [id]);
+    await pool.execute(
+      `UPDATE orders SET payment_status = 'refunded', order_status = 'refunded', refund_request_status = 'approved', updated_at = NOW() WHERE id = ?`,
+      [order.id],
+    );
     await pool.execute(
       `UPDATE tickets SET status = 'cancelled' WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)`,
-      [id],
+      [order.id],
     );
 
+    // Update or insert into refunds ledger
+    const [existingRefunds] = await pool.execute(`SELECT id FROM refunds WHERE order_id = ?`, [order.id]);
+    if (existingRefunds.length > 0) {
+      await pool.execute(
+        `UPDATE refunds SET
+           status = 'processed', policy_circumstance = ?, clause_number = ?,
+           processed_by = ?, processed_at = NOW(), admin_notes = COALESCE(?, admin_notes)
+         WHERE order_id = ?`,
+        [selectedCircumstance, clauseNum, req.user.id, adminNotes || null, order.id],
+      );
+    } else {
+      await pool.execute(
+        `INSERT INTO refunds (
+           order_id, user_id, event_id, organizer_id, amount, reason,
+           policy_circumstance, clause_number, initiated_by, status,
+           processed_by, processed_at, admin_notes, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'admin', 'processed', ?, NOW(), ?, NOW())`,
+        [
+          order.id,
+          order.user_id,
+          order.event_id,
+          order.organizer_id || null,
+          order.total_amount,
+          reason || policyClause?.description || 'Admin processed refund',
+          selectedCircumstance,
+          clauseNum,
+          req.user.id,
+          adminNotes || null,
+        ],
+      );
+    }
+
+    // Notify buyer citing the official policy clause
     await sendNotification({
       userId: order.user_id,
       title: 'Order Refunded',
-      message: `Your order #${id} has been refunded. Reason: ${reason || 'Admin processed'}.`,
+      message: `Your order #${order.id} has been refunded per ${citation}. Reason: ${reason || policyClause?.title}.`,
       type: 'refund',
     });
+
+    // Notify organizer citing the official policy clause
+    if (order.organizer_id) {
+      await sendNotification({
+        userId: order.organizer_id,
+        title: 'Refund Issued by Platform',
+        message: `TRIBESANDCLIQS has refunded Order #${order.id} for "${order.event_title || 'Event'}" per ${citation}.`,
+        type: 'refund',
+      });
+    }
 
     await logAudit({
       userId: req.user.id,
       action: 'admin_refund_order',
       entityType: 'order',
-      entityId: Number(id),
-      details: { amount: order.total_amount, reason },
+      entityId: Number(order.id),
+      details: {
+        amount: order.total_amount,
+        reason,
+        circumstance: selectedCircumstance,
+        clauseNumber: clauseNum,
+        citation,
+      },
     });
 
-    res.json({ message: 'Payment refunded successfully' });
+    res.json({
+      message: `Payment refunded successfully under ${citation}.`,
+      orderId: order.id,
+      circumstance: selectedCircumstance,
+      clause: policyClause,
+    });
   } catch (err) {
     console.error('[adminController.refundPayment]', err);
     res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const processUnresponsiveRefunds = async (req, res) => {
+  try {
+    // Find all pending refund requests where organizer_deadline has passed (< NOW())
+    const [pendingRows] = await pool.execute(
+      `SELECT r.*, o.payment_reference, o.total_amount, o.user_id AS buyer_user_id,
+              e.title AS event_title
+       FROM refunds r
+       JOIN orders o ON o.id = r.order_id
+       JOIN events e ON e.id = r.event_id
+       WHERE r.status = 'pending' AND r.organizer_deadline < NOW()`,
+    );
+
+    const processed = [];
+    const circumstance = '5_BUYER_CIRCUMSTANCES_UNRESPONSIVE_ORGANIZER';
+    const citation = formatPolicyCitation(circumstance);
+
+    for (const reqRow of pendingRows) {
+      if (reqRow.payment_reference) {
+        const refundResult = await refundTransaction(reqRow.payment_reference, Number(reqRow.total_amount));
+        if (!refundResult.status) {
+          console.warn('[processUnresponsiveRefunds] Paystack refund note:', refundResult.error);
+        }
+      }
+
+      await pool.execute(
+        `UPDATE orders SET payment_status = 'refunded', order_status = 'refunded', refund_request_status = 'approved', updated_at = NOW() WHERE id = ?`,
+        [reqRow.order_id],
+      );
+      await pool.execute(
+        `UPDATE tickets SET status = 'cancelled' WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)`,
+        [reqRow.order_id],
+      );
+      await pool.execute(
+        `UPDATE refunds SET
+           status = 'processed', policy_circumstance = ?, clause_number = 5,
+           processed_by = ?, processed_at = NOW(),
+           admin_notes = COALESCE(admin_notes, 'Auto-processed under Clause 5: Organizer unresponsive > 1 day SLA')
+         WHERE id = ?`,
+        [circumstance, req.user.id, reqRow.id],
+      );
+
+      await sendNotification({
+        userId: reqRow.buyer_user_id,
+        title: 'Refund Approved — Organizer Unresponsive SLA',
+        message: `Your refund for Order #${reqRow.order_id} has been issued under ${citation}.`,
+        type: 'refund',
+      });
+
+      if (reqRow.organizer_id) {
+        await sendNotification({
+          userId: reqRow.organizer_id,
+          title: 'Refund Executed (1-Day SLA Expired)',
+          message: `Order #${reqRow.order_id} on "${reqRow.event_title}" was refunded under ${citation} due to no organizer response within 1 day.`,
+          type: 'refund',
+        });
+      }
+
+      await logAudit({
+        userId: req.user.id,
+        action: 'auto_refund_unresponsive_organizer',
+        entityType: 'order',
+        entityId: Number(reqRow.order_id),
+        details: { refundRequestId: reqRow.id, amount: reqRow.total_amount, clauseNumber: 5 },
+      });
+
+      processed.push({ orderId: reqRow.order_id, refundId: reqRow.id });
+    }
+
+    res.json({
+      message: `Processed ${processed.length} overdue refund requests under Clause 5 (Unresponsive Organizer).`,
+      count: processed.length,
+      processed,
+    });
+  } catch (err) {
+    console.error('[adminController.processUnresponsiveRefunds]', err);
+    res.status(500).json({ message: 'Server error processing overdue refunds' });
   }
 };
 
@@ -3490,7 +3658,7 @@ export default {
   getUserManagementStats, getUserActivity, getUserSessions, getUserStats, forceLogoutUser, addAdminNote, getAdminNotes, deleteAdminNote, exportUsers, bulkRoleChange, bulkDeleteUsers,
   getEvents, approveEvent, rejectEvent, requestEventChanges, featureEvent, suspendEvent, unsuspendEvent, adminDeleteEvent,
   getCategories, createCategory, updateCategory, deleteCategory,
-  getPayments, getPayment, refundPayment, getWithdrawals, approveWithdrawal, rejectWithdrawal,
+  getPayments, getPayment, refundPayment, processUnresponsiveRefunds, getWithdrawals, approveWithdrawal, rejectWithdrawal,
   getReports, getRevenueReport, getGrowthReport,
   getSupportTickets, getSupportTicket, respondToSupportTicket, closeSupportTicket, resolveSupportTicket,
   sendAnnouncement, getAdminAnnouncements, getNotificationTemplates, getAdminNotifications, markAdminNotificationsRead, deleteAdminNotification, getAuditLogs, getSystemSettings, updateSystemSettings,

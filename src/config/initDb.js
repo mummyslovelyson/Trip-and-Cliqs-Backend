@@ -169,6 +169,21 @@ async function initDb() {
           CONSTRAINT fk_ut_tt FOREIGN KEY (ticket_type_id) REFERENCES ticket_types(id) ON DELETE CASCADE
         )`,
         `CREATE INDEX IF NOT EXISTS idx_ut_tt_unassigned ON uploaded_tickets(ticket_type_id, is_assigned)`,
+        `ALTER TABLE orders ADD COLUMN IF NOT EXISTS refund_requested_at TIMESTAMPTZ`,
+        `ALTER TABLE orders ADD COLUMN IF NOT EXISTS refund_request_status VARCHAR(50)`,
+        `ALTER TABLE refunds ADD COLUMN IF NOT EXISTS policy_circumstance VARCHAR(80)`,
+        `ALTER TABLE refunds ADD COLUMN IF NOT EXISTS clause_number INT`,
+        `ALTER TABLE refunds ADD COLUMN IF NOT EXISTS organizer_id BIGINT`,
+        `ALTER TABLE refunds ADD COLUMN IF NOT EXISTS event_id BIGINT`,
+        `ALTER TABLE refunds ADD COLUMN IF NOT EXISTS organizer_deadline TIMESTAMPTZ`,
+        `ALTER TABLE refunds ADD COLUMN IF NOT EXISTS organizer_response TEXT`,
+        `ALTER TABLE refunds ADD COLUMN IF NOT EXISTS organizer_responded_at TIMESTAMPTZ`,
+        `ALTER TABLE refunds ADD COLUMN IF NOT EXISTS admin_notes TEXT`,
+        `ALTER TABLE refunds ADD COLUMN IF NOT EXISTS initiated_by VARCHAR(50) DEFAULT 'buyer'`,
+        `ALTER TABLE refunds ADD COLUMN IF NOT EXISTS paystack_reference VARCHAR(100)`,
+        `CREATE INDEX IF NOT EXISTS idx_ref_status ON refunds(status)`,
+        `CREATE INDEX IF NOT EXISTS idx_ref_org_deadline ON refunds(organizer_deadline)`,
+        `CREATE INDEX IF NOT EXISTS idx_ref_policy_circ ON refunds(policy_circumstance)`,
       ];
       for (const migSql of safeMigrations) {
         try {

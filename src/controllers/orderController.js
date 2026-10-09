@@ -8,6 +8,7 @@ import { sendTicketConfirmationSMS } from '../utils/sms.js';
 import { sendNotification, notifyAdmins } from '../utils/notify.js';
 import { logAudit } from '../utils/audit.js';
 import textPdf from '../utils/pdf.js';
+import { REFUND_POLICY_CIRCUMSTANCES, getPolicyClause, formatPolicyCitation } from '../constants/refundPolicy.js';
 
 /**
  * Validate and price a coupon for an event.
@@ -581,9 +582,18 @@ export const getOrder = async (req, res) => {
 export const getUserOrders = async (req, res) => {
   try {
     const [rows] = await pool.execute(
-      `SELECT o.*, e.title AS event_title, e.banner_image
+      `SELECT o.*, e.title AS event_title, e.banner_image, e.start_date, e.start_time, e.venue_name,
+              r.id AS refund_request_id, r.status AS refund_status_detail,
+              r.reason AS refund_reason, r.organizer_deadline, r.policy_circumstance, r.clause_number
        FROM orders o
        JOIN events e ON e.id = o.event_id
+       LEFT JOIN LATERAL (
+         SELECT id, status, reason, organizer_deadline, policy_circumstance, clause_number
+         FROM refunds
+         WHERE order_id = o.id
+         ORDER BY id DESC
+         LIMIT 1
+       ) r ON TRUE
        WHERE o.user_id = ?
        ORDER BY o.created_at DESC`,
       [req.user.id],
@@ -779,20 +789,23 @@ export const cancelOrder = async (req, res) => {
 export const requestRefund = async (req, res) => {
   try {
     const { id } = req.params;
-    const { reason } = req.body || {};
+    const { reason, circumstance, policyCircumstance, adminNotes } = req.body || {};
     const [rows] = await pool.execute('SELECT * FROM orders WHERE id = ?', [id]);
     const order = rows[0];
     if (!order) return res.status(404).json({ message: 'Order not found' });
 
     // Authorization: Buyer, Admin, or Organizer who owns the event
-    let isAuthorized = order.user_id === req.user.id || req.user.role === 'admin';
-    if (!isAuthorized && req.user.role === 'organizer') {
-      const [eventRows] = await pool.execute('SELECT organizer_id FROM events WHERE id = ?', [order.event_id]);
-      if (eventRows[0] && Number(eventRows[0].organizer_id) === Number(req.user.id)) {
-        isAuthorized = true;
-      }
+    const isBuyer = Number(order.user_id) === Number(req.user.id);
+    const isAdmin = ['admin', 'system_admin', 'superadmin'].includes(req.user.role);
+    let isOrganizer = false;
+
+    const [eventRows] = await pool.execute('SELECT organizer_id, title FROM events WHERE id = ?', [order.event_id]);
+    const event = eventRows[0] || {};
+    if (Number(event.organizer_id) === Number(req.user.id)) {
+      isOrganizer = true;
     }
-    if (!isAuthorized) {
+
+    if (!isBuyer && !isAdmin && !isOrganizer) {
       return res.status(403).json({ message: 'Forbidden' });
     }
 
@@ -803,26 +816,179 @@ export const requestRefund = async (req, res) => {
       return res.status(400).json({ message: 'Only completed orders can be refunded' });
     }
 
+    // PATH 1: BUYER REQUEST (creates pending refund request with 1-day organizer SLA per Clause 5)
+    if (isBuyer && !isAdmin && !isOrganizer) {
+      const [existingPending] = await pool.execute(
+        `SELECT id, status, organizer_deadline FROM refunds WHERE order_id = ? AND status = 'pending'`,
+        [id],
+      );
+      if (existingPending.length > 0) {
+        return res.status(400).json({
+          message: 'A refund request for this order is already pending organizer review.',
+          deadline: existingPending[0].organizer_deadline,
+        });
+      }
+
+      // 1 day (24 hours) SLA for organizer response
+      const deadline = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      const chosenCircumstance = circumstance || policyCircumstance || '5_BUYER_CIRCUMSTANCES_UNRESPONSIVE_ORGANIZER';
+      const clause = getPolicyClause(chosenCircumstance);
+
+      await pool.execute(
+        `INSERT INTO refunds (
+           order_id, user_id, event_id, organizer_id, amount, reason,
+           policy_circumstance, clause_number, initiated_by, status, organizer_deadline, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'buyer', 'pending', ?, NOW())`,
+        [
+          id,
+          order.user_id,
+          order.event_id,
+          event.organizer_id || null,
+          order.total_amount,
+          reason || 'Requested by buyer',
+          chosenCircumstance,
+          clause?.clauseNumber || 5,
+          deadline,
+        ],
+      );
+
+      await pool.execute(
+        `UPDATE orders SET refund_requested_at = NOW(), refund_request_status = 'pending', updated_at = NOW() WHERE id = ?`,
+        [id],
+      );
+
+      // Notify organizer of the 24h deadline under TRIBESANDCLIQS Refund Policy
+      if (event.organizer_id) {
+        await sendNotification({
+          userId: event.organizer_id,
+          title: 'Refund Request Received (1-Day SLA)',
+          message: `A buyer requested a refund for Order #${id} on "${event.title || 'your event'}". Per TRIBESANDCLIQS Refund Policy, you have 1 day (24 hours) to review. If unaddressed, TRIBESANDCLIQS reserves the right to issue a refund under Clause 5.`,
+          type: 'refund',
+        });
+      }
+
+      // Notify buyer
+      await sendNotification({
+        userId: order.user_id,
+        title: 'Refund Request Submitted',
+        message: `Your refund request for Order #${id} has been submitted. The event organizer has 1 day (24 hours) to review your request under the TRIBESANDCLIQS Refund Policy.`,
+        type: 'refund',
+      });
+
+      await logAudit({
+        userId: req.user.id,
+        action: 'buyer_refund_request',
+        entityType: 'order',
+        entityId: id,
+        details: { reason, deadline },
+      });
+
+      return res.json({
+        message: 'Refund request submitted. The organizer has 1 day (24 hours) to respond per TRIBESANDCLIQS Refund Policy.',
+        status: 'pending',
+        deadline,
+      });
+    }
+
+    // PATH 2: ORGANIZER OR ADMIN AUTHORIZATION (Executes refund under official policy clause)
+    let selectedCircumstance = '1_ORGANIZER_AUTHORIZED';
+    if (isAdmin) {
+      selectedCircumstance = circumstance || policyCircumstance || '1_ORGANIZER_AUTHORIZED';
+    } else if (isOrganizer) {
+      selectedCircumstance = '1_ORGANIZER_AUTHORIZED';
+    }
+    const policyClause = getPolicyClause(selectedCircumstance);
+    const clauseNum = policyClause?.clauseNumber || (isOrganizer ? 1 : 1);
+    const citation = formatPolicyCitation(selectedCircumstance);
+
+    // Call payment provider (Paystack)
     if (order.payment_reference) {
       const refundResult = await refundTransaction(order.payment_reference, Number(order.total_amount));
       if (!refundResult.status) {
-        console.warn('[orderController.requestRefund] Paystack refund note:', refundResult.error);
+        console.warn('[orderController.requestRefund] Paystack refund notice:', refundResult.error);
       }
     }
 
-    await pool.execute(`UPDATE orders SET payment_status = 'refunded', updated_at = NOW() WHERE id = ?`, [id]);
-    await pool.execute(`UPDATE tickets SET status = 'cancelled' WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)`, [id]);
+    await pool.execute(
+      `UPDATE orders SET payment_status = 'refunded', order_status = 'refunded', refund_request_status = 'approved', updated_at = NOW() WHERE id = ?`,
+      [id],
+    );
+    await pool.execute(
+      `UPDATE tickets SET status = 'cancelled' WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)`,
+      [id],
+    );
 
+    // Update or insert into refunds ledger
+    const [existingRefunds] = await pool.execute(`SELECT id FROM refunds WHERE order_id = ?`, [id]);
+    if (existingRefunds.length > 0) {
+      await pool.execute(
+        `UPDATE refunds SET
+           status = 'processed', policy_circumstance = ?, clause_number = ?,
+           processed_by = ?, processed_at = NOW(), admin_notes = COALESCE(?, admin_notes)
+         WHERE order_id = ?`,
+        [selectedCircumstance, clauseNum, req.user.id, adminNotes || null, id],
+      );
+    } else {
+      await pool.execute(
+        `INSERT INTO refunds (
+           order_id, user_id, event_id, organizer_id, amount, reason,
+           policy_circumstance, clause_number, initiated_by, status,
+           processed_by, processed_at, admin_notes, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'processed', ?, NOW(), ?, NOW())`,
+        [
+          id,
+          order.user_id,
+          order.event_id,
+          event.organizer_id || null,
+          order.total_amount,
+          reason || policyClause?.description || 'Refund processed',
+          selectedCircumstance,
+          clauseNum,
+          isAdmin ? 'admin' : 'organizer',
+          req.user.id,
+          adminNotes || null,
+        ],
+      );
+    }
+
+    // Notify buyer with formal policy citation
     await sendNotification({
       userId: order.user_id,
-      title: 'Refund processed',
-      message: `Your refund for order #${id} has been processed. Reason: ${reason || 'not specified'}`,
+      title: 'Refund Approved & Processed',
+      message: `Your refund for Order #${id} has been processed per ${citation}. Reason: ${reason || policyClause?.title}.`,
       type: 'refund',
     });
 
-    await logAudit({ userId: req.user.id, action: 'refund_order', entityType: 'order', entityId: id, details: { reason } });
+    // If admin issued it, also notify organizer
+    if (isAdmin && event.organizer_id) {
+      await sendNotification({
+        userId: event.organizer_id,
+        title: 'Refund Executed on Event Order',
+        message: `Order #${id} on "${event.title}" was refunded by TRIBESANDCLIQS per ${citation}.`,
+        type: 'refund',
+      });
+    }
 
-    res.json({ message: 'Refund processed successfully' });
+    await logAudit({
+      userId: req.user.id,
+      action: 'refund_order_approved',
+      entityType: 'order',
+      entityId: id,
+      details: {
+        reason,
+        circumstance: selectedCircumstance,
+        clauseNumber: clauseNum,
+        citation,
+        amount: order.total_amount,
+      },
+    });
+
+    return res.json({
+      message: `Refund processed successfully under ${citation}.`,
+      status: 'refunded',
+      circumstance: selectedCircumstance,
+      clause: policyClause,
+    });
   } catch (err) {
     console.error('[orderController.requestRefund]', err);
     res.status(500).json({ message: 'Server error' });

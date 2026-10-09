@@ -3,6 +3,8 @@ import { logAudit } from '../utils/audit.js';
 import { notifyAdmins, sendNotification } from '../utils/notify.js';
 import { notifyFollowersOfNewEvent, notifyReminderSubscribers, processEventReminders } from '../utils/eventReminders.js';
 import cache from '../utils/cache.js';
+import { refundTransaction } from '../utils/paystack.js';
+import { formatPolicyCitation } from '../constants/refundPolicy.js';
 
 // JSON columns (images, tags) arrive as strings from MySQL — normalise to
 // arrays so the API always hands the frontend something it can iterate.
@@ -737,8 +739,64 @@ export const updateEvent = async (req, res) => {
     if (req.body.status === 'cancelled' && event.status !== 'cancelled') {
       notifyReminderSubscribers(id, 'event_cancelled', {
         title: `Event cancelled: ${event.title}`,
-        message: `We regret to inform you that "${event.title}" has been cancelled.`,
+        message: `We regret to inform you that "${event.title}" has been cancelled. All ticket purchases are eligible for full refunds under TRIBESANDCLIQS Refund Policy (Clause 2).`,
       }).catch(() => {});
+
+      // Auto-refund all completed orders under Clause 2 (Event Cancelled by Organizer)
+      try {
+        const [ordersToRefund] = await pool.execute(
+          `SELECT id, user_id, total_amount, payment_reference
+           FROM orders
+           WHERE event_id = ? AND payment_status = 'completed'`,
+          [id],
+        );
+
+        for (const ord of ordersToRefund) {
+          const circumstance = '2_EVENT_CANCELLED';
+          const citation = formatPolicyCitation(circumstance);
+
+          if (ord.payment_reference) {
+            refundTransaction(ord.payment_reference, Number(ord.total_amount)).catch((err) => {
+              console.warn(`[eventController.updateEvent] Paystack refund note for order #${ord.id}:`, err.message);
+            });
+          }
+
+          await pool.execute(
+            `UPDATE orders SET payment_status = 'refunded', order_status = 'refunded', refund_request_status = 'approved', updated_at = NOW() WHERE id = ?`,
+            [ord.id],
+          );
+          await pool.execute(
+            `UPDATE tickets SET status = 'cancelled' WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)`,
+            [ord.id],
+          );
+          await pool.execute(
+            `INSERT INTO refunds (
+               order_id, user_id, event_id, organizer_id, amount, reason,
+               policy_circumstance, clause_number, initiated_by, status,
+               processed_by, processed_at, admin_notes, created_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, 2, 'organizer', 'processed', ?, NOW(), 'Auto-refunded under Clause 2 (Event Cancelled)', NOW())`,
+            [
+              ord.id,
+              ord.user_id,
+              id,
+              event.organizer_id,
+              ord.total_amount,
+              `Event cancelled by organizer: ${event.title}`,
+              circumstance,
+              organizerId,
+            ],
+          );
+
+          sendNotification({
+            userId: ord.user_id,
+            title: 'Full Refund Issued: Event Cancelled',
+            message: `Your booking for "${event.title}" (Order #${ord.id}) has been refunded in full per ${citation}.`,
+            type: 'refund',
+          }).catch(() => {});
+        }
+      } catch (refundErr) {
+        console.error('[eventController.updateEvent] Auto-refund error on event cancel:', refundErr);
+      }
     }
 
     res.json({ message: 'Event updated' });

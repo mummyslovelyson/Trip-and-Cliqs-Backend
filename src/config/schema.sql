@@ -190,6 +190,8 @@ CREATE TABLE IF NOT EXISTS orders (
   resale_listing_id BIGINT,
   order_status     TEXT NOT NULL DEFAULT 'active' CHECK (order_status IN ('active','cancelled','refunded','completed')),
   cancel_reason    TEXT,
+  refund_requested_at TIMESTAMPTZ,
+  refund_request_status VARCHAR(50),
   created_at       TIMESTAMPTZ DEFAULT NOW(),
   updated_at       TIMESTAMPTZ DEFAULT NOW(),
   CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -618,18 +620,34 @@ CREATE INDEX IF NOT EXISTS idx_pay_event ON payments(event_id);
 
 -- ────────────────  REFUNDS  ────────────────
 CREATE TABLE IF NOT EXISTS refunds (
-  id              BIGSERIAL PRIMARY KEY,
-  order_id        BIGINT NOT NULL,
-  user_id         BIGINT NOT NULL,
-  amount          DECIMAL(12,2) NOT NULL,
-  reason          TEXT,
-  status          TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','processed')),
-  processed_by    BIGINT,
-  processed_at    TIMESTAMPTZ,
-  created_at      TIMESTAMPTZ DEFAULT NOW(),
+  id                  BIGSERIAL PRIMARY KEY,
+  order_id            BIGINT NOT NULL,
+  user_id             BIGINT NOT NULL,
+  event_id            BIGINT,
+  organizer_id        BIGINT,
+  amount              DECIMAL(12,2) NOT NULL,
+  reason              TEXT,
+  policy_circumstance VARCHAR(80),
+  clause_number       INT,
+  initiated_by        VARCHAR(50) DEFAULT 'buyer',
+  status              TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','processed')),
+  organizer_deadline  TIMESTAMPTZ,
+  organizer_response  TEXT,
+  organizer_responded_at TIMESTAMPTZ,
+  admin_notes         TEXT,
+  paystack_reference  VARCHAR(100),
+  processed_by        BIGINT,
+  processed_at        TIMESTAMPTZ,
+  created_at          TIMESTAMPTZ DEFAULT NOW(),
   CONSTRAINT fk_ref_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
   CONSTRAINT fk_ref_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+CREATE INDEX IF NOT EXISTS idx_ref_status ON refunds(status);
+CREATE INDEX IF NOT EXISTS idx_ref_order ON refunds(order_id);
+CREATE INDEX IF NOT EXISTS idx_ref_user ON refunds(user_id);
+CREATE INDEX IF NOT EXISTS idx_ref_org_deadline ON refunds(organizer_deadline);
+CREATE INDEX IF NOT EXISTS idx_ref_policy_circ ON refunds(policy_circumstance);
 
 -- ────────────────  AUDIT LOGS  ────────────────
 CREATE TABLE IF NOT EXISTS audit_logs (

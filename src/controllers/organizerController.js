@@ -5,6 +5,8 @@ import { sendNotification, notifyAdmins } from '../utils/notify.js';
 import { logAudit } from '../utils/audit.js';
 import { validatePassword } from '../utils/password.js';
 import textPdf from '../utils/pdf.js';
+import { refundTransaction } from '../utils/paystack.js';
+import { REFUND_POLICY_CIRCUMSTANCES, getPolicyClause, formatPolicyCitation } from '../constants/refundPolicy.js';
 
 /* ------------------------------------------------------------------ */
 /* Dashboard stats                                                     */
@@ -1780,6 +1782,206 @@ export const getWalletEarnings = async (req, res) => {
   }
 };
 
+export const getOrganizerRefundRequests = async (req, res) => {
+  try {
+    const organizerId = req.user.id;
+    const { status, eventId } = req.query;
+
+    const conditions = ['e.organizer_id = ?'];
+    const params = [organizerId];
+
+    if (status && status !== 'all') {
+      conditions.push('r.status = ?');
+      params.push(status);
+    }
+    if (eventId) {
+      conditions.push('r.event_id = ?');
+      params.push(eventId);
+    }
+
+    const where = `WHERE ${conditions.join(' AND ')}`;
+
+    const [rows] = await pool.execute(
+      `SELECT r.id, r.order_id, r.user_id, r.event_id, r.amount, r.reason,
+              r.policy_circumstance, r.clause_number, r.initiated_by, r.status,
+              r.organizer_deadline, r.organizer_response, r.organizer_responded_at,
+              r.created_at, r.processed_at,
+              o.payment_reference, o.payment_status, o.total_amount, o.created_at AS order_created_at,
+              e.title AS event_title,
+              u.name AS buyer_name, u.email AS buyer_email, u.phone AS buyer_phone
+       FROM refunds r
+       JOIN orders o ON o.id = r.order_id
+       JOIN events e ON e.id = r.event_id
+       JOIN users u ON u.id = r.user_id
+       ${where}
+       ORDER BY CASE WHEN r.status = 'pending' THEN 0 ELSE 1 END, r.created_at DESC`,
+      params,
+    );
+
+    const now = new Date();
+    const formatted = rows.map((r) => {
+      const deadline = r.organizer_deadline ? new Date(r.organizer_deadline) : null;
+      const isOverdue = deadline ? deadline < now && r.status === 'pending' : false;
+      const hoursRemaining = deadline ? Math.max(0, Math.round((deadline - now) / (1000 * 60 * 60))) : null;
+      const clause = getPolicyClause(r.policy_circumstance || r.clause_number);
+
+      return {
+        id: r.id,
+        orderId: r.order_id,
+        userId: r.user_id,
+        eventId: r.event_id,
+        amount: Number(r.amount),
+        reason: r.reason,
+        policyCircumstance: r.policy_circumstance,
+        clauseNumber: r.clause_number || clause?.clauseNumber || 5,
+        policyTitle: clause ? `Clause ${clause.clauseNumber}: ${clause.shortTitle}` : null,
+        status: r.status,
+        organizerDeadline: r.organizer_deadline,
+        isOverdue,
+        hoursRemaining,
+        organizerResponse: r.organizer_response,
+        organizerRespondedAt: r.organizer_responded_at,
+        createdAt: r.created_at,
+        processedAt: r.processed_at,
+        orderReference: r.payment_reference,
+        eventTitle: r.event_title,
+        buyerName: r.buyer_name,
+        buyerEmail: r.buyer_email,
+        buyerPhone: r.buyer_phone,
+      };
+    });
+
+    res.json({ refundRequests: formatted });
+  } catch (err) {
+    console.error('[organizerController.getOrganizerRefundRequests]', err);
+    res.status(500).json({ message: 'Failed to load refund requests' });
+  }
+};
+
+export const respondToRefundRequest = async (req, res) => {
+  try {
+    const organizerId = req.user.id;
+    const { id } = req.params;
+    const { action, responseReason } = req.body || {};
+
+    if (!['authorize', 'decline'].includes(action)) {
+      return res.status(400).json({ message: 'Action must be either "authorize" or "decline"' });
+    }
+
+    const [rRows] = await pool.execute(
+      `SELECT r.*, o.payment_reference, o.total_amount, e.title AS event_title, e.organizer_id
+       FROM refunds r
+       JOIN orders o ON o.id = r.order_id
+       JOIN events e ON e.id = r.event_id
+       WHERE r.id = ?`,
+      [id],
+    );
+    const refund = rRows[0];
+    if (!refund) return res.status(404).json({ message: 'Refund request not found' });
+
+    if (Number(refund.organizer_id) !== Number(organizerId) && req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Forbidden: You do not own this event' });
+    }
+
+    if (refund.status !== 'pending') {
+      return res.status(400).json({ message: `Refund request is already ${refund.status}` });
+    }
+
+    if (action === 'authorize') {
+      // Clause 1: Event Organizer has authorized refunds
+      const circumstance = '1_ORGANIZER_AUTHORIZED';
+      const citation = formatPolicyCitation(circumstance);
+
+      if (refund.payment_reference) {
+        const refundResult = await refundTransaction(refund.payment_reference, Number(refund.total_amount));
+        if (!refundResult.status) {
+          console.warn('[organizerController.respondToRefundRequest] Paystack refund note:', refundResult.error);
+        }
+      }
+
+      await pool.execute(
+        `UPDATE orders SET payment_status = 'refunded', order_status = 'refunded', refund_request_status = 'approved', updated_at = NOW() WHERE id = ?`,
+        [refund.order_id],
+      );
+      await pool.execute(
+        `UPDATE tickets SET status = 'cancelled' WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)`,
+        [refund.order_id],
+      );
+      await pool.execute(
+        `UPDATE refunds SET
+           status = 'processed', policy_circumstance = ?, clause_number = 1,
+           processed_by = ?, processed_at = NOW(),
+           organizer_response = ?, organizer_responded_at = NOW()
+         WHERE id = ?`,
+        [circumstance, organizerId, responseReason || 'Authorized by Organizer', id],
+      );
+
+      await sendNotification({
+        userId: refund.user_id,
+        title: 'Refund Approved by Organizer',
+        message: `Your refund for Order #${refund.order_id} on "${refund.event_title}" has been authorized and processed per ${citation}.`,
+        type: 'refund',
+      });
+
+      await logAudit({
+        userId: organizerId,
+        action: 'organizer_authorize_refund',
+        entityType: 'refund',
+        entityId: Number(id),
+        details: { orderId: refund.order_id, amount: refund.total_amount, clauseNumber: 1 },
+      });
+
+      return res.json({
+        message: 'Refund authorized and processed successfully.',
+        status: 'processed',
+        citation,
+      });
+    }
+
+    if (action === 'decline') {
+      if (!responseReason || !responseReason.trim()) {
+        return res.status(400).json({ message: 'Please provide an explanation for declining the refund request.' });
+      }
+
+      await pool.execute(
+        `UPDATE refunds SET
+           status = 'rejected',
+           organizer_response = ?,
+           organizer_responded_at = NOW()
+         WHERE id = ?`,
+        [responseReason.trim(), id],
+      );
+      await pool.execute(
+        `UPDATE orders SET refund_request_status = 'declined', updated_at = NOW() WHERE id = ?`,
+        [refund.order_id],
+      );
+
+      await sendNotification({
+        userId: refund.user_id,
+        title: 'Refund Request Declined by Organizer',
+        message: `Your refund request for Order #${refund.order_id} was declined by the organizer: "${responseReason.trim()}". You may reach out to support if you believe this violates TRIBESANDCLIQS policy.`,
+        type: 'refund',
+      });
+
+      await logAudit({
+        userId: organizerId,
+        action: 'organizer_decline_refund',
+        entityType: 'refund',
+        entityId: Number(id),
+        details: { orderId: refund.order_id, reason: responseReason.trim() },
+      });
+
+      return res.json({
+        message: 'Refund request declined. The buyer has been notified.',
+        status: 'rejected',
+      });
+    }
+  } catch (err) {
+    console.error('[organizerController.respondToRefundRequest]', err);
+    res.status(500).json({ message: 'Failed to process response' });
+  }
+};
+
 export default {
   getDashboardStats, getOrganizerProfile, updateOrganizerProfile, getRevenue,
   getEventAnalytics,
@@ -1790,4 +1992,5 @@ export default {
   getOrganizationSettings, updateOrganizationSettings, getPaymentAccount, updatePaymentAccount, changePassword, getActiveSessions, revokeSession, getBranding, updateBranding,
   getFlashSales, createFlashSale, deleteFlashSale,
   getMarketingCampaigns, createMarketingCampaign, getPendingInvites, inviteTeamMember, resendInvite, cancelInvite, getWalletBalance, getTransactions, getWalletEarnings,
+  getOrganizerRefundRequests, respondToRefundRequest,
 };

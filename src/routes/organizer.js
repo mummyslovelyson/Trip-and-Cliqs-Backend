@@ -10,6 +10,7 @@ import {
   getOrganizationSettings, updateOrganizationSettings, getPaymentAccount, updatePaymentAccount, getActiveSessions, revokeSession, getBranding, updateBranding,
   getFlashSales, createFlashSale, deleteFlashSale,
   getMarketingCampaigns, createMarketingCampaign, getPendingInvites, inviteTeamMember, resendInvite, cancelInvite, getWalletBalance, getTransactions, getWalletEarnings,
+  getOrganizerRefundRequests, respondToRefundRequest,
 } from '../controllers/organizerController.js';
 import {
   changePassword, getSessions, revokeOneSession,
@@ -40,6 +41,10 @@ router.get('/reports/attendance', getAttendanceReport);
 router.get('/reports/top-events', getTopEvents);
 router.get('/reports/refunds', getRefundReport);
 router.get('/reports/export', exportReport);
+
+// Refunds & Policy SLA
+router.get('/refunds', getOrganizerRefundRequests);
+router.post('/refunds/:id/respond', writeLimiter, respondToRefundRequest);
 
 // Profile & Settings
 router.get('/profile/:id', getOrganizerProfile);
