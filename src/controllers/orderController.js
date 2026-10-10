@@ -521,7 +521,7 @@ export const getOrderInvoice = async (req, res) => {
         '',
         'Thank you for booking with Tribes & Cliqs.',
         'This receipt is an official proof of payment and ticket fulfillment.',
-        `Verification Link: https://tribesandcliqs.com/verify/${order.payment_reference}`,
+        `Verification Link: ${(process.env.FRONTEND_URL || 'https://tribesandcliqs.com').replace(/\/+$/, '')}/verify/${order.payment_reference}`,
       ],
     });
 
@@ -1336,7 +1336,7 @@ export const paymentCallbackBridge = async (req, res) => {
     <p class="desc">Your tickets have been issued and added to your digital pass wallet.</p>
     ${reference ? `<div class="ref-box">Reference: <span class="ref-code">${reference}</span></div>` : ''}
     <a id="returnBtn" class="btn" href="#">Return to Tribes &amp; Cliqs App</a>
-    <a id="webBtn" class="btn btn-secondary" href="https://tribesandcliqs-app.vercel.app/profile">View on Web</a>
+    ${process.env.FRONTEND_URL ? `<a id="webBtn" class="btn btn-secondary" href="${process.env.FRONTEND_URL.replace(/\/+$/, '')}/profile">View on Web</a>` : ''}
   </div>
   <script>
     (function() {

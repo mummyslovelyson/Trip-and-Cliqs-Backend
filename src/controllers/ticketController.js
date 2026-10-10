@@ -441,6 +441,15 @@ export const getUserTickets = async (req, res) => {
       }
     }
 
+    const statusFilter = req.query.status ? String(req.query.status).toLowerCase().trim() : null;
+    let statusCondition = "AND t.status != 'transferred'";
+    const queryParams = [req.user.id];
+
+    if (statusFilter && statusFilter !== 'all') {
+      statusCondition += ' AND t.status = ?';
+      queryParams.push(statusFilter);
+    }
+
     const [rows] = await pool.execute(
       `SELECT t.*, tt.name AS ticket_type_name, tt.price AS ticket_price,
               COALESCE(oi.unit_price, tt.price, 0) AS unit_price,
@@ -460,9 +469,9 @@ export const getUserTickets = async (req, res) => {
        LEFT JOIN orders o ON o.id = oi.order_id
        LEFT JOIN events e ON e.id = t.event_id
        LEFT JOIN users u ON u.id = t.user_id
-       WHERE t.user_id = ?
+       WHERE t.user_id = ? ${statusCondition}
        ORDER BY t.created_at DESC`,
-      [req.user.id],
+      queryParams,
     );
     res.json({ tickets: rows });
   } catch (err) {
@@ -756,7 +765,7 @@ export const transferTicket = async (req, res) => {
         ? `${new Date(ev.start_date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}${ev.start_time ? ` at ${ev.start_time}` : ''}`
         : 'Upcoming';
       const eventVenue = [ev.venue, ev.city].filter(Boolean).join(', ') || 'Venue TBA';
-      const frontendUrl = process.env.FRONTEND_URL || 'https://tribesandcliqs.vercel.app';
+      const frontendUrl = (process.env.FRONTEND_URL || '').replace(/\/+$/, '');
 
       // 1. In-app notification to recipient
       sendNotification({

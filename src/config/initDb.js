@@ -246,27 +246,29 @@ async function initDb() {
     }
 
     const bcrypt = (await import('bcryptjs')).default;
-    const adminEmail = (process.env.ADMIN_EMAIL || 'admin@tribesandcliqs.com').toLowerCase().trim();
-    const { rows: adminRows } = await connection.query(
-      `SELECT id, role FROM users WHERE email = $1 OR role IN ('system_admin', 'superadmin', 'admin') LIMIT 1`,
-      [adminEmail],
-    );
+    const adminEmail = process.env.ADMIN_EMAIL ? process.env.ADMIN_EMAIL.toLowerCase().trim() : null;
+    const adminPass = process.env.ADMIN_PASSWORD ? String(process.env.ADMIN_PASSWORD) : null;
 
-    if (adminRows.length === 0) {
-      const adminPass = process.env.ADMIN_PASSWORD || 'tribesandcliqs';
-      if (!process.env.ADMIN_PASSWORD && process.env.NODE_ENV === 'production') {
-        console.warn('ADMIN_PASSWORD is not set — the seed admin account uses the default password. Set ADMIN_PASSWORD before deploying.');
-      }
-      const adminHash = await bcrypt.hash(adminPass, 12);
-      await connection.query(
-        `INSERT INTO users (name, email, password, role, status, is_approved, email_verified)
-         VALUES ('System Administrator', $1, $2, 'system_admin', 'active', TRUE, TRUE)
-         ON CONFLICT (email) DO UPDATE SET role = 'system_admin', status = 'active', email_verified = TRUE`,
-        [adminEmail, adminHash],
-      );
-      console.log('Seed system admin account created.');
+    if (!adminEmail || !adminPass) {
+      console.log('[initDb] ADMIN_EMAIL or ADMIN_PASSWORD not set in environment — skipping admin seed.');
     } else {
-      console.log('System Admin account already exists — skipping seed (password untouched).');
+      const { rows: adminRows } = await connection.query(
+        `SELECT id, role FROM users WHERE email = $1 OR role IN ('system_admin', 'superadmin', 'admin') LIMIT 1`,
+        [adminEmail],
+      );
+
+      if (adminRows.length === 0) {
+        const adminHash = await bcrypt.hash(adminPass, 12);
+        await connection.query(
+          `INSERT INTO users (name, email, password, role, status, is_approved, email_verified)
+           VALUES ('System Administrator', $1, $2, 'system_admin', 'active', TRUE, TRUE)
+           ON CONFLICT (email) DO UPDATE SET role = 'system_admin', status = 'active', email_verified = TRUE`,
+          [adminEmail, adminHash],
+        );
+        console.log('Seed system admin account created from environment credentials.');
+      } else {
+        console.log('System Admin account already exists — skipping seed (password untouched).');
+      }
     }
 
     // Seed default categories if none exist
