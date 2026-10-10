@@ -5,6 +5,8 @@ import textPdf from '../utils/pdf.js';
 import { sendNotification, notifyAdmins } from '../utils/notify.js';
 import { sendTicketTransferEmail } from '../utils/email.js';
 import { sendSMS } from '../utils/sms.js';
+import { verifyTransaction } from '../utils/paystack.js';
+import { completeOrder } from './orderController.js';
 
 /* ------------------------------------------------------------------ */
 /* Get ticket types for an event (public)                              */
@@ -356,7 +358,34 @@ export const deleteTicketType = async (req, res) => {
 /* ------------------------------------------------------------------ */
 export const getUserTickets = async (req, res) => {
   try {
-    // Self-healing: if the user has completed orders whose tickets were not yet minted, mint them now
+    // 0. Auto-verify any recent pending orders for this user with Paystack.
+    // If the user completed payment via mobile money / card / browser callback,
+    // this ensures the order is completed and tickets are minted immediately.
+    try {
+      const [pendingOrders] = await pool.execute(
+        `SELECT id, payment_reference
+         FROM orders
+         WHERE user_id = ? AND payment_status = 'pending' AND payment_reference IS NOT NULL
+         ORDER BY id DESC LIMIT 5`,
+        [req.user.id],
+      );
+
+      for (const po of pendingOrders) {
+        if (!po.payment_reference) continue;
+        try {
+          const vRes = await verifyTransaction(po.payment_reference);
+          if (vRes?.status && vRes.data?.status === 'success') {
+            await completeOrder(po.id, po.payment_reference);
+          }
+        } catch {
+          // If transaction is still in progress, continue without failing
+        }
+      }
+    } catch (pendingErr) {
+      console.warn('[ticketController.getUserTickets] Pending check notice:', pendingErr.message);
+    }
+
+    // 1. Self-healing: if the user has completed orders whose tickets were not yet minted, mint them now
     try {
       const [completedOrders] = await pool.execute(
         `SELECT o.id, o.event_id
@@ -453,6 +482,7 @@ export const getUserTickets = async (req, res) => {
     const [rows] = await pool.execute(
       `SELECT t.*, tt.name AS ticket_type_name, tt.price AS ticket_price,
               COALESCE(oi.unit_price, tt.price, 0) AS unit_price,
+              COALESCE(oi.unit_price, tt.price, 0) AS price,
               e.title AS event_title, e.venue AS event_venue, e.city AS event_city,
               e.start_date, e.end_date, e.start_time, e.end_time, e.status AS event_status,
               e.banner_image, e.ticket_template,

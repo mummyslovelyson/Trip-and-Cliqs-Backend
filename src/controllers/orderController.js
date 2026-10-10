@@ -1069,6 +1069,12 @@ export const verifyPayment = async (req, res) => {
       } else {
         await generateTicketsForOrder(order.id);
       }
+    } else {
+      return res.status(400).json({
+        message: verifyResult.data.gateway_response || 'Payment not completed',
+        status: verifyResult.data.status,
+        orderId: order.id,
+      });
     }
 
     // Fetch tickets and event data for the completed order so the attendee can view them immediately
