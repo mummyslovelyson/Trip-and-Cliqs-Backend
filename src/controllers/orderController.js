@@ -51,22 +51,30 @@ const MAX_QUANTITY_PER_LINE = 20;
 
 export const createOrder = async (req, res) => {
   const conn = await pool.getConnection();
+  let connReleased = false;
+  const safeRelease = () => {
+    if (!connReleased) {
+      connReleased = true;
+      try { conn.release(); } catch {}
+    }
+  };
+
   try {
     const { eventId, items, couponCode, callbackUrl, customerName, customerEmail, customerPhone } = req.body;
     const paymentMethod = (req.body.paymentMethod ?? 'paystack').toLowerCase();
     if (!eventId || !Array.isArray(items) || items.length === 0) {
-      conn.release();
+      safeRelease();
       return res.status(400).json({ message: 'eventId and items[] are required' });
     }
     if (!SUPPORTED_PAYMENT_METHODS.includes(paymentMethod)) {
-      conn.release();
+      safeRelease();
       return res.status(400).json({ message: `Unsupported payment method: ${paymentMethod}` });
     }
 
     const [eventRows] = await conn.execute('SELECT * FROM events WHERE id = ?', [eventId]);
     const event = eventRows[0];
-    if (!event) { conn.release(); return res.status(404).json({ message: 'Event not found' }); }
-    if (event.status !== 'published') { conn.release(); return res.status(400).json({ message: 'Event is not available for booking' }); }
+    if (!event) { safeRelease(); return res.status(404).json({ message: 'Event not found' }); }
+    if (event.status !== 'published') { safeRelease(); return res.status(400).json({ message: 'Event is not available for booking' }); }
 
     let subtotal = 0;
     const lineItems = [];
@@ -76,25 +84,25 @@ export const createOrder = async (req, res) => {
     for (const item of items) {
       if (!item || item.ticketTypeId === undefined || item.ticketTypeId === null || item.ticketTypeId === '') {
         await conn.rollback();
-        conn.release();
+        safeRelease();
         return res.status(400).json({ message: 'Each order item must include a ticketTypeId' });
       }
 
       const quantity = Number(item.quantity);
       if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_QUANTITY_PER_LINE) {
         await conn.rollback();
-        conn.release();
+        safeRelease();
         return res.status(400).json({ message: `Quantity must be a whole number between 1 and ${MAX_QUANTITY_PER_LINE}` });
       }
 
       const [ttRows] = await conn.execute('SELECT * FROM ticket_types WHERE id = ? AND event_id = ?', [item.ticketTypeId, eventId]);
       const tt = ttRows[0];
-      if (!tt) { await conn.rollback(); conn.release(); return res.status(400).json({ message: `Ticket type ${item.ticketTypeId} not found` }); }
+      if (!tt) { await conn.rollback(); safeRelease(); return res.status(400).json({ message: `Ticket type ${item.ticketTypeId} not found` }); }
 
       const available = tt.quantity - tt.quantity_sold;
       if (quantity > available) {
         await conn.rollback();
-        conn.release();
+        safeRelease();
         return res.status(400).json({ message: `Only ${available} tickets left for ${tt.name}` });
       }
 
@@ -122,7 +130,7 @@ export const createOrder = async (req, res) => {
       const result = await applyCoupon(eventId, couponCode, subtotal, totalOrderTickets);
       if (!result.valid) {
         await conn.rollback();
-        conn.release();
+        safeRelease();
         return res.status(400).json({ message: result.error });
       }
       discount = result.discount;
@@ -160,7 +168,7 @@ export const createOrder = async (req, res) => {
     }
 
     await conn.commit();
-    conn.release();
+    safeRelease();
 
     // Initialise Paystack transaction when the order has a real cost.
     let authorizationUrl = null;
@@ -213,9 +221,9 @@ export const createOrder = async (req, res) => {
     });
   } catch (err) {
     try { await conn.rollback(); } catch { /* ignore */ }
-    conn.release();
+    safeRelease();
     console.error('[orderController.createOrder]', err);
-    res.status(500).json({ message: 'Server error creating order' });
+    res.status(500).json({ message: err.message || 'Server error creating order' });
   }
 };
 
