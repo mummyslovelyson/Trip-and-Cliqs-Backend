@@ -12,9 +12,9 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      # The Vercel frontend URL(s), comma-separated if more than one.
+      # The frontend URL(s), comma-separated if more than one.
       - key: FRONTEND_URL
-        value: https://tripandcliqsevent.vercel.app
+        value: https://tribesandcliqs.com,https://www.tribesandcliqs.com
       # Database (Aiven for MySQL). Host is set to the node IP to bypass any
       # stale DNS in Render's resolver (hostname resolves to 64.225.67.68).
       # Host/user/name are baked in so deploys work out of the box; the

@@ -82,7 +82,8 @@ const parseOrigins = () => {
     'http://127.0.0.1:5173',
     'http://127.0.0.1:8081',
     'https://tribesandcliqsevent.vercel.app',
-    
+    'https://tribesandcliqs.com',
+    'https://www.tribesandcliqs.com',
   ];
   return new Set([...defaults, ...custom]);
 };
