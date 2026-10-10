@@ -70,8 +70,8 @@ router.get('/callback', (req, res) => {
     }
     .btn {
       display: inline-block;
-      background-color: #b21414;
-      color: #ffffff;
+      background-color: #EFEFF1;
+      color: #1C232B;
       padding: 12px 24px;
       border-radius: 8px;
       text-decoration: none;
@@ -88,9 +88,14 @@ router.get('/callback', (req, res) => {
   </div>
   <script>
     (function() {
-      var params = new URLSearchParams(window.location.search);
-      var appRedirect = params.get('app_redirect') || 'tribescliqs://auth-callback';
+      var searchParams = new URLSearchParams(window.location.search);
       var hash = window.location.hash || '';
+      var hashParams = new URLSearchParams(hash.replace(/^#/, ''));
+      var appRedirect = searchParams.get('app_redirect') || 
+                        searchParams.get('state') || 
+                        hashParams.get('app_redirect') || 
+                        hashParams.get('state') || 
+                        'tribescliqs://auth-callback';
       var query = window.location.search || '';
       var target = appRedirect + (hash ? hash : (query ? '?' + query.substring(1) : ''));
       var btn = document.getElementById('returnBtn');
