@@ -207,6 +207,9 @@ async function initDb() {
         `CREATE INDEX IF NOT EXISTS idx_ref_status ON refunds(status)`,
         `CREATE INDEX IF NOT EXISTS idx_ref_org_deadline ON refunds(organizer_deadline)`,
         `CREATE INDEX IF NOT EXISTS idx_ref_policy_circ ON refunds(policy_circumstance)`,
+        `ALTER TABLE tickets ADD COLUMN IF NOT EXISTS is_deleted_by_user BOOLEAN DEFAULT FALSE`,
+        `ALTER TABLE tickets ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`,
+        `CREATE INDEX IF NOT EXISTS idx_t_deleted_user ON tickets(user_id, is_deleted_by_user)`,
       ];
       for (const migSql of safeMigrations) {
         try {

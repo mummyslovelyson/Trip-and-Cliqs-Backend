@@ -3,6 +3,7 @@ import {
   getTicketTypes, createTicketType, updateTicketType, deleteTicketType,
   getUserTickets, getTicketById, checkInTicket, transferTicket, getTickets,
   verifyTicketByCode, bulkCheckIn, downloadTicket, getUploadedTickets,
+  deleteUserTicket, clearOldTickets,
 } from '../controllers/ticketController.js';
 import { authenticate, authorize, optionalAuth } from '../middleware/auth.js';
 import { rateLimit } from '../middleware/rateLimit.js';
@@ -29,7 +30,9 @@ router.get('/', authenticate, (req, res, next) => {
   return getUserTickets(req, res, next);
 });
 router.get('/me', authenticate, getUserTickets);
+router.post('/clear-old', authenticate, writeLimiter, clearOldTickets);
 router.get('/:id', authenticate, getTicketById);
+router.delete('/:id', authenticate, writeLimiter, deleteUserTicket);
 router.get('/:id/download', authenticate, downloadTicket);
 router.post('/:id/transfer', authenticate, transferLimiter, transferTicket);
 

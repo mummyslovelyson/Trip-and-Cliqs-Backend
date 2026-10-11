@@ -499,7 +499,7 @@ export const getUserTickets = async (req, res) => {
        LEFT JOIN orders o ON o.id = oi.order_id
        LEFT JOIN events e ON e.id = t.event_id
        LEFT JOIN users u ON u.id = t.user_id
-       WHERE t.user_id = ? ${statusCondition}
+       WHERE t.user_id = ? AND (t.is_deleted_by_user IS NULL OR t.is_deleted_by_user = FALSE) ${statusCondition}
        ORDER BY t.created_at DESC`,
       queryParams,
     );
@@ -544,10 +544,173 @@ export const getTicketById = async (req, res) => {
       return res.status(403).json({ message: 'You do not have access to this ticket' });
     }
 
+    if (ticket.is_deleted_by_user && !isOrganizer && !isStaff) {
+      return res.status(404).json({ message: 'Ticket not found or has been deleted from history' });
+    }
+
     res.json({ ticket });
   } catch (err) {
     console.error('[ticketController.getTicketById]', err);
     res.status(500).json({ message: 'Server error' });
+  }
+};
+
+/* ------------------------------------------------------------------ */
+/* Delete / Remove an old ticket from user history (attendee)          */
+/* ------------------------------------------------------------------ */
+export const deleteUserTicket = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+
+    const [rows] = await pool.execute(
+      `SELECT t.*, e.title AS event_title, e.start_date, e.end_date, e.start_time, e.end_time
+       FROM tickets t
+       JOIN events e ON e.id = t.event_id
+       WHERE t.id = ? AND t.user_id = ?`,
+      [id, userId]
+    );
+
+    const ticket = rows[0];
+    if (!ticket) {
+      return res.status(404).json({ message: 'Ticket not found or does not belong to your account' });
+    }
+
+    if (ticket.is_deleted_by_user) {
+      return res.json({ success: true, message: 'Ticket is already deleted from your history' });
+    }
+
+    // Determine if this ticket is old (event ended or ticket status is non-active)
+    const now = new Date();
+    let isPastEvent = false;
+    const dateStr = ticket.end_date || ticket.start_date;
+    if (dateStr) {
+      const d = new Date(dateStr);
+      if (!isNaN(d.getTime())) {
+        const timeStr = ticket.end_time || ticket.start_time;
+        if (timeStr && typeof timeStr === 'string') {
+          const parts = timeStr.split(':');
+          if (parts.length >= 2) {
+            d.setHours(parseInt(parts[0], 10), parseInt(parts[1], 10), 0, 0);
+          }
+        } else {
+          d.setHours(23, 59, 59, 999);
+        }
+        if (d < now) isPastEvent = true;
+      }
+    }
+
+    const statusLower = String(ticket.status || '').toLowerCase();
+    const isNonActiveStatus = ['used', 'cancelled', 'transferred', 'refunded', 'void'].includes(statusLower) || Boolean(ticket.is_used);
+
+    // If active ticket for future event, block accidental deletion unless explicitly forced
+    if (!isPastEvent && !isNonActiveStatus && req.query.force !== 'true') {
+      return res.status(400).json({
+        message: 'Only past or used tickets can be deleted from your history. Active tickets for upcoming events cannot be deleted.',
+      });
+    }
+
+    // Soft delete: remove from user view while preserving financial / event records
+    await pool.execute(
+      `UPDATE tickets SET is_deleted_by_user = TRUE, deleted_at = NOW() WHERE id = ? AND user_id = ?`,
+      [id, userId]
+    );
+
+    await logAudit({
+      userId,
+      action: 'delete_ticket_history',
+      entityType: 'ticket',
+      entityId: id,
+      details: { ticketNumber: ticket.ticket_number, eventTitle: ticket.event_title },
+    });
+
+    res.json({
+      success: true,
+      message: 'Ticket successfully removed from your history',
+      ticketId: Number(id),
+    });
+  } catch (err) {
+    console.error('[ticketController.deleteUserTicket]', err);
+    res.status(500).json({ message: 'Server error deleting ticket' });
+  }
+};
+
+/* ------------------------------------------------------------------ */
+/* Bulk Clear all old (past / used / cancelled) tickets for attendee   */
+/* ------------------------------------------------------------------ */
+export const clearOldTickets = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const [rows] = await pool.execute(
+      `SELECT t.id, t.status, e.start_date, e.end_date, e.start_time, e.end_time
+       FROM tickets t
+       JOIN events e ON e.id = t.event_id
+       WHERE t.user_id = ? AND (t.is_deleted_by_user IS NULL OR t.is_deleted_by_user = FALSE)`,
+      [userId]
+    );
+
+    const now = new Date();
+    const oldIds = [];
+
+    for (const ticket of rows) {
+      let isPastEvent = false;
+      const dateStr = ticket.end_date || ticket.start_date;
+      if (dateStr) {
+        const d = new Date(dateStr);
+        if (!isNaN(d.getTime())) {
+          const timeStr = ticket.end_time || ticket.start_time;
+          if (timeStr && typeof timeStr === 'string') {
+            const parts = timeStr.split(':');
+            if (parts.length >= 2) {
+              d.setHours(parseInt(parts[0], 10), parseInt(parts[1], 10), 0, 0);
+            }
+          } else {
+            d.setHours(23, 59, 59, 999);
+          }
+          if (d < now) isPastEvent = true;
+        }
+      }
+
+      const statusLower = String(ticket.status || '').toLowerCase();
+      const isNonActive = ['used', 'cancelled', 'transferred', 'refunded', 'void'].includes(statusLower);
+
+      if (isPastEvent || isNonActive) {
+        oldIds.push(ticket.id);
+      }
+    }
+
+    if (oldIds.length === 0) {
+      return res.json({
+        success: true,
+        message: 'No past or used tickets found to clear',
+        clearedCount: 0,
+        deletedIds: [],
+      });
+    }
+
+    const placeholders = oldIds.map(() => '?').join(', ');
+    await pool.execute(
+      `UPDATE tickets SET is_deleted_by_user = TRUE, deleted_at = NOW() WHERE id IN (${placeholders}) AND user_id = ?`,
+      [...oldIds, userId]
+    );
+
+    await logAudit({
+      userId,
+      action: 'clear_old_tickets_history',
+      entityType: 'ticket',
+      details: { count: oldIds.length, ids: oldIds },
+    });
+
+    res.json({
+      success: true,
+      message: `Successfully cleared ${oldIds.length} old ticket pass${oldIds.length > 1 ? 'es' : ''}`,
+      clearedCount: oldIds.length,
+      deletedIds: oldIds,
+    });
+  } catch (err) {
+    console.error('[ticketController.clearOldTickets]', err);
+    res.status(500).json({ message: 'Server error clearing old tickets' });
   }
 };
 
@@ -1168,5 +1331,5 @@ export const getTickets = async (req, res) => {
 export default {
   getTicketTypes, createTicketType, updateTicketType, deleteTicketType,
   getUserTickets, getTicketById, checkInTicket, transferTicket, getTickets,
-  verifyTicketByCode, bulkCheckIn, downloadTicket,
+  verifyTicketByCode, bulkCheckIn, downloadTicket, deleteUserTicket, clearOldTickets,
 };
