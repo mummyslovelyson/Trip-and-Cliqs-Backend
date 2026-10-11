@@ -1260,7 +1260,7 @@ export const paymentCallbackBridge = async (req, res) => {
   <title>Payment Successful - Tribes &amp; Cliqs</title>
   <style>
     body {
-      background-color: #1C232B;
+      background-color: #171A1D;
       color: #EFEFF1;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
       display: flex;
@@ -1272,34 +1272,35 @@ export const paymentCallbackBridge = async (req, res) => {
       box-sizing: border-box;
     }
     .card {
-      background-color: #242B32;
-      border: 1px solid #494F55;
-      border-radius: 20px;
+      background-color: #21262B;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 24px;
       padding: 36px 24px;
       text-align: center;
-      max-width: 400px;
+      max-width: 420px;
       width: 100%;
-      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4);
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
     }
     .icon-circle {
-      width: 64px;
-      height: 64px;
+      width: 68px;
+      height: 68px;
       border-radius: 50%;
-      background-color: rgba(34, 197, 94, 0.15);
-      border: 2px solid rgba(34, 197, 94, 0.5);
+      background-color: rgba(16, 185, 129, 0.15);
+      border: 2px solid #10B981;
       display: flex;
       align-items: center;
       justify-content: center;
       margin: 0 auto 16px auto;
-      color: #22C55E;
-      font-size: 32px;
+      color: #10B981;
+      font-size: 34px;
       font-weight: 800;
     }
     .title {
-      font-size: 20px;
-      font-weight: 700;
+      font-size: 22px;
+      font-weight: 800;
       color: #FFFFFF;
       margin: 0 0 8px 0;
+      letter-spacing: -0.3px;
     }
     .desc {
       color: #949599;
@@ -1308,38 +1309,41 @@ export const paymentCallbackBridge = async (req, res) => {
       margin: 0 0 20px 0;
     }
     .ref-box {
-      background-color: #1C232B;
-      border: 1px dashed #494F55;
-      border-radius: 10px;
-      padding: 10px 14px;
+      background-color: #171A1D;
+      border: 1px dashed rgba(255, 255, 255, 0.15);
+      border-radius: 12px;
+      padding: 12px 14px;
       margin-bottom: 24px;
       font-size: 13px;
       color: #949599;
     }
     .ref-code {
       font-family: monospace;
-      color: #EFEFF1;
+      color: #D4AF37;
       font-weight: 700;
     }
     .btn {
       display: block;
-      background-color: #b21414;
+      background: linear-gradient(135deg, #E02828 0%, #B21414 100%);
       color: #ffffff;
-      padding: 14px 24px;
-      border-radius: 12px;
+      padding: 15px 24px;
+      border-radius: 14px;
       text-decoration: none;
-      font-weight: 700;
+      font-weight: 800;
       font-size: 15px;
       margin-bottom: 12px;
+      box-shadow: 0 4px 16px rgba(224, 40, 40, 0.35);
     }
     .btn-secondary {
-      background-color: transparent;
-      border: 1px solid #494F55;
+      background-color: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.12);
       color: #EFEFF1;
       font-weight: 600;
       font-size: 13px;
-      padding: 10px 20px;
-      border-radius: 10px;
+      padding: 12px 20px;
+      border-radius: 12px;
+      text-decoration: none;
+      display: block;
     }
   </style>
 </head>
@@ -1347,10 +1351,10 @@ export const paymentCallbackBridge = async (req, res) => {
   <div class="card">
     <div class="icon-circle">✓</div>
     <h2 class="title">Payment Successful!</h2>
-    <p class="desc">Your tickets have been issued and added to your digital pass wallet.</p>
-    ${reference ? `<div class="ref-box">Reference: <span class="ref-code">${reference}</span></div>` : ''}
-    <a id="returnBtn" class="btn" href="#">Return to Tribes &amp; Cliqs App</a>
-    ${process.env.FRONTEND_URL ? `<a id="webBtn" class="btn btn-secondary" href="${process.env.FRONTEND_URL.replace(/\/+$/, '')}/profile">View on Web</a>` : ''}
+    <p class="desc">Your tickets have been issued and added to your mobile wallet.</p>
+    ${reference ? `<div class="ref-box">Order Reference: <span class="ref-code">${reference}</span></div>` : ''}
+    <a id="returnBtn" class="btn" href="#">View Tickets in App</a>
+    <a id="dismissBtn" class="btn btn-secondary" href="javascript:window.close();">Done</a>
   </div>
   <script>
     (function() {
@@ -1363,16 +1367,21 @@ export const paymentCallbackBridge = async (req, res) => {
       var returnBtn = document.getElementById('returnBtn');
       if (returnBtn) returnBtn.href = target;
 
-      // Automatically redirect back to native app
-      window.location.replace(target);
-      setTimeout(function() {
-        window.location.href = target;
-      }, 250);
+      // 1. Immediately redirect to mobile app deep link
+      window.location.href = target;
 
-      // Attempt popup close
+      // 2. Fallback attempt for Android Intent if custom scheme doesn't handle immediately
+      setTimeout(function() {
+        if (/android/i.test(navigator.userAgent) && !target.startsWith('exp:')) {
+          var intentTarget = 'intent://payment-callback?reference=' + encodeURIComponent(reference) + '#Intent;scheme=tribescliqs;package=com.tribesandcliqs.app;end';
+          window.location.href = intentTarget;
+        }
+      }, 500);
+
+      // 3. Attempt popup window auto-close
       setTimeout(function() {
         try { window.close(); } catch(e) {}
-      }, 1500);
+      }, 1200);
     })();
   </script>
 </body>
