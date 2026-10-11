@@ -298,7 +298,14 @@ export const getEvent = async (req, res) => {
 export const createEvent = async (req, res) => {
   const conn = await pool.getConnection();
   try {
-    const organizerId = req.user.id;
+    let organizerId = req.user.id;
+    if (req.user.role === 'admin' && (req.body.organizer_id || req.body.organizerId)) {
+      const chosenOrgId = req.body.organizer_id || req.body.organizerId;
+      const [orgRows] = await conn.execute('SELECT id, name, email FROM users WHERE id = ?', [chosenOrgId]);
+      if (orgRows && orgRows.length > 0) {
+        organizerId = orgRows[0].id;
+      }
+    }
     const {
       title, description, category, venue, address, city, country,
       start_date, end_date, start_time, end_time,
@@ -471,6 +478,16 @@ export const createEvent = async (req, res) => {
       link: '/admin/events',
     }).catch(() => {});
 
+    if (req.user.role === 'admin' && Number(organizerId) !== Number(req.user.id)) {
+      sendNotification({
+        userId: organizerId,
+        title: 'New Event Assigned to You',
+        message: `An administrator created the event "${title}" on your behalf.`,
+        type: 'event',
+        link: `/organizer/events/${eventId}`,
+      }).catch(() => {});
+    }
+
     if (req.body.status === 'published') {
       notifyFollowersOfNewEvent(
         { id: eventId, title, city, category, tags: req.body.tags, organizer_id: organizerId },
@@ -513,7 +530,10 @@ export const updateEvent = async (req, res) => {
       'ticket_template','images','tags','visibility',
     ];
     if (req.user.role === 'admin') {
-      allowed.push('status', 'is_featured');
+      allowed.push('status', 'is_featured', 'organizer_id');
+      if (req.body.organizerId !== undefined && req.body.organizer_id === undefined) {
+        req.body.organizer_id = req.body.organizerId;
+      }
     }
 
     if (req.body.locationType !== undefined && req.body.location_type === undefined) {
