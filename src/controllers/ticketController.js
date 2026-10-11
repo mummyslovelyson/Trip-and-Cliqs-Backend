@@ -1333,3 +1333,4 @@ export default {
   getUserTickets, getTicketById, checkInTicket, transferTicket, getTickets,
   verifyTicketByCode, bulkCheckIn, downloadTicket, deleteUserTicket, clearOldTickets,
 };
+
