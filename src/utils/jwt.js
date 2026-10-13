@@ -56,7 +56,27 @@ export const rotateRefreshToken = async (rawToken, meta = {}) => {
 
   if (!row) return { valid: false, error: 'Invalid refresh token' };
   if (row.used) {
-    // TOKEN REUSE DETECTED — revoke entire family
+    // 15-second grace period for concurrent requests on boot/page load
+    const timeSinceUsed = Date.now() - new Date(row.last_active || row.created_at).getTime();
+    if (timeSinceUsed < 15000) {
+      const [latest] = await pool.execute(
+        `SELECT token_hash FROM refresh_tokens 
+         WHERE family = ? AND revoked = FALSE AND used = FALSE AND expires_at > NOW() 
+         ORDER BY id DESC LIMIT 1`,
+        [row.family],
+      );
+      if (latest.length > 0) {
+        return {
+          valid: true,
+          family: row.family,
+          userId: row.user_id,
+          email: row.email,
+          role: row.role,
+        };
+      }
+    }
+
+    // Malicious token reuse detected — revoke entire family
     await pool.execute('UPDATE refresh_tokens SET revoked = TRUE WHERE family = ?', [row.family]);
     return { valid: false, error: 'Token reuse detected — all sessions revoked', compromised: true, userId: row.user_id };
   }
@@ -64,8 +84,8 @@ export const rotateRefreshToken = async (rawToken, meta = {}) => {
   if (new Date(row.expires_at) < new Date()) return { valid: false, error: 'Refresh token expired' };
   if (row.status === 'suspended') return { valid: false, error: 'Account suspended' };
 
-  // Mark old token as used (not revoked — "used" = legitimate rotation)
-  await pool.execute('UPDATE refresh_tokens SET used = TRUE WHERE id = ?', [row.id]);
+  // Mark old token as used with last_active timestamp
+  await pool.execute('UPDATE refresh_tokens SET used = TRUE, last_active = NOW() WHERE id = ?', [row.id]);
 
   // Issue new token in same family
   const newRawToken = crypto.randomUUID();

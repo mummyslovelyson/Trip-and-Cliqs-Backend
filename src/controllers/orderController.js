@@ -285,63 +285,96 @@ export const createOrder = async (req, res) => {
 /* ------------------------------------------------------------------ */
 /* Internal / Exported: generate tickets for a completed order        */
 /* ------------------------------------------------------------------ */
+const activeMintingOrders = new Set();
+
 export const generateTicketsForOrder = async (orderId) => {
-  const [items] = await pool.execute('SELECT * FROM order_items WHERE order_id = ?', [orderId]);
-  const [orderRows] = await pool.execute('SELECT * FROM orders WHERE id = ?', [orderId]);
-  const order = orderRows[0];
-  if (!order) return;
+  if (!orderId) return;
+  const numOrderId = Number(orderId);
+  if (activeMintingOrders.has(numOrderId)) return;
+  activeMintingOrders.add(numOrderId);
 
-  // Guard against duplicate ticket minting
-  const [existing] = await pool.execute(
-    `SELECT id FROM tickets WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)`,
-    [orderId],
-  );
-  if (existing && existing.length > 0) return;
+  try {
+    const [items] = await pool.execute('SELECT * FROM order_items WHERE order_id = ?', [numOrderId]);
+    const [orderRows] = await pool.execute('SELECT * FROM orders WHERE id = ?', [numOrderId]);
+    const order = orderRows[0];
+    if (!order) return;
 
-  for (const oi of items) {
-    for (let i = 0; i < oi.quantity; i++) {
-      let ticketNumber = `TC-${uuidv4().split('-')[0].toUpperCase()}`;
-      let seatNumber = null;
-      let ticketFileUrl = null;
-      let ticketFileName = null;
+    for (const oi of items) {
+      // 1. Strictly count how many tickets already exist for this order item
+      const [countRows] = await pool.execute(
+        'SELECT COUNT(*) AS count FROM tickets WHERE order_item_id = ?',
+        [oi.id],
+      );
+      const existingCount = Number(countRows[0]?.count || 0);
+      const targetQty = Number(oi.quantity || 1);
 
-      try {
-        const [utRows] = await pool.execute(
-          `SELECT id, file_url, file_name, barcode, seat_number
-           FROM uploaded_tickets
-           WHERE ticket_type_id = ? AND is_assigned = FALSE
-           ORDER BY id ASC LIMIT 1`,
-          [oi.ticket_type_id],
-        );
-        const ut = utRows?.[0];
-        if (ut) {
-          if (ut.barcode) ticketNumber = ut.barcode;
-          if (ut.seat_number) seatNumber = ut.seat_number;
-          ticketFileUrl = ut.file_url || null;
-          ticketFileName = ut.file_name || null;
+      // If duplicate tickets already exist from prior race conditions, clean up the redundant ones
+      if (existingCount > targetQty) {
+        try {
+          const [excessRows] = await pool.execute(
+            `SELECT id FROM tickets WHERE order_item_id = ? AND status = 'active' ORDER BY id ASC LIMIT ? OFFSET ?`,
+            [oi.id, existingCount - targetQty, targetQty],
+          );
+          if (excessRows && excessRows.length > 0) {
+            const excessIds = excessRows.map((r) => r.id);
+            const placeholders = excessIds.map(() => '?').join(', ');
+            await pool.execute(`DELETE FROM tickets WHERE id IN (${placeholders})`, excessIds);
+          }
+        } catch (cleanErr) {
+          console.warn('[orderController.generateTicketsForOrder] Excess cleanup notice:', cleanErr.message);
         }
+        continue;
+      }
 
-        const [tResult] = await pool.execute(
-          `INSERT INTO tickets (order_item_id, user_id, event_id, ticket_type_id, ticket_number, qr_code, seat_number, ticket_file_url, ticket_file_name, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
-          [oi.id, order.user_id, order.event_id, oi.ticket_type_id, ticketNumber, ticketNumber, seatNumber, ticketFileUrl, ticketFileName],
-        );
+      const needed = Math.max(0, targetQty - existingCount);
+      if (needed <= 0) continue;
 
-        if (ut) {
+      for (let i = 0; i < needed; i++) {
+        let ticketNumber = `TC-${uuidv4().split('-')[0].toUpperCase()}`;
+        let seatNumber = null;
+        let ticketFileUrl = null;
+        let ticketFileName = null;
+
+        try {
+          const [utRows] = await pool.execute(
+            `SELECT id, file_url, file_name, barcode, seat_number
+             FROM uploaded_tickets
+             WHERE ticket_type_id = ? AND is_assigned = FALSE
+             ORDER BY id ASC LIMIT 1`,
+            [oi.ticket_type_id],
+          );
+          const ut = utRows?.[0];
+          if (ut) {
+            if (ut.barcode) ticketNumber = ut.barcode;
+            if (ut.seat_number) seatNumber = ut.seat_number;
+            ticketFileUrl = ut.file_url || null;
+            ticketFileName = ut.file_name || null;
+          }
+
+          const [tResult] = await pool.execute(
+            `INSERT INTO tickets (order_item_id, user_id, event_id, ticket_type_id, ticket_number, qr_code, seat_number, ticket_file_url, ticket_file_name, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+            [oi.id, order.user_id, order.event_id, oi.ticket_type_id, ticketNumber, ticketNumber, seatNumber, ticketFileUrl, ticketFileName],
+          );
+
+          if (ut) {
+            await pool.execute(
+              `UPDATE uploaded_tickets SET is_assigned = TRUE, assigned_ticket_id = ?, assigned_at = NOW() WHERE id = ?`,
+              [tResult.insertId, ut.id],
+            );
+          }
+        } catch {
+          // Safe fallback if uploaded_tickets columns are not present
           await pool.execute(
-            `UPDATE uploaded_tickets SET is_assigned = TRUE, assigned_ticket_id = ?, assigned_at = NOW() WHERE id = ?`,
-            [tResult.insertId, ut.id],
+            `INSERT INTO tickets (order_item_id, user_id, event_id, ticket_type_id, ticket_number, qr_code, status)
+             VALUES (?, ?, ?, ?, ?, ?, 'active')`,
+            [oi.id, order.user_id, order.event_id, oi.ticket_type_id, ticketNumber, ticketNumber],
           );
         }
-      } catch {
-        // Safe fallback if uploaded_tickets columns are not present
-        await pool.execute(
-          `INSERT INTO tickets (order_item_id, user_id, event_id, ticket_type_id, ticket_number, qr_code, status)
-           VALUES (?, ?, ?, ?, ?, ?, 'active')`,
-          [oi.id, order.user_id, order.event_id, oi.ticket_type_id, ticketNumber, ticketNumber],
-        );
       }
     }
+  } finally {
+    activeMintingOrders.delete(numOrderId);
   }
 };
 
@@ -670,7 +703,61 @@ export const getUserOrders = async (req, res) => {
        ORDER BY o.created_at DESC`,
       [req.user.id],
     );
-    res.json({ orders: rows });
+
+    const orderIds = rows.map((r) => r.id);
+    const itemsByOrderId = {};
+
+    if (orderIds.length > 0) {
+      try {
+        const placeholders = orderIds.map(() => '?').join(',');
+        const [allOrderItems] = await pool.execute(
+          `SELECT oi.*, COALESCE(tt.name, 'General Admission') AS ticket_type_name
+           FROM order_items oi
+           LEFT JOIN ticket_types tt ON tt.id = oi.ticket_type_id
+           WHERE oi.order_id IN (${placeholders})`,
+          orderIds,
+        );
+        for (const item of allOrderItems) {
+          if (!itemsByOrderId[item.order_id]) itemsByOrderId[item.order_id] = [];
+          itemsByOrderId[item.order_id].push({
+            ...item,
+            ticketType: item.ticket_type_name,
+            name: item.ticket_type_name,
+            price: Number(item.unit_price || item.price || 0),
+            quantity: Number(item.quantity || 1),
+          });
+        }
+      } catch (itemErr) {
+        console.warn('[orderController.getUserOrders] Order items query note:', itemErr.message);
+      }
+    }
+
+    const formattedOrders = rows.map((o) => {
+      const items = itemsByOrderId[o.id] || [];
+      const calculatedQty = items.reduce((sum, it) => sum + (Number(it.quantity) || 0), 0);
+      const totalNum = Number(o.total_amount != null ? o.total_amount : o.total || 0);
+
+      return {
+        ...o,
+        totalAmount: totalNum,
+        total: totalNum,
+        total_amount: totalNum,
+        createdAt: o.created_at,
+        created_at: o.created_at,
+        ticketCount: calculatedQty > 0 ? calculatedQty : 1,
+        quantity: calculatedQty > 0 ? calculatedQty : 1,
+        items,
+        event: {
+          title: o.event_title || 'Event',
+          startDate: o.start_date,
+          startTime: o.start_time,
+          venue: o.venue_name || o.venue,
+          image: o.banner_image,
+        },
+      };
+    });
+
+    res.json({ orders: formattedOrders });
   } catch (err) {
     console.error('[orderController.getUserOrders]', err);
     res.status(500).json({ message: 'Server error' });
@@ -1140,8 +1227,6 @@ export const verifyPayment = async (req, res) => {
     if (verifyResult.data.status === 'success') {
       if (order.payment_status !== 'completed') {
         await completeOrder(order.id, reference);
-      } else {
-        await generateTicketsForOrder(order.id);
       }
     } else {
       return res.status(400).json({
@@ -1157,7 +1242,7 @@ export const verifyPayment = async (req, res) => {
 
     try {
       let [ticketRows] = await pool.execute(
-        `SELECT t.id, t.ticket_number, t.qr_code, t.status, t.seat_number, t.created_at,
+        `SELECT DISTINCT ON (t.id) t.id, t.ticket_number, t.qr_code, t.status, t.seat_number, t.created_at,
                 t.ticket_file_url, t.ticket_file_name,
                 tt.name AS ticket_type_name, COALESCE(oi.unit_price, tt.price, 0) AS price,
                 COALESCE(oi.unit_price, tt.price, 0) AS unit_price,
@@ -1169,15 +1254,15 @@ export const verifyPayment = async (req, res) => {
          LEFT JOIN events e ON e.id = t.event_id
          LEFT JOIN users u ON u.id = t.user_id
          LEFT JOIN order_items oi ON oi.id = t.order_item_id
-         WHERE oi.order_id = ? OR t.order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)
+         WHERE oi.order_id = ?
          ORDER BY t.id ASC`,
-        [order.id, order.id],
+        [order.id],
       );
 
       if (!ticketRows || ticketRows.length === 0) {
         await generateTicketsForOrder(order.id);
         const [refetched] = await pool.execute(
-          `SELECT t.id, t.ticket_number, t.qr_code, t.status, t.seat_number, t.created_at,
+          `SELECT DISTINCT ON (t.id) t.id, t.ticket_number, t.qr_code, t.status, t.seat_number, t.created_at,
                   t.ticket_file_url, t.ticket_file_name,
                   tt.name AS ticket_type_name, COALESCE(oi.unit_price, tt.price, 0) AS price,
                   COALESCE(oi.unit_price, tt.price, 0) AS unit_price,
@@ -1189,9 +1274,9 @@ export const verifyPayment = async (req, res) => {
            LEFT JOIN events e ON e.id = t.event_id
            LEFT JOIN users u ON u.id = t.user_id
            LEFT JOIN order_items oi ON oi.id = t.order_item_id
-           WHERE oi.order_id = ? OR t.order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)
+           WHERE oi.order_id = ?
            ORDER BY t.id ASC`,
-          [order.id, order.id],
+          [order.id],
         );
         ticketRows = refetched;
       }

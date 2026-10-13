@@ -61,7 +61,7 @@ export const authenticate = async (req, res, next) => {
     };
     next();
   } catch (err) {
-    return res.status(401).json({ message: 'Invalid or expired session token' });
+    return res.status(401).json({ message: 'User login session expired. Please sign in again.' });
   }
 };
 

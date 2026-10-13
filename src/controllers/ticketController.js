@@ -5,8 +5,7 @@ import textPdf from '../utils/pdf.js';
 import { sendNotification, notifyAdmins } from '../utils/notify.js';
 import { sendTicketTransferEmail } from '../utils/email.js';
 import { sendSMS } from '../utils/sms.js';
-import { verifyTransaction } from '../utils/paystack.js';
-import { completeOrder } from './orderController.js';
+import { completeOrder, generateTicketsForOrder } from './orderController.js';
 
 /* ------------------------------------------------------------------ */
 /* Get ticket types for an event (public)                              */
@@ -385,70 +384,34 @@ export const getUserTickets = async (req, res) => {
       console.warn('[ticketController.getUserTickets] Pending check notice:', pendingErr.message);
     }
 
-    // 1. Self-healing: if the user has completed orders whose tickets were not yet minted, mint them now
+    // 1. Self-healing: ensure tickets are minted strictly without duplication
     try {
       const [completedOrders] = await pool.execute(
-        `SELECT o.id, o.event_id
-         FROM orders o
-         WHERE o.user_id = ? AND o.payment_status = 'completed'`,
+        `SELECT o.id FROM orders o WHERE o.user_id = ? AND o.payment_status = 'completed'`,
         [req.user.id],
       );
 
       for (const ord of completedOrders) {
-        const [existing] = await pool.execute(
-          `SELECT id FROM tickets WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)`,
-          [ord.id],
-        );
-        if (!existing || existing.length === 0) {
-          const [items] = await pool.execute('SELECT * FROM order_items WHERE order_id = ?', [ord.id]);
-          for (const oi of items) {
-            for (let i = 0; i < oi.quantity; i++) {
-              let ticketNumber = `TC-${uuidv4().split('-')[0].toUpperCase()}`;
-              let seatNumber = null;
-              let ticketFileUrl = null;
-              let ticketFileName = null;
-
-              try {
-                const [utRows] = await pool.execute(
-                  `SELECT id, file_url, file_name, barcode, seat_number
-                   FROM uploaded_tickets
-                   WHERE ticket_type_id = ? AND is_assigned = FALSE
-                   ORDER BY id ASC LIMIT 1`,
-                  [oi.ticket_type_id],
-                );
-                const ut = utRows?.[0];
-                if (ut) {
-                  if (ut.barcode) ticketNumber = ut.barcode;
-                  if (ut.seat_number) seatNumber = ut.seat_number;
-                  ticketFileUrl = ut.file_url || null;
-                  ticketFileName = ut.file_name || null;
-                }
-
-                const [tResult] = await pool.execute(
-                  `INSERT INTO tickets (order_item_id, user_id, event_id, ticket_type_id, ticket_number, qr_code, seat_number, ticket_file_url, ticket_file_name, status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
-                  [oi.id, req.user.id, ord.event_id, oi.ticket_type_id, ticketNumber, ticketNumber, seatNumber, ticketFileUrl, ticketFileName],
-                );
-
-                if (ut) {
-                  await pool.execute(
-                    `UPDATE uploaded_tickets SET is_assigned = TRUE, assigned_ticket_id = ?, assigned_at = NOW() WHERE id = ?`,
-                    [tResult.insertId, ut.id],
-                  );
-                }
-              } catch {
-                await pool.execute(
-                  `INSERT INTO tickets (order_item_id, user_id, event_id, ticket_type_id, ticket_number, qr_code, status)
-                   VALUES (?, ?, ?, ?, ?, ?, 'active')`,
-                  [oi.id, req.user.id, ord.event_id, oi.ticket_type_id, ticketNumber, ticketNumber],
-                );
-              }
-            }
-          }
-        }
+        await generateTicketsForOrder(ord.id);
       }
+
+      // 2. Prune any historic duplicates created by concurrent webhooks/callbacks
+      await pool.execute(`
+        DELETE FROM tickets 
+        WHERE id IN (
+          SELECT id FROM (
+            SELECT t.id,
+                   ROW_NUMBER() OVER (PARTITION BY t.order_item_id ORDER BY t.id ASC) as rn,
+                   oi.quantity
+            FROM tickets t
+            JOIN order_items oi ON oi.id = t.order_item_id
+            WHERE t.user_id = ? AND t.status = 'active'
+          ) sub
+          WHERE sub.rn > sub.quantity
+        )
+      `, [req.user.id]);
     } catch (healErr) {
-      console.warn('[ticketController.getUserTickets] Auto-heal notice:', healErr.message);
+      console.warn('[ticketController.getUserTickets] Auto-heal/dedup notice:', healErr.message);
     }
 
     // Auto-claim any tickets transferred to the logged-in user's email or phone
@@ -719,7 +682,7 @@ export const clearOldTickets = async (req, res) => {
 /* ------------------------------------------------------------------ */
 export const checkInTicket = async (req, res) => {
   try {
-    let { id } = req.params;
+    let id = req.params.id || req.params.code || req.body?.code || req.body?.ticketId || req.body?.id;
     if (!id) return res.status(400).json({ success: false, status: 'error', message: 'Ticket identifier is required' });
 
     try {
@@ -728,15 +691,42 @@ export const checkInTicket = async (req, res) => {
       id = String(id).trim();
     }
 
-    // Extract ticket number or ID if JSON string was provided
+    // 1. Extract ticket code from JSON payload if present
     if (id.startsWith('{') && id.endsWith('}')) {
       try {
         const parsed = JSON.parse(id);
-        id = parsed.ticketNumber || parsed.qrCode || parsed.ticketId || parsed.id || id;
+        id = parsed.ticket_number || parsed.ticketNumber || parsed.ticket_code || parsed.qr_code || parsed.qrCode || parsed.ticketId || parsed.id || id;
       } catch {}
     }
 
-    const isNumeric = /^\d+$/.test(String(id));
+    // 2. Direct regex extraction for ticket numbers like TC-XXXXXX or TRB-XXXXXX
+    const codeMatch = String(id).match(/\b(TC-[A-Z0-9]+|TRB-[A-Z0-9-]+)\b/i);
+    let candidateCode = codeMatch ? codeMatch[1].toUpperCase() : id;
+
+    // 3. If payload is a URL (e.g. from web or print preview)
+    if (candidateCode.includes('/') || candidateCode.includes('?')) {
+      try {
+        const urlStr = candidateCode.startsWith('http') ? candidateCode : `https://dummy.com/${candidateCode.replace(/^\/+/, '')}`;
+        const u = new URL(urlStr);
+        const queryCode = u.searchParams.get('code') || u.searchParams.get('ticket') || u.searchParams.get('ticketNumber') || u.searchParams.get('reference') || u.searchParams.get('trxref');
+        if (queryCode) {
+          candidateCode = queryCode.trim();
+        } else {
+          const parts = u.pathname.split('/').filter(Boolean);
+          const last = parts.pop();
+          if (last) candidateCode = last.split('?')[0].trim();
+        }
+      } catch {
+        const parts = candidateCode.split('/').filter(Boolean);
+        const last = parts.pop() || candidateCode;
+        candidateCode = last.split('?')[0].trim();
+      }
+    }
+
+    const cleanCode = candidateCode.trim();
+    const isNumeric = /^\d+$/.test(cleanCode);
+    const searchId = isNumeric ? Number(cleanCode) : 0;
+
     const [rows] = await pool.execute(
       `SELECT t.*, e.organizer_id, e.title AS event_title, e.venue AS event_venue,
               COALESCE(t.attendee_name, u.name) AS attendee_name,
@@ -749,8 +739,11 @@ export const checkInTicket = async (req, res) => {
        LEFT JOIN ticket_types tt ON tt.id = t.ticket_type_id
        LEFT JOIN order_items oi ON oi.id = t.order_item_id
        LEFT JOIN orders o ON o.id = oi.order_id
-       WHERE t.ticket_number = ? OR t.qr_code = ? OR (?::bigint IS NOT NULL AND t.id = ?)`,
-      [id, id, isNumeric ? Number(id) : null, isNumeric ? Number(id) : 0],
+       WHERE UPPER(t.ticket_number) = UPPER(?) 
+          OR UPPER(t.qr_code) = UPPER(?) 
+          OR UPPER(t.ticket_number) = UPPER(?)
+          OR (?::bigint > 0 AND t.id = ?)`,
+      [cleanCode, cleanCode, id, searchId, searchId],
     );
 
     const ticket = rows[0];
@@ -774,8 +767,10 @@ export const checkInTicket = async (req, res) => {
       });
     }
 
-    // Checklist 2: Is payment confirmed?
-    if (ticket.payment_status && ticket.payment_status !== 'paid' && Number(ticket.order_total) > 0) {
+    // Checklist 2: Is payment confirmed? (Support 'completed', 'paid', 'successful', 'success')
+    const paymentStatusClean = String(ticket.payment_status || '').toLowerCase().trim();
+    const isPaid = !paymentStatusClean || ['paid', 'completed', 'successful', 'success'].includes(paymentStatusClean);
+    if (!isPaid && Number(ticket.order_total) > 0) {
       return res.status(400).json({
         success: false,
         status: 'unpaid',
@@ -1071,6 +1066,14 @@ export const verifyTicketByCode = async (req, res) => {
     const isNumeric = /^\d+$/.test(parsedTicketNumber) || (parsedTicketId && /^\d+$/.test(String(parsedTicketId)));
     const searchId = parsedTicketId ? Number(parsedTicketId) : (isNumeric ? Number(parsedTicketNumber) : null);
 
+    // Direct regex extraction for ticket numbers like TC-XXXXXX or TRB-XXXXXX
+    const codeMatch = String(code).match(/\b(TC-[A-Z0-9]+|TRB-[A-Z0-9-]+)\b/i);
+    if (codeMatch) {
+      parsedTicketNumber = codeMatch[1].toUpperCase();
+    }
+
+    const cleanSearchCode = parsedTicketNumber.trim();
+
     const [rows] = await pool.execute(
       `SELECT t.id, t.user_id, t.ticket_number, t.qr_code, t.seat_number, t.status, t.checked_in_at,
               t.created_at, tt.name AS ticket_type, tt.price AS ticket_price,
@@ -1086,8 +1089,12 @@ export const verifyTicketByCode = async (req, res) => {
        LEFT JOIN users u ON u.id = t.user_id
        LEFT JOIN order_items oi ON oi.id = t.order_item_id
        LEFT JOIN orders o ON o.id = oi.order_id
-       WHERE t.ticket_number = ? OR t.qr_code = ? OR t.ticket_number = ? OR (?::bigint IS NOT NULL AND t.id = ?)`,
-      [code, parsedQrCode, parsedTicketNumber, searchId, searchId || 0],
+       WHERE UPPER(t.ticket_number) = UPPER(?) 
+          OR UPPER(t.qr_code) = UPPER(?) 
+          OR UPPER(t.ticket_number) = UPPER(?)
+          OR UPPER(t.ticket_number) = UPPER(?)
+          OR (?::bigint > 0 AND t.id = ?)`,
+      [code, parsedQrCode, cleanSearchCode, parsedTicketNumber, searchId || 0, searchId || 0],
     );
     const ticket = rows[0];
     if (!ticket) {
@@ -1105,18 +1112,21 @@ export const verifyTicketByCode = async (req, res) => {
     let validationState = 'valid';
     let validationMessage = '✅ Valid Ticket — Entry Approved';
 
+    const paymentStatusClean = String(ticket.payment_status || '').toLowerCase().trim();
+    const isPaid = !paymentStatusClean || ['paid', 'completed', 'successful', 'success'].includes(paymentStatusClean);
+
     if (ticket.status === 'used') {
       validationState = 'used';
-      validationMessage = '❌ Ticket Already Used';
+      validationMessage = 'Ticket Already Used';
     } else if (ticket.status === 'cancelled') {
       validationState = 'cancelled';
-      validationMessage = '❌ Ticket Cancelled — Entry Denied';
+      validationMessage = ' Ticket Cancelled — Entry Denied';
     } else if (ticket.status === 'transferred') {
       validationState = 'transferred';
-      validationMessage = '❌ Ticket Transferred — Old QR Code Invalidated';
-    } else if (ticket.payment_status && ticket.payment_status !== 'paid' && Number(ticket.order_total) > 0) {
+      validationMessage = ' Ticket Transferred — Old QR Code Invalidated';
+    } else if (!isPaid && Number(ticket.order_total) > 0) {
       validationState = 'unpaid';
-      validationMessage = '❌ Payment Unconfirmed — Admission Denied';
+      validationMessage = ' Payment Unconfirmed — Admission Denied';
     }
 
     res.json({
