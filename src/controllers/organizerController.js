@@ -972,7 +972,7 @@ export const getReportSummary = async (req, res) => {
     const totalAttendees = Number(ticketRow?.totalAttendees || 0);
     const totalCapacity = Number(capacityRow?.totalCapacity || 0);
     const checkInRate = totalTicketsSold > 0 ? Number(((totalCheckedIn / totalTicketsSold) * 100).toFixed(1)) : 0;
-    const conversionRate = allOrders > 0 ? Number(((totalOrders / allOrders) * 100).toFixed(1)) : 84.6;
+    const conversionRate = allOrders > 0 ? Number(((totalOrders / allOrders) * 100).toFixed(1)) : 0;
 
     res.json({
       summary: {
@@ -981,7 +981,7 @@ export const getReportSummary = async (req, res) => {
         totalTicketsSold,
         totalCheckedIn,
         totalAttendees,
-        totalCapacity: totalCapacity > 0 ? totalCapacity : Math.max(totalTicketsSold + 500, 1000),
+        totalCapacity,
         checkInRate,
         conversionRate,
       },

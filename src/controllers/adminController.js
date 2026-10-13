@@ -574,9 +574,13 @@ export const approveOrganizer = async (req, res) => {
 /* ------------------------------------------------------------------ */
 export const getEvents = async (req, res) => {
   try {
-    const { status, page = 1, limit = 20 } = req.query;
+    const { status, page = 1, limit = 20, organizer_id } = req.query;
     const conditions = [];
     const params = [];
+    if (organizer_id) {
+      conditions.push('e.organizer_id = ?');
+      params.push(organizer_id);
+    }
     if (status === 'changes_requested') {
       conditions.push('e.approval_status = ?');
       params.push('changes_requested');
@@ -1239,42 +1243,261 @@ export const rejectWithdrawal = async (req, res) => {
 /* ------------------------------------------------------------------ */
 export const getReports = async (req, res) => {
   try {
-    const { from, to } = req.query;
-    let dateFilter = '';
-    const params = [];
-    if (from && to) { dateFilter = `AND o.created_at BETWEEN ? AND ?`; params.push(from, to); }
+    const { from, to, range = '30d' } = req.query;
 
-    const [[totals]] = await pool.execute(
+    let startDate, endDate, days;
+    const now = new Date();
+
+    if (from && to) {
+      startDate = new Date(from);
+      endDate = new Date(to);
+      days = Math.max(1, Math.round((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1);
+    } else {
+      endDate = now;
+      days = range === '7d' ? 7 : range === '90d' ? 90 : range === '1y' ? 365 : 30;
+      startDate = new Date();
+      startDate.setDate(endDate.getDate() - (days - 1));
+    }
+
+    const startIso = startDate.toISOString().slice(0, 10);
+    const endIso = endDate.toISOString().slice(0, 10);
+
+    // Prior period of equal duration for delta calculation
+    const prevStartDate = new Date(startDate);
+    prevStartDate.setDate(prevStartDate.getDate() - days);
+    const prevEndDate = new Date(startDate);
+    prevEndDate.setDate(prevEndDate.getDate() - 1);
+    const prevStartIso = prevStartDate.toISOString().slice(0, 10);
+    const prevEndIso = prevEndDate.toISOString().slice(0, 10);
+
+    // Current period totals
+    const [[currentTotals]] = await pool.execute(
       `SELECT COUNT(*) AS orders,
-              COALESCE(SUM(o.total_amount),0) AS gross,
-              COALESCE(SUM(o.discount_amount),0) AS discounts
-       FROM orders o WHERE o.payment_status = 'completed' ${dateFilter}`,
-      params,
-    );
-
-    const [byCategory] = await pool.execute(
-      `SELECT e.category, COUNT(o.id) AS orders, COALESCE(SUM(o.total_amount - o.discount_amount),0) AS revenue
+              COALESCE(SUM(o.total_amount - o.discount_amount), 0) AS revenue,
+              COALESCE(SUM(o.discount_amount), 0) AS discounts
        FROM orders o
-       JOIN events e ON e.id = o.event_id
-       WHERE o.payment_status = 'completed' ${dateFilter}
-       GROUP BY e.category
-       ORDER BY revenue DESC`,
-      params,
+       WHERE o.payment_status = 'completed'
+         AND DATE(o.created_at) BETWEEN ? AND ?`,
+      [startIso, endIso],
     );
 
+    // Prior period totals
+    const [[prevTotals]] = await pool.execute(
+      `SELECT COALESCE(SUM(o.total_amount - o.discount_amount), 0) AS revenue
+       FROM orders o
+       WHERE o.payment_status = 'completed'
+         AND DATE(o.created_at) BETWEEN ? AND ?`,
+      [prevStartIso, prevEndIso],
+    );
+
+    const currentRev = Number(currentTotals?.revenue || 0);
+    const prevRev = Number(prevTotals?.revenue || 0);
+    const revGrowth = prevRev > 0 ? Number((((currentRev - prevRev) / prevRev) * 100).toFixed(1)) : 0;
+    const commission = Number((currentRev * 0.05).toFixed(2));
+    const processingFees = Number((commission * 0.25).toFixed(2));
+
+    // Daily revenue series
+    const [dailyRevRows] = await pool.execute(
+      `SELECT DATE(created_at) AS date,
+              COALESCE(SUM(total_amount - discount_amount), 0) AS revenue,
+              COUNT(*) AS orders
+       FROM orders
+       WHERE payment_status = 'completed'
+         AND DATE(created_at) BETWEEN ? AND ?
+       GROUP BY DATE(created_at)
+       ORDER BY date ASC`,
+      [startIso, endIso],
+    );
+
+    const revMap = new Map((dailyRevRows || []).map((r) => [String(r.date).slice(0, 10), Number(r.revenue)]));
+    const revenueSeries = [];
+    for (let i = 0; i < days; i++) {
+      const d = new Date(startDate);
+      d.setDate(d.getDate() + i);
+      const k = d.toISOString().slice(0, 10);
+      revenueSeries.push({ date: k, revenue: revMap.get(k) || 0 });
+    }
+
+    // Users stats in period
+    const [[userCounts]] = await pool.execute(
+      `SELECT COUNT(*) AS total
+       FROM users
+       WHERE DATE(created_at) BETWEEN ? AND ?`,
+      [startIso, endIso],
+    );
+    const [[prevUserCounts]] = await pool.execute(
+      `SELECT COUNT(*) AS total
+       FROM users
+       WHERE DATE(created_at) BETWEEN ? AND ?`,
+      [prevStartIso, prevEndIso],
+    );
+    const newUsers = Number(userCounts?.total || 0);
+    const prevUsers = Number(prevUserCounts?.total || 0);
+    const userGrowth = prevUsers > 0 ? Number((((newUsers - prevUsers) / prevUsers) * 100).toFixed(1)) : 0;
+
+    // Distinct active users in period
+    let activeUsersCount = 0;
+    try {
+      const [[activeUserRes]] = await pool.execute(
+        `SELECT COUNT(DISTINCT user_id) AS total
+         FROM (
+           SELECT user_id FROM orders WHERE DATE(created_at) BETWEEN ? AND ?
+           UNION
+           SELECT user_id FROM refresh_tokens WHERE DATE(last_active) BETWEEN ? AND ?
+         ) act`,
+        [startIso, endIso, startIso, endIso],
+      );
+      activeUsersCount = Number(activeUserRes?.total || 0);
+    } catch {
+      const [[userFallback]] = await pool.execute(`SELECT COUNT(*) AS total FROM users WHERE status = 'active'`);
+      activeUsersCount = Number(userFallback?.total || 0);
+    }
+
+    // Daily user signup series
+    const [dailyUserRows] = await pool.execute(
+      `SELECT DATE(created_at) AS date, COUNT(*) AS count
+       FROM users
+       WHERE DATE(created_at) BETWEEN ? AND ?
+       GROUP BY DATE(created_at)
+       ORDER BY date ASC`,
+      [startIso, endIso],
+    );
+    const userMap = new Map((dailyUserRows || []).map((r) => [String(r.date).slice(0, 10), Number(r.count)]));
+    const userSeries = [];
+    for (let i = 0; i < days; i++) {
+      const d = new Date(startDate);
+      d.setDate(d.getDate() + i);
+      const k = d.toISOString().slice(0, 10);
+      userSeries.push({ date: k, users: userMap.get(k) || 0 });
+    }
+
+    // Retention rate
+    let retentionRate = 0;
+    try {
+      const [[retentionData]] = await pool.execute(
+        `SELECT COUNT(DISTINCT CASE WHEN order_count > 1 THEN user_id END) * 100.0 / NULLIF(COUNT(DISTINCT user_id), 0) AS retention
+         FROM (SELECT user_id, COUNT(*) AS order_count FROM orders WHERE payment_status = 'completed' GROUP BY user_id) uo`
+      );
+      retentionRate = Math.round(Number(retentionData?.retention || 0));
+    } catch {
+      retentionRate = 0;
+    }
+
+    // Events by Category
+    const [categoryRows] = await pool.execute(
+      `SELECT COALESCE(e.category, 'General') AS name, COUNT(*) AS value
+       FROM events e
+       WHERE DATE(e.created_at) BETWEEN ? AND ?
+       GROUP BY COALESCE(e.category, 'General')
+       ORDER BY value DESC`,
+      [startIso, endIso],
+    );
+
+    // Events created over time
+    const [dailyEventRows] = await pool.execute(
+      `SELECT DATE(created_at) AS date, COUNT(*) AS count
+       FROM events
+       WHERE DATE(created_at) BETWEEN ? AND ?
+       GROUP BY DATE(created_at)
+       ORDER BY date ASC`,
+      [startIso, endIso],
+    );
+    const eventMap = new Map((dailyEventRows || []).map((r) => [String(r.date).slice(0, 10), Number(r.count)]));
+    const eventsCreated = [];
+    for (let i = 0; i < days; i++) {
+      const d = new Date(startDate);
+      d.setDate(d.getDate() + i);
+      const k = d.toISOString().slice(0, 10);
+      eventsCreated.push({ date: k, events: eventMap.get(k) || 0 });
+    }
+
+    // Tickets sales trend & top events
+    const [dailyTicketRows] = await pool.execute(
+      `SELECT DATE(created_at) AS date, COUNT(*) AS count
+       FROM tickets
+       WHERE DATE(created_at) BETWEEN ? AND ?
+       GROUP BY DATE(created_at)
+       ORDER BY date ASC`,
+      [startIso, endIso],
+    );
+    const ticketMap = new Map((dailyTicketRows || []).map((r) => [String(r.date).slice(0, 10), Number(r.count)]));
+    const ticketSalesTrend = [];
+    for (let i = 0; i < days; i++) {
+      const d = new Date(startDate);
+      d.setDate(d.getDate() + i);
+      const k = d.toISOString().slice(0, 10);
+      ticketSalesTrend.push({ date: k, tickets: ticketMap.get(k) || 0 });
+    }
+
+    const [topEventsRows] = await pool.execute(
+      `SELECT e.id, e.title, COUNT(t.id) AS tickets
+       FROM events e
+       JOIN tickets t ON t.event_id = e.id
+       WHERE DATE(t.created_at) BETWEEN ? AND ?
+       GROUP BY e.id, e.title
+       ORDER BY tickets DESC
+       LIMIT 10`,
+      [startIso, endIso],
+    );
+
+    // Geographic distribution
+    const [geoRows] = await pool.execute(
+      `SELECT COALESCE(NULLIF(TRIM(e.city), ''), 'Accra') AS city,
+              COUNT(DISTINCT o.user_id) AS users,
+              COUNT(DISTINCT e.id) AS events,
+              COALESCE(SUM(CASE WHEN o.payment_status = 'completed' THEN (o.total_amount - o.discount_amount) ELSE 0 END), 0) AS revenue
+       FROM events e
+       LEFT JOIN orders o ON o.event_id = e.id AND DATE(o.created_at) BETWEEN ? AND ?
+       GROUP BY COALESCE(NULLIF(TRIM(e.city), ''), 'Accra')
+       ORDER BY revenue DESC, events DESC
+       LIMIT 10`,
+      [startIso, endIso],
+    );
+
+    // Top Organizers
     const [topOrganizers] = await pool.execute(
-      `SELECT u.id, u.name, COUNT(e.id) AS events, COALESCE(SUM(o.total_amount - o.discount_amount),0) AS revenue
+      `SELECT u.id, u.name, COUNT(DISTINCT e.id) AS events, COALESCE(SUM(o.total_amount - o.discount_amount), 0) AS revenue
        FROM users u
        JOIN events e ON e.organizer_id = u.id
-       LEFT JOIN orders o ON o.event_id = e.id AND o.payment_status = 'completed' ${dateFilter}
+       LEFT JOIN orders o ON o.event_id = e.id AND o.payment_status = 'completed' AND DATE(o.created_at) BETWEEN ? AND ?
        WHERE u.role = 'organizer'
        GROUP BY u.id, u.name
        ORDER BY revenue DESC
        LIMIT 10`,
-      params,
+      [startIso, endIso],
     );
 
-    res.json({ totals, byCategory, topOrganizers });
+    res.json({
+      revenue: {
+        total: currentRev,
+        growth: revGrowth,
+        commission,
+        commissionBreakdown: [
+          { label: 'Ticket Platform Commission (5%)', value: commission },
+          { label: 'Payment Gateway Processing', value: processingFees },
+        ],
+        series: revenueSeries,
+      },
+      users: {
+        newUsers,
+        growth: userGrowth,
+        active: activeUsersCount,
+        retention: retentionRate,
+        newUsersSeries: userSeries,
+      },
+      events: {
+        byCategory: categoryRows,
+        createdOverTime: eventsCreated,
+      },
+      tickets: {
+        salesTrend: ticketSalesTrend,
+        topEvents: topEventsRows,
+      },
+      geographic: geoRows,
+      totals: currentTotals,
+      byCategory: categoryRows,
+      topOrganizers,
+    });
   } catch (err) {
     console.error('[adminController.getReports]', err);
     res.status(500).json({ message: 'Server error' });
@@ -2266,12 +2489,74 @@ export const processUnresponsiveRefunds = async (req, res) => {
   }
 };
 
-export const getRevenueReport = async (_req, res) => {
-  res.json({ report: [] });
+export const getRevenueReport = async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    let dateFilter = '';
+    const params = [];
+    if (from && to) {
+      dateFilter = `AND DATE(o.created_at) BETWEEN ? AND ?`;
+      params.push(from, to);
+    }
+
+    const [byMethod] = await pool.execute(
+      `SELECT payment_method, COUNT(*) AS count, COALESCE(SUM(total_amount - discount_amount), 0) AS total
+       FROM orders o
+       WHERE payment_status = 'completed' ${dateFilter}
+       GROUP BY payment_method ORDER BY total DESC`,
+      params,
+    );
+    const [byCategory] = await pool.execute(
+      `SELECT COALESCE(e.category, 'General') AS category, COUNT(o.id) AS count, COALESCE(SUM(o.total_amount - o.discount_amount), 0) AS total
+       FROM orders o
+       JOIN events e ON e.id = o.event_id
+       WHERE o.payment_status = 'completed' ${dateFilter}
+       GROUP BY COALESCE(e.category, 'General') ORDER BY total DESC`,
+      params,
+    );
+    const [[totals]] = await pool.execute(
+      `SELECT COUNT(*) AS total_orders, COALESCE(SUM(total_amount - discount_amount), 0) AS gross_revenue
+       FROM orders o
+       WHERE payment_status = 'completed' ${dateFilter}`,
+      params,
+    );
+
+    res.json({ report: { byMethod, byCategory, totals } });
+  } catch (err) {
+    console.error('[adminController.getRevenueReport]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
 };
 
 export const getGrowthReport = async (_req, res) => {
-  res.json({ report: [] });
+  try {
+    const [monthlySignups] = await pool.execute(
+      `SELECT TO_CHAR(created_at, 'YYYY-MM') AS month, role, COUNT(*) AS count
+       FROM users
+       WHERE created_at >= CURRENT_DATE - INTERVAL '12 months'
+       GROUP BY TO_CHAR(created_at, 'YYYY-MM'), role
+       ORDER BY month ASC`,
+    );
+    const [monthlyEvents] = await pool.execute(
+      `SELECT TO_CHAR(created_at, 'YYYY-MM') AS month, COUNT(*) AS count
+       FROM events
+       WHERE created_at >= CURRENT_DATE - INTERVAL '12 months'
+       GROUP BY TO_CHAR(created_at, 'YYYY-MM')
+       ORDER BY month ASC`,
+    );
+    const [monthlyTickets] = await pool.execute(
+      `SELECT TO_CHAR(created_at, 'YYYY-MM') AS month, COUNT(*) AS count
+       FROM tickets
+       WHERE created_at >= CURRENT_DATE - INTERVAL '12 months'
+       GROUP BY TO_CHAR(created_at, 'YYYY-MM')
+       ORDER BY month ASC`,
+    );
+
+    res.json({ report: { monthlySignups, monthlyEvents, monthlyTickets } });
+  } catch (err) {
+    console.error('[adminController.getGrowthReport]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
 };
 
 /* ------------------------------------------------------------------ */
@@ -2550,12 +2835,36 @@ export const getUserStats = async (req, res) => {
       catch { return { count: 0, revenue: 0 }; }
     };
 
-    const orders = await safeQuery(
-      'SELECT COUNT(*) AS count, COALESCE(SUM(total_amount), 0) AS revenue FROM orders WHERE user_id = ?',
-      [id],
-    );
+    const [[userRow]] = await pool.execute('SELECT role FROM users WHERE id = ?', [id]);
+    const isOrg = userRow?.role === 'organizer';
+
     const events = await safeQuery('SELECT COUNT(*) AS count FROM events WHERE organizer_id = ?', [id]);
-    const tickets = await safeQuery('SELECT COUNT(*) AS count FROM tickets WHERE user_id = ?', [id]);
+    
+    // For organizers, revenue and tickets sold come from their organized events
+    let orders, tickets;
+    if (isOrg || Number(events?.count || 0) > 0) {
+      orders = await safeQuery(
+        `SELECT COUNT(DISTINCT o.id) AS count, COALESCE(SUM(o.total_amount - o.discount_amount), 0) AS revenue
+         FROM events e
+         JOIN orders o ON o.event_id = e.id AND o.payment_status = 'completed'
+         WHERE e.organizer_id = ?`,
+        [id],
+      );
+      tickets = await safeQuery(
+        `SELECT COUNT(t.id) AS count
+         FROM events e
+         JOIN tickets t ON t.event_id = e.id
+         WHERE e.organizer_id = ?`,
+        [id],
+      );
+    } else {
+      orders = await safeQuery(
+        'SELECT COUNT(*) AS count, COALESCE(SUM(total_amount - discount_amount), 0) AS revenue FROM orders WHERE user_id = ? AND payment_status = \'completed\'',
+        [id],
+      );
+      tickets = await safeQuery('SELECT COUNT(*) AS count FROM tickets WHERE user_id = ?', [id]);
+    }
+
     const reviews = await safeQuery('SELECT COUNT(*) AS count FROM reviews WHERE user_id = ?', [id]);
     const favorites = await safeQuery('SELECT COUNT(*) AS count FROM favorites WHERE user_id = ?', [id]);
     const sessions = await safeQuery(

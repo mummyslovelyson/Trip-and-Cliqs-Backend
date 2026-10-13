@@ -16,6 +16,7 @@ import {
   getBotConversations, deleteBotConversation,
   getMobileAppConfig, updateMobileAppSettings, createMobileAppBanner, updateMobileAppBanner, deleteMobileAppBanner,
 } from '../controllers/adminController.js';
+import { getEvent } from '../controllers/eventController.js';
 import { authenticate, authorize } from '../middleware/auth.js';
 import { rateLimit } from '../middleware/rateLimit.js';
 
@@ -62,6 +63,7 @@ router.post('/users/bulk/delete', destructiveLimiter, bulkDeleteUsers);
 
 // Events
 router.get('/events', getEvents);
+router.get('/events/:id', getEvent);
 router.put('/events/:id/approve', writeLimiter, approveEvent);
 router.post('/events/:id/approve', writeLimiter, approveEvent);
 router.put('/events/:id/request-changes', writeLimiter, requestEventChanges);
