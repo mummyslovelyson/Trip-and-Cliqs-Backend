@@ -1,6 +1,6 @@
 import { getEmailConfig } from './settings.js';
 
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+const FRONTEND_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').split(',')[0].trim().replace(/\/+$/, '');
 
 let resendClient = null;
 let lastResendKey = '';

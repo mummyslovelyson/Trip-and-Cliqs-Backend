@@ -38,11 +38,32 @@ export const initializeTransaction = async ({
     return { status: false, error: 'Paystack secret key not configured. Please set PAYSTACK_SECRET_KEY in system settings or .env' };
   }
   try {
-    let resolvedFrontend = (process.env.FRONTEND_URL || '').replace(/\/+$/, '');
-    if (!resolvedFrontend) {
-      resolvedFrontend = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:5173';
+    // Resolve a single, valid frontend origin (handles comma-separated FRONTEND_URL like in production)
+    const rawOrigins = (process.env.FRONTEND_URL || '').split(',').map((s) => s.trim()).filter(Boolean);
+    let resolvedFrontend = rawOrigins[0] ? rawOrigins[0].replace(/\/+$/, '') : '';
+    if (!resolvedFrontend || !resolvedFrontend.startsWith('http')) {
+      resolvedFrontend = process.env.NODE_ENV === 'production' ? 'https://tribesandcliqsevent.vercel.app' : 'http://localhost:5173';
     }
-    const resolvedCallbackUrl = callback_url || (resolvedFrontend ? `${resolvedFrontend}/payment/callback` : '/payment/callback');
+
+    let resolvedCallbackUrl = callback_url;
+    if (resolvedCallbackUrl) {
+      if (resolvedCallbackUrl.includes(',')) {
+        resolvedCallbackUrl = resolvedCallbackUrl.split(',')[0].trim();
+      }
+      if (resolvedCallbackUrl.startsWith('/')) {
+        resolvedCallbackUrl = `${resolvedFrontend}${resolvedCallbackUrl}`;
+      }
+    } else {
+      resolvedCallbackUrl = `${resolvedFrontend}/payment/callback`;
+    }
+
+    // Safety fallback: ensure it is a parseable URL
+    try {
+      const u = new URL(resolvedCallbackUrl);
+      resolvedCallbackUrl = u.toString();
+    } catch {
+      resolvedCallbackUrl = `${resolvedFrontend}/payment/callback`;
+    }
 
     const response = await fetch(`${BASE_URL}/transaction/initialize`, {
       method: 'POST',

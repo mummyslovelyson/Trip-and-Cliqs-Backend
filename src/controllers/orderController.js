@@ -14,11 +14,16 @@ import { REFUND_POLICY_CIRCUMSTANCES, getPolicyClause, formatPolicyCitation } fr
  * Validate and price a coupon for an event.
  * Returns { valid, discount } where discount is the monetary amount to subtract.
  */
-const applyCoupon = async (eventId, code, subtotal, totalQuantity = 1) => {
+const applyCoupon = async (rawEventId, code, subtotal, totalQuantity = 1) => {
   if (!code) return { valid: false, discount: 0 };
+  let numericEventId = !isNaN(Number(rawEventId)) ? Number(rawEventId) : null;
+  if (!numericEventId && rawEventId) {
+    const [eRows] = await pool.execute('SELECT id FROM events WHERE slug = ?', [String(rawEventId)]);
+    if (eRows[0]) numericEventId = Number(eRows[0].id);
+  }
   const [rows] = await pool.execute(
     `SELECT * FROM coupons WHERE (event_id = ? OR event_id IS NULL) AND UPPER(code) = UPPER(?) AND is_active = TRUE`,
-    [eventId, code],
+    [numericEventId || 0, code],
   );
   const coupon = rows[0];
   if (!coupon) return { valid: false, discount: 0, error: 'Invalid coupon code' };
@@ -60,29 +65,63 @@ export const createOrder = async (req, res) => {
   };
 
   try {
-    const { eventId, items, couponCode, callbackUrl, customerName, customerEmail, customerPhone } = req.body;
+    const rawEventId = req.body.eventId ?? req.body.event_id;
+    let orderItems = req.body.items;
+    if (typeof orderItems === 'string') {
+      try { orderItems = JSON.parse(orderItems); } catch {}
+    }
+    if (!Array.isArray(orderItems) && (req.body.ticketTypeId || req.body.ticket_type_id || req.body.id)) {
+      orderItems = [{
+        ticketTypeId: req.body.ticketTypeId || req.body.ticket_type_id || req.body.id,
+        quantity: req.body.quantity || 1,
+      }];
+    }
+
+    const { couponCode, callbackUrl, customerName, customerEmail, customerPhone } = req.body;
     const paymentMethod = (req.body.paymentMethod ?? 'paystack').toLowerCase();
-    if (!eventId || !Array.isArray(items) || items.length === 0) {
+
+    if (!rawEventId || !Array.isArray(orderItems) || orderItems.length === 0) {
+      console.warn('[orderController.createOrder] 400: Missing eventId or items[]', { body: req.body });
       safeRelease();
       return res.status(400).json({ message: 'eventId and items[] are required' });
     }
     if (!SUPPORTED_PAYMENT_METHODS.includes(paymentMethod)) {
+      console.warn('[orderController.createOrder] 400: Unsupported payment method', { paymentMethod });
       safeRelease();
       return res.status(400).json({ message: `Unsupported payment method: ${paymentMethod}` });
     }
 
-    const [eventRows] = await conn.execute('SELECT * FROM events WHERE id = ?', [eventId]);
-    const event = eventRows[0];
-    if (!event) { safeRelease(); return res.status(404).json({ message: 'Event not found' }); }
-    if (event.status !== 'published') { safeRelease(); return res.status(400).json({ message: 'Event is not available for booking' }); }
+    let event = null;
+    if (!isNaN(Number(rawEventId))) {
+      const [rows] = await conn.execute('SELECT * FROM events WHERE id = ?', [Number(rawEventId)]);
+      event = rows[0];
+    }
+    if (!event && rawEventId) {
+      const [rows] = await conn.execute('SELECT * FROM events WHERE slug = ?', [String(rawEventId)]);
+      event = rows[0];
+    }
 
+    if (!event) {
+      console.warn('[orderController.createOrder] 404: Event not found for id/slug:', rawEventId);
+      safeRelease();
+      return res.status(404).json({ message: 'Event not found' });
+    }
+    if (event.status !== 'published') {
+      console.warn('[orderController.createOrder] 400: Event not available for booking, status:', event.status);
+      safeRelease();
+      return res.status(400).json({ message: 'Event is not available for booking' });
+    }
+
+    const eventId = Number(event.id);
     let subtotal = 0;
     const lineItems = [];
 
     await conn.beginTransaction();
 
-    for (const item of items) {
-      if (!item || item.ticketTypeId === undefined || item.ticketTypeId === null || item.ticketTypeId === '') {
+    for (const item of orderItems) {
+      const ticketTypeId = item?.ticketTypeId ?? item?.ticket_type_id ?? item?.id ?? item?.ticketId;
+      if (ticketTypeId === undefined || ticketTypeId === null || ticketTypeId === '') {
+        console.warn('[orderController.createOrder] 400: Missing ticketTypeId in item:', item);
         await conn.rollback();
         safeRelease();
         return res.status(400).json({ message: 'Each order item must include a ticketTypeId' });
@@ -90,17 +129,24 @@ export const createOrder = async (req, res) => {
 
       const quantity = Number(item.quantity);
       if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_QUANTITY_PER_LINE) {
+        console.warn('[orderController.createOrder] 400: Invalid quantity:', item.quantity);
         await conn.rollback();
         safeRelease();
         return res.status(400).json({ message: `Quantity must be a whole number between 1 and ${MAX_QUANTITY_PER_LINE}` });
       }
 
-      const [ttRows] = await conn.execute('SELECT * FROM ticket_types WHERE id = ? AND event_id = ?', [item.ticketTypeId, eventId]);
+      const [ttRows] = await conn.execute('SELECT * FROM ticket_types WHERE id = ? AND event_id = ?', [ticketTypeId, eventId]);
       const tt = ttRows[0];
-      if (!tt) { await conn.rollback(); safeRelease(); return res.status(400).json({ message: `Ticket type ${item.ticketTypeId} not found` }); }
+      if (!tt) {
+        console.warn('[orderController.createOrder] 400: Ticket type not found for id:', ticketTypeId, 'eventId:', eventId);
+        await conn.rollback();
+        safeRelease();
+        return res.status(400).json({ message: `Ticket type ${ticketTypeId} not found` });
+      }
 
       const available = tt.quantity - tt.quantity_sold;
       if (quantity > available) {
+        console.warn('[orderController.createOrder] 400: Insufficient tickets available:', { available, requested: quantity });
         await conn.rollback();
         safeRelease();
         return res.status(400).json({ message: `Only ${available} tickets left for ${tt.name}` });
@@ -125,7 +171,7 @@ export const createOrder = async (req, res) => {
     // Coupon
     let discount = 0;
     let coupon = null;
-    const totalOrderTickets = items.reduce((sum, item) => sum + (Number(item.quantity) || 1), 0);
+    const totalOrderTickets = orderItems.reduce((sum, item) => sum + (Number(item.quantity) || 1), 0);
     if (couponCode) {
       const result = await applyCoupon(eventId, couponCode, subtotal, totalOrderTickets);
       if (!result.valid) {
@@ -174,7 +220,7 @@ export const createOrder = async (req, res) => {
     let authorizationUrl = null;
     if (total > 0 && SUPPORTED_PAYMENT_METHODS.includes(paymentMethod)) {
       const [userRows] = await pool.execute('SELECT email, phone FROM users WHERE id = ?', [req.user.id]);
-      const payerEmail = customerEmail || userRows[0]?.email;
+      const payerEmail = customerEmail || userRows[0]?.email || req.user?.email || 'customer@tribesandcliqs.com';
 
       if (customerPhone && !userRows[0]?.phone) {
         try {
@@ -182,11 +228,19 @@ export const createOrder = async (req, res) => {
         } catch {}
       }
 
+      const clientOrigin = (req.headers.origin || req.headers.referer) ? (() => {
+        try {
+          const u = new URL(req.headers.origin || req.headers.referer);
+          return u.origin;
+        } catch { return null; }
+      })() : null;
+      const effectiveCallback = callbackUrl || (clientOrigin ? `${clientOrigin}/payment/callback` : null);
+
       const payResult = await initializeTransaction({
         email: payerEmail,
         amount: total,
         reference,
-        callback_url: callbackUrl,
+        callback_url: effectiveCallback,
         metadata: {
           orderId,
           eventId,
@@ -198,6 +252,7 @@ export const createOrder = async (req, res) => {
         },
       });
       if (!payResult.status) {
+        console.error('[orderController.createOrder] 400: Paystack error:', payResult.error);
         return res.status(400).json({ message: 'Could not initialise payment', error: payResult.error, orderId, reference });
       }
       authorizationUrl = payResult.data.authorization_url;
@@ -399,7 +454,8 @@ export async function completeOrder(orderId, reference) {
 /* ------------------------------------------------------------------ */
 export const applyCouponHandler = async (req, res) => {
   try {
-    const { code, eventId, amount, quantity, totalQuantity } = req.body;
+    const { code, amount, quantity, totalQuantity } = req.body;
+    const eventId = req.body.eventId ?? req.body.event_id;
     if (!code || !eventId) {
       return res.status(400).json({ message: 'code and eventId are required' });
     }
@@ -450,12 +506,20 @@ export const initiateOrderPayment = async (req, res) => {
     }
 
     const { callbackUrl } = req.body || {};
+    const clientOrigin = (req.headers.origin || req.headers.referer) ? (() => {
+      try {
+        const u = new URL(req.headers.origin || req.headers.referer);
+        return u.origin;
+      } catch { return null; }
+    })() : null;
+    const effectiveCallback = callbackUrl || (clientOrigin ? `${clientOrigin}/payment/callback` : null);
+
     const [userRows] = await pool.execute('SELECT email FROM users WHERE id = ?', [order.user_id]);
     const payResult = await initializeTransaction({
       email: userRows[0]?.email,
       amount: Number(order.total_amount),
       reference: order.payment_reference,
-      callback_url: callbackUrl,
+      callback_url: effectiveCallback,
       metadata: { orderId: order.id, eventId: order.event_id, userId: order.user_id },
     });
     if (!payResult.status) {
@@ -529,7 +593,7 @@ export const getOrderInvoice = async (req, res) => {
         '',
         'Thank you for booking with Tribes & Cliqs.',
         'This receipt is an official proof of payment and ticket fulfillment.',
-        `Verification Link: ${(process.env.FRONTEND_URL || 'https://tribesandcliqs.com').replace(/\/+$/, '')}/verify/${order.payment_reference}`,
+        `Verification Link: ${(process.env.FRONTEND_URL || 'https://tribesandcliqs.com').split(',')[0].trim().replace(/\/+$/, '')}/verify/${order.payment_reference}`,
       ],
     });
 
@@ -590,11 +654,11 @@ export const getOrder = async (req, res) => {
 export const getUserOrders = async (req, res) => {
   try {
     const [rows] = await pool.execute(
-      `SELECT o.*, e.title AS event_title, e.banner_image, e.start_date, e.start_time, e.venue_name,
+      `SELECT o.*, e.title AS event_title, e.banner_image, e.start_date, e.start_time, e.venue AS venue_name, e.venue,
               r.id AS refund_request_id, r.status AS refund_status_detail,
               r.reason AS refund_reason, r.organizer_deadline, r.policy_circumstance, r.clause_number
        FROM orders o
-       JOIN events e ON e.id = o.event_id
+       LEFT JOIN events e ON e.id = o.event_id
        LEFT JOIN LATERAL (
          SELECT id, status, reason, organizer_deadline, policy_circumstance, clause_number
          FROM refunds
@@ -635,14 +699,15 @@ export const getOrders = async (req, res) => {
       const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
       const [countRows] = await pool.execute(
-        `SELECT COUNT(*) AS total FROM orders o JOIN events e ON e.id = o.event_id JOIN users u ON u.id = o.user_id ${where}`,
+        `SELECT COUNT(*) AS total FROM orders o LEFT JOIN events e ON e.id = o.event_id LEFT JOIN users u ON u.id = o.user_id ${where}`,
         params,
       );
+      const total = Number(countRows[0]?.total || 0);
       const [rows] = await pool.execute(
         `SELECT o.*, e.title AS event_title, u.name AS buyer_name, u.email AS buyer_email
          FROM orders o
-         JOIN events e ON e.id = o.event_id
-         JOIN users u ON u.id = o.user_id
+         LEFT JOIN events e ON e.id = o.event_id
+         LEFT JOIN users u ON u.id = o.user_id
          ${where}
          ORDER BY o.created_at DESC
          LIMIT ${limitNum} OFFSET ${offset}`,
@@ -651,7 +716,7 @@ export const getOrders = async (req, res) => {
 
       return res.json({
         orders: rows,
-        pagination: { page: pageNum, limit: limitNum, total: countRows[0].total, totalPages: Math.ceil(countRows[0].total / limitNum) },
+        pagination: { page: pageNum, limit: limitNum, total, totalPages: Math.ceil(total / limitNum) || 1 },
       });
     } else if (req.user.role === 'organizer') {
       return getOrganizerOrders(req, res);
@@ -693,9 +758,10 @@ export const getOrganizerOrders = async (req, res) => {
     const where = `WHERE ${conditions.join(' AND ')}`;
 
     const [countRows] = await pool.execute(
-      `SELECT COUNT(*) AS total FROM orders o JOIN events e ON e.id = o.event_id JOIN users u ON u.id = o.user_id ${where}`,
+      `SELECT COUNT(*) AS total FROM orders o JOIN events e ON e.id = o.event_id LEFT JOIN users u ON u.id = o.user_id ${where}`,
       params,
     );
+    const total = Number(countRows[0]?.total || 0);
 
     const [rows] = await pool.execute(
       `SELECT o.*, e.title AS event_title, u.name AS buyer_name, u.email AS buyer_email, u.phone AS buyer_phone,
@@ -706,7 +772,7 @@ export const getOrganizerOrders = async (req, res) => {
                WHERE oi.order_id = o.id) AS ticket_summary
        FROM orders o
        JOIN events e ON e.id = o.event_id
-       JOIN users u ON u.id = o.user_id
+       LEFT JOIN users u ON u.id = o.user_id
        ${where}
        ORDER BY o.created_at DESC
        LIMIT ${limitNum} OFFSET ${offset}`,
@@ -737,8 +803,8 @@ export const getOrganizerOrders = async (req, res) => {
       pagination: {
         page: pageNum,
         limit: limitNum,
-        total: Number(countRows[0].total),
-        totalPages: Math.ceil(Number(countRows[0].total) / limitNum),
+        total,
+        totalPages: Math.ceil(total / limitNum) || 1,
       },
     });
   } catch (err) {

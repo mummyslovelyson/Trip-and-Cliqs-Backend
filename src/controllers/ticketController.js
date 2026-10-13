@@ -958,12 +958,12 @@ export const transferTicket = async (req, res) => {
         ? `${new Date(ev.start_date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}${ev.start_time ? ` at ${ev.start_time}` : ''}`
         : 'Upcoming';
       const eventVenue = [ev.venue, ev.city].filter(Boolean).join(', ') || 'Venue TBA';
-      const frontendUrl = (process.env.FRONTEND_URL || '').replace(/\/+$/, '');
+      const frontendUrl = (process.env.FRONTEND_URL || '').split(',')[0].trim().replace(/\/+$/, '');
 
       // 1. In-app notification to recipient
       sendNotification({
         userId: recipient.id,
-        title: 'Ticket Received! 🎟️',
+        title: 'Ticket Received! ',
         message: `${senderName} transferred a digital ticket for "${eventTitle}" to you. Access your new ticket and QR code under My Tickets!`,
         type: 'ticket',
       }).catch(() => {});

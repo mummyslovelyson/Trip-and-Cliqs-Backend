@@ -376,7 +376,7 @@ export const inviteFriendsToEvent = async (req, res) => {
     const senderName = req.user.name || req.user.email || 'A friend';
     const cleanNote = note ? String(note).trim().slice(0, 250) : null;
     const cleanMeetupId = meetupId ? Number(meetupId) : null;
-    const frontendUrl = (process.env.FRONTEND_URL || '').replace(/\/+$/, '');
+    const frontendUrl = (process.env.FRONTEND_URL || '').split(',')[0].trim().replace(/\/+$/, '');
     const eventUrl = `${frontendUrl || ''}/events/${eventId}${cleanMeetupId ? `?meetup=${cleanMeetupId}` : ''}`;
     const eventDate = event.start_date
       ? `${new Date(event.start_date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}${event.start_time ? ` at ${event.start_time}` : ''}`

@@ -2489,6 +2489,220 @@ export const processUnresponsiveRefunds = async (req, res) => {
   }
 };
 
+export const getAdminRefundRequests = async (req, res) => {
+  try {
+    const { status = 'all', search } = req.query;
+
+    const conditions = [];
+    const params = [];
+
+    if (status && status !== 'all') {
+      conditions.push('r.status = ?');
+      params.push(status);
+    }
+
+    if (search && search.trim()) {
+      const q = `%${search.trim()}%`;
+      conditions.push('(e.title ILIKE ? OR u.name ILIKE ? OR u.email ILIKE ? OR org.name ILIKE ? OR o.payment_reference ILIKE ? OR CAST(o.id AS TEXT) ILIKE ?)');
+      params.push(q, q, q, q, q, q);
+    }
+
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const [rows] = await pool.execute(
+      `SELECT r.id, r.order_id, r.user_id, r.event_id, r.organizer_id, r.amount, r.reason,
+              r.policy_circumstance, r.clause_number, r.initiated_by, r.status,
+              r.organizer_deadline, r.organizer_response, r.organizer_responded_at,
+              r.created_at, r.processed_at, r.admin_notes,
+              o.payment_reference, o.payment_status, o.total_amount, o.created_at AS order_created_at,
+              e.title AS event_title,
+              u.name AS buyer_name, u.email AS buyer_email, u.phone AS buyer_phone,
+              org.name AS organizer_name, org.email AS organizer_email
+       FROM refunds r
+       JOIN orders o ON o.id = r.order_id
+       JOIN events e ON e.id = r.event_id
+       JOIN users u ON u.id = r.user_id
+       LEFT JOIN users org ON org.id = e.organizer_id
+       ${where}
+       ORDER BY CASE WHEN r.status = 'pending' THEN 0 ELSE 1 END, r.created_at DESC`,
+      params,
+    );
+
+    const now = new Date();
+    const formatted = rows.map((r) => {
+      const deadline = r.organizer_deadline ? new Date(r.organizer_deadline) : null;
+      const isOverdue = deadline ? deadline < now && r.status === 'pending' : false;
+      const hoursRemaining = deadline ? Math.max(0, Math.round((deadline - now) / (1000 * 60 * 60))) : null;
+      const clause = getPolicyClause(r.policy_circumstance || r.clause_number);
+
+      return {
+        id: r.id,
+        orderId: r.order_id,
+        userId: r.user_id,
+        eventId: r.event_id,
+        organizerId: r.organizer_id,
+        organizerName: r.organizer_name || 'Organizer',
+        organizerEmail: r.organizer_email || '',
+        amount: Number(r.amount),
+        reason: r.reason,
+        policyCircumstance: r.policy_circumstance,
+        clauseNumber: r.clause_number || clause?.clauseNumber || 5,
+        policyTitle: clause ? `Clause ${clause.clauseNumber}: ${clause.shortTitle}` : null,
+        status: r.status,
+        organizerDeadline: r.organizer_deadline,
+        isOverdue,
+        hoursRemaining,
+        organizerResponse: r.organizer_response,
+        organizerRespondedAt: r.organizer_responded_at,
+        adminNotes: r.admin_notes,
+        createdAt: r.created_at,
+        processedAt: r.processed_at,
+        orderReference: r.payment_reference || `#${r.order_id}`,
+        eventTitle: r.event_title,
+        buyerName: r.buyer_name,
+        buyerEmail: r.buyer_email,
+        buyerPhone: r.buyer_phone,
+      };
+    });
+
+    res.json({ refundRequests: formatted });
+  } catch (err) {
+    console.error('[adminController.getAdminRefundRequests]', err);
+    res.status(500).json({ message: 'Failed to load refund requests' });
+  }
+};
+
+export const respondToRefundRequestAdmin = async (req, res) => {
+  try {
+    const adminId = req.user.id;
+    const { id } = req.params;
+    const { action, responseReason, circumstance } = req.body || {};
+
+    if (!['authorize', 'approve', 'decline'].includes(action)) {
+      return res.status(400).json({ message: 'Action must be "authorize", "approve", or "decline"' });
+    }
+
+    const [rRows] = await pool.execute(
+      `SELECT r.*, o.payment_reference, o.total_amount, e.title AS event_title, e.organizer_id
+       FROM refunds r
+       JOIN orders o ON o.id = r.order_id
+       JOIN events e ON e.id = r.event_id
+       WHERE r.id = ?`,
+      [id],
+    );
+    const refund = rRows[0];
+    if (!refund) return res.status(404).json({ message: 'Refund request not found' });
+
+    if (refund.status !== 'pending') {
+      return res.status(400).json({ message: `Refund request is already ${refund.status}` });
+    }
+
+    if (action === 'authorize' || action === 'approve') {
+      const selectedCircumstance = circumstance || refund.policy_circumstance || '1_ORGANIZER_AUTHORIZED';
+      const policyClause = getPolicyClause(selectedCircumstance);
+      const clauseNum = policyClause?.clauseNumber || 1;
+      const citation = formatPolicyCitation(selectedCircumstance);
+
+      if (refund.payment_reference) {
+        const refundResult = await refundTransaction(refund.payment_reference, Number(refund.total_amount));
+        if (!refundResult.status) {
+          console.warn('[adminController.respondToRefundRequestAdmin] Paystack refund note:', refundResult.error);
+        }
+      }
+
+      await pool.execute(
+        `UPDATE orders SET payment_status = 'refunded', order_status = 'refunded', refund_request_status = 'approved', updated_at = NOW() WHERE id = ?`,
+        [refund.order_id],
+      );
+      await pool.execute(
+        `UPDATE tickets SET status = 'cancelled' WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)`,
+        [refund.order_id],
+      );
+      await pool.execute(
+        `UPDATE refunds SET
+           status = 'processed', policy_circumstance = ?, clause_number = ?,
+           processed_by = ?, processed_at = NOW(),
+           admin_notes = ?
+         WHERE id = ?`,
+        [selectedCircumstance, clauseNum, adminId, responseReason || 'Approved and processed by Admin', id],
+      );
+
+      await sendNotification({
+        userId: refund.user_id,
+        title: 'Refund Approved by Platform Admin',
+        message: `Your refund for Order #${refund.order_id} on "${refund.event_title}" has been approved and processed per ${citation}.`,
+        type: 'refund',
+      });
+
+      if (refund.organizer_id) {
+        await sendNotification({
+          userId: refund.organizer_id,
+          title: 'Refund Processed by Admin',
+          message: `TRIBESANDCLIQS Admin has approved and issued the refund for Order #${refund.order_id} on "${refund.event_title}" per ${citation}.`,
+          type: 'refund',
+        });
+      }
+
+      await logAudit({
+        userId: adminId,
+        action: 'admin_approve_refund_request',
+        entityType: 'refund',
+        entityId: Number(id),
+        details: { orderId: refund.order_id, amount: refund.total_amount, citation },
+      });
+
+      return res.json({
+        message: `Refund approved and processed successfully per ${citation}.`,
+        status: 'processed',
+        citation,
+      });
+    }
+
+    if (action === 'decline') {
+      if (!responseReason || !responseReason.trim()) {
+        return res.status(400).json({ message: 'Please provide an explanation for declining the refund request.' });
+      }
+
+      await pool.execute(
+        `UPDATE refunds SET
+           status = 'rejected',
+           admin_notes = ?,
+           processed_by = ?,
+           processed_at = NOW()
+         WHERE id = ?`,
+        [responseReason.trim(), adminId, id],
+      );
+      await pool.execute(
+        `UPDATE orders SET refund_request_status = 'declined', updated_at = NOW() WHERE id = ?`,
+        [refund.order_id],
+      );
+
+      await sendNotification({
+        userId: refund.user_id,
+        title: 'Refund Request Declined by Admin',
+        message: `Your refund request for Order #${refund.order_id} was declined by Admin: "${responseReason.trim()}".`,
+        type: 'refund',
+      });
+
+      await logAudit({
+        userId: adminId,
+        action: 'admin_decline_refund_request',
+        entityType: 'refund',
+        entityId: Number(id),
+        details: { orderId: refund.order_id, reason: responseReason.trim() },
+      });
+
+      return res.json({
+        message: 'Refund request declined. The buyer has been notified.',
+        status: 'rejected',
+      });
+    }
+  } catch (err) {
+    console.error('[adminController.respondToRefundRequestAdmin]', err);
+    res.status(500).json({ message: 'Server error responding to refund request' });
+  }
+};
+
 export const getRevenueReport = async (req, res) => {
   try {
     const { from, to } = req.query;

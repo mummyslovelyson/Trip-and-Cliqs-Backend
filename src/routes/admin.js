@@ -5,7 +5,7 @@ import {
   exportUsers, bulkRoleChange, bulkDeleteUsers, getUserStats,
   getEvents, approveEvent, rejectEvent, requestEventChanges, featureEvent, suspendEvent, unsuspendEvent, adminDeleteEvent,
   getCategories, createCategory, updateCategory, deleteCategory,
-  getPayments, getPayment, refundPayment, processUnresponsiveRefunds, getWithdrawals, approveWithdrawal, rejectWithdrawal,
+  getPayments, getPayment, refundPayment, getAdminRefundRequests, respondToRefundRequestAdmin, processUnresponsiveRefunds, getWithdrawals, approveWithdrawal, rejectWithdrawal,
   getReports, getRevenueReport, getGrowthReport,
   getSupportTickets, getSupportTicket, respondToSupportTicket, closeSupportTicket, resolveSupportTicket,
   sendAnnouncement, getAdminAnnouncements, getNotificationTemplates, getAdminNotifications, markAdminNotificationsRead, deleteAdminNotification, getAuditLogs, getSystemSettings, updateSystemSettings,
@@ -81,10 +81,12 @@ router.post('/categories', writeLimiter, createCategory);
 router.put('/categories/:id', writeLimiter, updateCategory);
 router.delete('/categories/:id', destructiveLimiter, deleteCategory);
 
-// Payments & withdrawals
+// Payments & withdrawals & refunds
 router.get('/payments', getPayments);
 router.get('/payments/:id', getPayment);
 router.post('/payments/:id/refund', destructiveLimiter, refundPayment);
+router.get('/refunds', getAdminRefundRequests);
+router.post('/refunds/:id/respond', writeLimiter, respondToRefundRequestAdmin);
 router.post('/refunds/process-unresponsive', writeLimiter, processUnresponsiveRefunds);
 router.get('/withdrawals', getWithdrawals);
 router.put('/withdrawals/:id/approve', writeLimiter, approveWithdrawal);

@@ -493,12 +493,20 @@ export const purchaseResaleListing = async (req, res) => {
 
     // Initialize Paystack. In development (no secret key configured) the
     // payment is finalized immediately so the marketplace stays usable.
+    const clientOrigin = (req.headers.origin || req.headers.referer) ? (() => {
+      try {
+        const u = new URL(req.headers.origin || req.headers.referer);
+        return u.origin;
+      } catch { return null; }
+    })() : null;
+    const effectiveCallback = req.body?.callbackUrl || (clientOrigin ? `${clientOrigin}/payment/callback` : null);
+
     const [userRows] = await pool.execute('SELECT email FROM users WHERE id = ?', [req.user.id]);
     const payResult = await initializeTransaction({
       email: userRows[0]?.email,
       amount: Number(listing.price),
       reference,
-      callback_url: req.body?.callbackUrl,
+      callback_url: effectiveCallback,
       metadata: { orderId, eventId: listing.event_id, userId: req.user.id, resaleListingId: id },
     });
 
