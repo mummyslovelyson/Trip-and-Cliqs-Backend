@@ -1400,18 +1400,28 @@ export const paymentCallbackBridge = async (req, res) => {
     }
   }
 
+  const sep = appRedirect.includes('?') ? '&' : '?';
+  const target = reference
+    ? `${appRedirect}${sep}reference=${encodeURIComponent(reference)}&status=success`
+    : appRedirect;
+
+  // Immediately redirect HTTP 302 so mobile browser or web app intercepts and returns to tickets
+  if (req.query.no_redirect !== 'true' && !req.query.preview_bridge) {
+    return res.redirect(302, target);
+  }
+
   const encodedRef = encodeURIComponent(reference);
-  const encodedRedirect = encodeURIComponent(appRedirect);
 
   res.send(`<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="0;url=${target}">
   <title>Payment Successful - Tribes &amp; Cliqs</title>
   <style>
     body {
-      background-color: #171A1D;
+      background-color: #1C232B;
       color: #EFEFF1;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
       display: flex;
@@ -1423,8 +1433,8 @@ export const paymentCallbackBridge = async (req, res) => {
       box-sizing: border-box;
     }
     .card {
-      background-color: #21262B;
-      border: 1px solid rgba(255, 255, 255, 0.1);
+      background-color: #242B32;
+      border: 1px solid #2E363E;
       border-radius: 24px;
       padding: 36px 24px;
       text-align: center;
@@ -1449,7 +1459,7 @@ export const paymentCallbackBridge = async (req, res) => {
     .title {
       font-size: 22px;
       font-weight: 800;
-      color: #FFFFFF;
+      color: #EFEFF1;
       margin: 0 0 8px 0;
       letter-spacing: -0.3px;
     }
@@ -1460,8 +1470,8 @@ export const paymentCallbackBridge = async (req, res) => {
       margin: 0 0 20px 0;
     }
     .ref-box {
-      background-color: #171A1D;
-      border: 1px dashed rgba(255, 255, 255, 0.15);
+      background-color: #161D22;
+      border: 1px dashed #3A444E;
       border-radius: 12px;
       padding: 12px 14px;
       margin-bottom: 24px;
@@ -1470,25 +1480,25 @@ export const paymentCallbackBridge = async (req, res) => {
     }
     .ref-code {
       font-family: monospace;
-      color: #D4AF37;
+      color: #CBD5E1;
       font-weight: 700;
     }
     .btn {
       display: block;
-      background: linear-gradient(135deg, #E02828 0%, #B21414 100%);
-      color: #ffffff;
+      background: #EFEFF1;
+      color: #1C232B;
       padding: 15px 24px;
       border-radius: 14px;
       text-decoration: none;
       font-weight: 800;
       font-size: 15px;
       margin-bottom: 12px;
-      box-shadow: 0 4px 16px rgba(224, 40, 40, 0.35);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
     }
     .btn-secondary {
       background-color: rgba(255, 255, 255, 0.05);
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      color: #EFEFF1;
+      border: 1px solid #2E363E;
+      color: #CBD5E1;
       font-weight: 600;
       font-size: 13px;
       padding: 12px 20px;
@@ -1504,35 +1514,28 @@ export const paymentCallbackBridge = async (req, res) => {
     <h2 class="title">Payment Successful!</h2>
     <p class="desc">Your tickets have been issued and added to your mobile wallet.</p>
     ${reference ? `<div class="ref-box">Order Reference: <span class="ref-code">${reference}</span></div>` : ''}
-    <a id="returnBtn" class="btn" href="#">View Tickets in App</a>
+    <a id="returnBtn" class="btn" href="${target}">View Tickets in App</a>
     <a id="dismissBtn" class="btn btn-secondary" href="javascript:window.close();">Done</a>
   </div>
   <script>
     (function() {
-      var params = new URLSearchParams(window.location.search);
-      var reference = params.get('reference') || params.get('trxref') || '${encodedRef}';
-      var appRedirect = params.get('app_redirect') || '${appRedirect}';
-      var sep = appRedirect.indexOf('?') !== -1 ? '&' : '?';
-      var target = reference ? (appRedirect + sep + 'reference=' + encodeURIComponent(reference) + '&status=success') : appRedirect;
+      var target = '${target}';
+      try {
+        window.location.replace(target);
+      } catch(e) {
+        window.location.href = target;
+      }
 
-      var returnBtn = document.getElementById('returnBtn');
-      if (returnBtn) returnBtn.href = target;
-
-      // 1. Immediately redirect to mobile app deep link
-      window.location.href = target;
-
-      // 2. Fallback attempt for Android Intent if custom scheme doesn't handle immediately
       setTimeout(function() {
         if (/android/i.test(navigator.userAgent) && !target.startsWith('exp:')) {
-          var intentTarget = 'intent://payment-callback?reference=' + encodeURIComponent(reference) + '#Intent;scheme=tribescliqs;package=com.tribesandcliqs.app;end';
+          var intentTarget = 'intent://payment-callback?reference=' + encodeURIComponent('${encodedRef}') + '#Intent;scheme=tribescliqs;package=com.tribesandcliqs.app;end';
           window.location.href = intentTarget;
         }
-      }, 500);
+      }, 400);
 
-      // 3. Attempt popup window auto-close
       setTimeout(function() {
         try { window.close(); } catch(e) {}
-      }, 1200);
+      }, 1000);
     })();
   </script>
 </body>
