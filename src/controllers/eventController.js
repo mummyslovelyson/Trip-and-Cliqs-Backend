@@ -941,9 +941,10 @@ export const unpublishEvent = (req, res) => setEventStatus(req, res, 'draft');
 export const getOrganizerEvents = async (req, res) => {
   try {
     const organizerId = req.user.id;
+    const isAdmin = req.user.role === 'admin' || req.user.role === 'system_admin' || req.user.role === 'staff';
     const { status } = req.query;
-    const conditions = ['e.organizer_id = ?'];
-    const params = [organizerId];
+    const conditions = isAdmin ? ['1=1'] : ['e.organizer_id = ?'];
+    const params = isAdmin ? [] : [organizerId];
     if (status && status !== 'all') {
       if (status === 'changes_requested') {
         conditions.push("e.approval_status = 'changes_requested'");

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import {
-  getProfile, updateProfile,
+  getProfile, updateProfile, deleteAccount,
   getNotifications, markNotificationRead, markAllNotificationsRead, deleteNotification,
   getFavorites, toggleFavorite,
   followOrganizer, unfollowOrganizer, getFollowing, getFollowingEvents,
@@ -28,10 +28,11 @@ router.delete('/friends/:id/follow', unfollowUser);
 router.post('/:id/follow', followUser);
 router.delete('/:id/follow', unfollowUser);
 
-
-// Profile
+// Profile & Account Management
 router.get('/profile', getProfile);
 router.put('/profile', updateProfile);
+router.delete('/account', deleteAccount);
+router.delete('/me', deleteAccount);
 
 // Organizer Application
 router.post('/apply-organizer', applyOrganizer);

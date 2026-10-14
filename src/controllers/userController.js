@@ -1051,8 +1051,63 @@ export const getOrganizerApplicationStatus = async (req, res) => {
   }
 };
 
+/* ------------------------------------------------------------------ */
+/* Delete Account (Self-Service Deletion for Store Compliance)         */
+/* ------------------------------------------------------------------ */
+export const deleteAccount = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // Check if user is an organizer with upcoming published events
+    const [events] = await pool.execute(
+      `SELECT id, title FROM events WHERE organizer_id = ? AND status = 'published' AND start_date >= CURRENT_DATE LIMIT 1`,
+      [userId]
+    );
+
+    if (events.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot delete account while you have active upcoming events ("${events[0].title}"). Please cancel or conclude your events first.`,
+      });
+    }
+
+    // Invalidate all active sessions & refresh tokens
+    await pool.execute('DELETE FROM refresh_tokens WHERE user_id = ?', [userId]);
+
+    // Anonymize and mark user as deleted
+    const randomSuffix = Math.random().toString(36).substring(2, 10);
+    await pool.execute(
+      `UPDATE users 
+       SET status = 'deleted',
+           name = 'Deleted User',
+           email = CONCAT('deleted_', id, '_', ?, '@deleted.user'),
+           phone = NULL,
+           avatar_url = NULL,
+           bio = NULL
+       WHERE id = ?`,
+      [randomSuffix, userId]
+    );
+
+    await logAudit({
+      userId,
+      action: 'delete_account',
+      entityType: 'user',
+      entityId: userId,
+      details: { deletedAt: new Date().toISOString() },
+    });
+
+    res.json({
+      success: true,
+      message: 'Your account has been permanently deleted.',
+    });
+  } catch (err) {
+    console.error('[userController.deleteAccount]', err);
+    res.status(500).json({ message: 'Server error deleting account' });
+  }
+};
+
 export default {
-  getProfile, updateProfile, changePassword,
+  getProfile, updateProfile, changePassword, deleteAccount,
   getNotifications, markNotificationRead, markAllNotificationsRead, deleteNotification,
   getFavorites, toggleFavorite,
   followOrganizer, unfollowOrganizer, getFollowing, getFollowingEvents,

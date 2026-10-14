@@ -845,6 +845,91 @@ export const checkInTicket = async (req, res) => {
 };
 
 /* ------------------------------------------------------------------ */
+/* Real-time check-in stats & scan history for Organizer & Admin      */
+/* ------------------------------------------------------------------ */
+export const getCheckInStats = async (req, res) => {
+  try {
+    const userId = Number(req.user.id);
+    const isAdmin = req.user.role === 'admin' || req.user.role === 'system_admin' || req.user.role === 'staff';
+    const { eventId } = req.query;
+
+    const hasSpecificEvent = eventId && eventId !== 'all';
+    const eventNum = hasSpecificEvent ? Number(eventId) : 0;
+
+    let statsSql = `
+      SELECT 
+        COUNT(*) AS total_tickets,
+        COALESCE(SUM(CASE WHEN t.status = 'used' OR t.checked_in_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS admitted_count,
+        COALESCE(SUM(CASE WHEN t.status = 'active' AND t.checked_in_at IS NULL THEN 1 ELSE 0 END), 0) AS remaining_count
+      FROM tickets t
+      JOIN events e ON e.id = t.event_id
+      WHERE 1=1
+    `;
+    const statsParams = [];
+
+    if (!isAdmin) {
+      statsSql += ` AND e.organizer_id = ?`;
+      statsParams.push(userId);
+    }
+    if (hasSpecificEvent) {
+      statsSql += ` AND t.event_id = ?`;
+      statsParams.push(eventNum);
+    }
+
+    const [statsRows] = await pool.execute(statsSql, statsParams);
+    const stats = statsRows[0] || { total_tickets: 0, admitted_count: 0, remaining_count: 0 };
+
+    let historySql = `
+      SELECT t.id, t.ticket_number, t.checked_in_at, tt.name AS tier,
+             COALESCE(t.attendee_name, u.name, 'Attendee') AS attendee,
+             e.title AS event_title
+      FROM tickets t
+      JOIN events e ON e.id = t.event_id
+      LEFT JOIN users u ON u.id = t.user_id
+      LEFT JOIN ticket_types tt ON tt.id = t.ticket_type_id
+      WHERE (t.status = 'used' OR t.checked_in_at IS NOT NULL)
+    `;
+    const historyParams = [];
+
+    if (!isAdmin) {
+      historySql += ` AND e.organizer_id = ?`;
+      historyParams.push(userId);
+    }
+    if (hasSpecificEvent) {
+      historySql += ` AND t.event_id = ?`;
+      historyParams.push(eventNum);
+    }
+
+    historySql += ` ORDER BY t.checked_in_at DESC LIMIT 15`;
+
+    const [historyRows] = await pool.execute(historySql, historyParams);
+
+    res.json({
+      success: true,
+      stats: {
+        totalTickets: Number(stats.total_tickets || 0),
+        admitted: Number(stats.admitted_count || 0),
+        remaining: Number(stats.remaining_count || 0),
+      },
+      recentScans: historyRows.map((r) => ({
+        id: r.id,
+        code: r.ticket_number,
+        attendee: r.attendee,
+        tier: r.tier || 'General',
+        status: 'approved',
+        eventTitle: r.event_title,
+        time: r.checked_in_at
+          ? new Date(r.checked_in_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+          : 'Admitted',
+      })),
+    });
+  } catch (err) {
+    console.error('[ticketController.getCheckInStats]', err);
+    res.status(500).json({ message: 'Server error loading check-in stats' });
+  }
+};
+
+/* ------------------------------------------------------------------ */
 /* Transfer a ticket to another user (Full anti-fraud transfer)        */
 /* ------------------------------------------------------------------ */
 export const transferTicket = async (req, res) => {
@@ -1342,5 +1427,6 @@ export default {
   getTicketTypes, createTicketType, updateTicketType, deleteTicketType,
   getUserTickets, getTicketById, checkInTicket, transferTicket, getTickets,
   verifyTicketByCode, bulkCheckIn, downloadTicket, deleteUserTicket, clearOldTickets,
+  getCheckInStats,
 };
 
