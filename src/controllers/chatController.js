@@ -742,11 +742,67 @@ async function logBotConversation({
  */
 export const handleChatMessage = async (req, res) => {
   try {
-    const { message, conversationHistory = [], context = {}, mode = 'chat' } = req.body;
-    const rawMessage = (message || '').trim();
+    const {
+      message,
+      conversationHistory = [],
+      context = {},
+      mode = 'chat',
+      audioBase64,
+      audioMimeType = 'audio/m4a',
+    } = req.body;
+    let rawMessage = (message || '').trim();
+
+    // ─── TRANSCRIBE NATIVE AUDIO / VOICE NOTES VIA GEMINI ───
+    if (audioBase64 && (!rawMessage || rawMessage === 'voice_note' || rawMessage === 'audio')) {
+      const apiKey = getGeminiApiKey();
+      if (apiKey) {
+        try {
+          const cleanBase64 = audioBase64.replace(/^data:audio\/[a-z0-9_-]+;base64,/, '');
+          const transcribeRes = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                contents: [
+                  {
+                    parts: [
+                      {
+                        text: "You are the speech-to-text listener for Clqs Bot on Tribes & Cliqs. Listen carefully to this audio voice message. Transcribe the user's speech accurately into clear, plain English text. If the user mentions placing an order, buying tickets, finding events, dates, or prices, transcribe every word cleanly. Output ONLY the plain English transcription without quotes, explanations, or formatting.",
+                      },
+                      {
+                        inlineData: {
+                          mimeType: audioMimeType || 'audio/m4a',
+                          data: cleanBase64,
+                        },
+                      },
+                    ],
+                  },
+                ],
+                generationConfig: {
+                  temperature: 0.1,
+                  maxOutputTokens: 250,
+                },
+              }),
+              signal: AbortSignal.timeout(9000),
+            }
+          );
+
+          if (transcribeRes.ok) {
+            const trData = await transcribeRes.json();
+            const text = trData?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+            if (text) {
+              rawMessage = text;
+            }
+          }
+        } catch (audioErr) {
+          console.warn('[chatController.audioTranscribe] Audio transcription failed:', audioErr.message);
+        }
+      }
+    }
 
     if (!rawMessage) {
-      return res.status(400).json({ message: 'Message is required' });
+      return res.status(400).json({ message: 'Message or audio is required' });
     }
 
     const user = req.user || null;
@@ -774,6 +830,9 @@ export const handleChatMessage = async (req, res) => {
     const originalJson = res.json.bind(res);
     res.json = (data) => {
       if (data && data.reply) {
+        if (audioBase64) {
+          data.transcribedText = rawMessage;
+        }
         if (isVoice) {
           data.voiceReply = formatVoiceUtterance(data.reply);
           if (mode === 'voice') {
