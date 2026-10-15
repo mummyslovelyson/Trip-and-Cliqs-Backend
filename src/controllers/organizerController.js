@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import pool from '../config/db.js';
-import { sendMarketingEmail as dispatchMarketingEmail } from '../utils/email.js';
+import { sendMarketingEmail as dispatchMarketingEmail, sendAnnouncementEmail } from '../utils/email.js';
 import { sendNotification, notifyAdmins } from '../utils/notify.js';
 import { logAudit } from '../utils/audit.js';
 import { validatePassword } from '../utils/password.js';
@@ -1593,18 +1593,92 @@ export const createMarketingCampaign = async (req, res) => {
       return res.status(400).json({ message: 'Message is required' });
     }
 
-    const campaignTitle = title || subject || 'Campaign';
+    const campaignTitle = title || subject || 'Event Announcement';
+
+    // Fetch organizer / organization details
+    const [orgRows] = await pool.execute(
+      `SELECT u.name, op.organization_name
+       FROM users u
+       LEFT JOIN organizer_profiles op ON op.user_id = u.id
+       WHERE u.id = ?`,
+      [req.user.id],
+    );
+    const orgName = orgRows[0]?.organization_name || orgRows[0]?.name || 'Event Organizer';
+
+    // Fetch event title if specific event targeted
+    let eventTitle = null;
+    if (eventId) {
+      const [eRows] = await pool.execute(`SELECT title FROM events WHERE id = ? AND organizer_id = ?`, [eventId, req.user.id]);
+      eventTitle = eRows[0]?.title || null;
+    }
+
+    // Identify target attendees with tickets
+    let attendeeSql = `
+      SELECT DISTINCT u.id, u.name, u.email
+      FROM tickets t
+      JOIN events e ON e.id = t.event_id
+      JOIN users u ON u.id = t.user_id
+      WHERE e.organizer_id = ?
+    `;
+    const attendeeParams = [req.user.id];
+
+    if (eventId) {
+      attendeeSql += ` AND e.id = ?`;
+      attendeeParams.push(eventId);
+    }
+
+    const [attendees] = await pool.execute(attendeeSql, attendeeParams);
 
     const [result] = await pool.execute(
       `INSERT INTO marketing_campaigns (organizer_id, event_id, title, type, audience, subject, message, sent_count)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
-      [req.user.id, eventId || null, campaignTitle, type, audience, subject || null, message],
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [req.user.id, eventId || null, campaignTitle, type, audience, subject || null, message, attendees.length || 1],
     );
 
-    res.status(201).json({ message: 'Campaign created and sent', campaignId: result.insertId });
+    // Dispatch emails to attendees in background
+    if (type === 'email' || type === 'both' || type === 'announcement') {
+      (async () => {
+        for (const att of attendees) {
+          if (att.email) {
+            await sendAnnouncementEmail({
+              to: att.email,
+              recipientName: att.name || 'Tribe Member',
+              title: campaignTitle,
+              message,
+              senderName: orgName,
+              eventTitle,
+            }).catch(() => {});
+          }
+        }
+      })().catch((err) => console.warn('[createMarketingCampaign] Broadcast warning:', err.message));
+    }
+
+    res.status(201).json({
+      message: 'Campaign created and sent successfully to attendees',
+      campaignId: result.insertId,
+      recipients: attendees.length,
+    });
   } catch (err) {
     console.error('[organizerController.createMarketingCampaign]', err);
     res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const sendMarketingEmail = async (req, res) => {
+  try {
+    const { to, subject, html, message, eventId } = req.body;
+    if (!subject) return res.status(400).json({ message: 'Subject is required' });
+
+    if (to) {
+      await dispatchMarketingEmail(to, subject, html || `<p>${message || ''}</p>`);
+      return res.json({ message: `Marketing email dispatched to ${to}` });
+    }
+
+    // If no single recipient, broadcast to event attendees
+    return createMarketingCampaign(req, res);
+  } catch (err) {
+    console.error('[organizerController.sendMarketingEmail]', err);
+    res.status(500).json({ message: 'Server error sending marketing email' });
   }
 };
 

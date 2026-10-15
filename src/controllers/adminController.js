@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import pool from '../config/db.js';
 import { sendNotification, sendNotificationToMany } from '../utils/notify.js';
 import {
-  sendEmail, sendOrganizerApprovalEmail, sendEventApprovalEmail, sendEventRejectionEmail,
+  sendEmail, sendOrganizerApprovalEmail, sendEventApprovalEmail, sendEventRejectionEmail, sendAnnouncementEmail,
 } from '../utils/email.js';
 import { sendSMS } from '../utils/sms.js';
 import { getSmsApiKey, getPaystackSecretKey, clearSettingsCache } from '../utils/settings.js';
@@ -1578,24 +1578,26 @@ export const sendAnnouncement = async (req, res) => {
     );
     const announcementId = insRes[0]?.id;
 
-    // 2. Identify target user IDs
-    let userIds = [];
+    // 2. Identify target users
+    let targetUsers = [];
     if (effectiveTarget === 'all') {
-      const [rows] = await pool.execute(`SELECT id FROM users WHERE status = 'active'`);
-      userIds = rows.map((r) => r.id);
+      const [rows] = await pool.execute(`SELECT id, name, email FROM users WHERE status = 'active'`);
+      targetUsers = rows;
     } else if (effectiveTarget === 'attendees' || effectiveTarget === 'attendee') {
-      const [rows] = await pool.execute(`SELECT id FROM users WHERE status = 'active' AND role = 'attendee'`);
-      userIds = rows.map((r) => r.id);
+      const [rows] = await pool.execute(`SELECT id, name, email FROM users WHERE status = 'active' AND role = 'attendee'`);
+      targetUsers = rows;
     } else if (effectiveTarget === 'organizers' || effectiveTarget === 'organizer') {
-      const [rows] = await pool.execute(`SELECT id FROM users WHERE status = 'active' AND role = 'organizer'`);
-      userIds = rows.map((r) => r.id);
+      const [rows] = await pool.execute(`SELECT id, name, email FROM users WHERE status = 'active' AND role = 'organizer'`);
+      targetUsers = rows;
     } else if (effectiveTarget === 'admins' || effectiveTarget === 'admin') {
-      const [rows] = await pool.execute(`SELECT id FROM users WHERE status = 'active' AND role IN ('admin', 'system_admin', 'superadmin')`);
-      userIds = rows.map((r) => r.id);
+      const [rows] = await pool.execute(`SELECT id, name, email FROM users WHERE status = 'active' AND role IN ('admin', 'system_admin', 'superadmin')`);
+      targetUsers = rows;
     } else if (effectiveTarget === 'specific' && userId) {
-      const [rows] = await pool.execute(`SELECT id FROM users WHERE id = ? OR email = ?`, [userId, userId]);
-      userIds = rows.map((r) => r.id);
+      const [rows] = await pool.execute(`SELECT id, name, email FROM users WHERE id = ? OR email = ?`, [userId, userId]);
+      targetUsers = rows;
     }
+
+    const userIds = targetUsers.map((r) => r.id);
 
     // 3. Dispatch in-app notifications
     if (userIds.length > 0) {
@@ -1607,7 +1609,25 @@ export const sendAnnouncement = async (req, res) => {
       });
     }
 
-    // 4. Update sent count
+    // 4. Dispatch announcement emails if channel is email or all
+    const shouldSendEmail = effectiveChannel === 'all' || effectiveChannel === 'email' || effectiveChannel === 'both';
+    if (shouldSendEmail && targetUsers.length > 0) {
+      (async () => {
+        for (const u of targetUsers) {
+          if (u.email) {
+            await sendAnnouncementEmail({
+              to: u.email,
+              recipientName: u.name || 'Member',
+              title: title.trim(),
+              message: message.trim(),
+              senderName: 'Tribes & Cliqs Admin',
+            }).catch(() => {});
+          }
+        }
+      })().catch((e) => console.warn('[sendAnnouncement] Email broadcast notice:', e.message));
+    }
+
+    // 5. Update sent count
     if (announcementId) {
       await pool.execute(`UPDATE announcements SET sent_count = ? WHERE id = ?`, [userIds.length, announcementId]);
     }

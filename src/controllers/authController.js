@@ -11,7 +11,12 @@ import {
   getUserSessions,
   revokeSession,
 } from '../utils/jwt.js';
-import { sendVerificationEmail, sendPasswordResetEmail, sendWelcomeEmail } from '../utils/email.js';
+import {
+  sendVerificationEmail,
+  sendPasswordResetEmail,
+  sendWelcomeEmail,
+  sendPasswordChangedAlertEmail,
+} from '../utils/email.js';
 import { sendVerificationSMS, sendWelcomeSMS, sendSMS } from '../utils/sms.js';
 import { sendNotification, notifyAdmins } from '../utils/notify.js';
 import { logAudit } from '../utils/audit.js';
@@ -604,12 +609,18 @@ export const resetPassword = async (req, res) => {
     await pool.execute('UPDATE password_reset_tokens SET used = TRUE WHERE user_id = ?', [resetRow.user_id]);
     await revokeAllUserTokens(resetRow.user_id);
 
-    // Send confirmation SMS & in-app notification
+    // Send confirmation SMS, email alert & in-app notification
     if (resetRow.phone) {
       sendSMS(
         resetRow.phone,
         'Tribes & Cliqs Security: Your account password was successfully reset. If you did not make this change, please contact support immediately.'
       ).catch(() => {});
+    }
+
+    if (resetRow.email) {
+      sendPasswordChangedAlertEmail(resetRow.email, resetRow.name, 'reset_code').catch((err) =>
+        console.error('[authController.resetPassword] sendPasswordChangedAlertEmail error:', err.message)
+      );
     }
 
     sendNotification({
@@ -670,6 +681,12 @@ export const changePassword = async (req, res) => {
     );
 
     await logAudit({ userId: req.user.id, action: 'change_password', entityType: 'user', entityId: req.user.id });
+
+    if (req.user.email) {
+      sendPasswordChangedAlertEmail(req.user.email, user.name || 'User', 'settings').catch((err) =>
+        console.error('[authController.changePassword] sendPasswordChangedAlertEmail error:', err.message)
+      );
+    }
 
     res.json({
       message: 'Password changed. Other devices have been signed out.',
@@ -1235,6 +1252,13 @@ export const firebaseAuth = async (req, res) => {
         entityId: user.id,
         details: { role: user.role, email: user.email },
       });
+
+      // Dispatch Welcome Email for new Google sign-up
+      if (authUser.email) {
+        sendWelcomeEmail(authUser.email, authUser.name, { isGoogle: true, role: assignedRole }).catch((err) =>
+          console.error('[authController.firebaseAuth] sendWelcomeEmail error:', err.message)
+        );
+      }
     }
 
     // Check organizer pending approval

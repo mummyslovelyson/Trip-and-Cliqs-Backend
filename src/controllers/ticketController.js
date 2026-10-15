@@ -3,7 +3,7 @@ import pool from '../config/db.js';
 import { logAudit } from '../utils/audit.js';
 import textPdf from '../utils/pdf.js';
 import { sendNotification, notifyAdmins } from '../utils/notify.js';
-import { sendTicketTransferEmail } from '../utils/email.js';
+import { sendTicketTransferEmail, sendGateCheckInAlertEmail } from '../utils/email.js';
 import { sendSMS } from '../utils/sms.js';
 import { completeOrder, generateTicketsForOrder } from './orderController.js';
 
@@ -822,6 +822,20 @@ export const checkInTicket = async (req, res) => {
     );
 
     await logAudit({ userId: req.user.id, action: 'check_in_ticket', entityType: 'ticket', entityId: ticket.id });
+
+    // Send immediate gate admission confirmation email
+    if (ticket.attendee_email) {
+      sendGateCheckInAlertEmail({
+        to: ticket.attendee_email,
+        attendeeName: ticket.attendee_name || 'Attendee',
+        eventTitle: ticket.event_title,
+        ticketNumber: ticket.ticket_number,
+        tier: ticket.ticket_type || 'General Admission',
+        checkedInAt: new Date(),
+      }).catch((err) =>
+        console.warn('[ticketController.checkInTicket] Gate check-in email alert notice:', err.message)
+      );
+    }
 
     res.json({
       success: true,

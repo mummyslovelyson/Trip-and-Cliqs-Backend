@@ -408,17 +408,42 @@ export async function completeOrder(orderId, reference) {
 
   const [userRows] = await pool.execute('SELECT id, name, email, phone FROM users WHERE id = ?', [order.user_id]);
   const user = userRows[0];
-  const [eventRows] = await pool.execute('SELECT title, organizer_id FROM events WHERE id = ?', [order.event_id]);
-  const eventTitle = eventRows[0]?.title;
-  const organizerId = eventRows[0]?.organizer_id;
+  const [eventRows] = await pool.execute(
+    'SELECT title, organizer_id, venue, location, start_date FROM events WHERE id = ?',
+    [order.event_id],
+  );
+  const event = eventRows[0] || {};
+  const eventTitle = event.title;
+  const organizerId = event.organizer_id;
+
+  // Retrieve generated tickets for this order with tier names
+  let tickets = [];
+  try {
+    const [tRows] = await pool.execute(
+      `SELECT t.id, t.ticket_number, t.qr_code, tt.name AS tier_name, COALESCE(t.attendee_name, ?) AS attendee_name
+       FROM tickets t
+       JOIN order_items oi ON oi.id = t.order_item_id
+       LEFT JOIN ticket_types tt ON tt.id = t.ticket_type_id
+       WHERE oi.order_id = ?`,
+      [user?.name || 'Attendee', orderId],
+    );
+    tickets = tRows;
+  } catch (tErr) {
+    console.warn('[orderController.completeOrder] Could not load ticket details for email:', tErr.message);
+  }
 
   if (user?.email) {
     sendTicketConfirmationEmail(user.email, {
       reference,
       eventTitle,
-      total: order.total_amount,
+      total: `GHS ${Number(order.total_amount).toFixed(2)}`,
+      total_amount: order.total_amount,
+      venue: event.venue || event.location || 'Venue TBA',
+      eventDate: event.start_date ? new Date(event.start_date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }) : 'Upcoming',
+      attendeeName: user.name || 'Friend',
+      tickets,
       items: [],
-    });
+    }).catch((err) => console.error('[orderController] sendTicketConfirmationEmail error:', err.message));
   }
   if (user?.phone) sendTicketConfirmationSMS(user.phone, reference);
 
