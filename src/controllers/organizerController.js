@@ -836,9 +836,15 @@ export const removeTeamMember = async (req, res) => {
 /* ------------------------------------------------------------------ */
 export const sendMarketingEmail = async (req, res) => {
   try {
-    const { eventId, subject, htmlContent } = req.body;
-    if (!subject || !htmlContent) {
-      return res.status(400).json({ message: 'subject and htmlContent are required' });
+    const { eventId, subject, htmlContent, html, message, to } = req.body;
+    if (!subject) {
+      return res.status(400).json({ message: 'Subject is required' });
+    }
+    const content = htmlContent || html || `<p>${message || ''}</p>`;
+
+    if (to) {
+      const ok = await dispatchMarketingEmail(to, subject, content);
+      return res.json({ message: ok ? `Marketing email sent to ${to}` : 'Failed to send email' });
     }
 
     let recipients = [];
@@ -872,11 +878,17 @@ export const sendMarketingEmail = async (req, res) => {
 
     let sent = 0;
     for (const email of recipients) {
-      const ok = await dispatchMarketingEmail(email, subject, htmlContent);
+      const ok = await dispatchMarketingEmail(email, subject, content);
       if (ok) sent++;
     }
 
-    await logAudit({ userId: req.user.id, action: 'send_marketing_email', entityType: 'event', entityId: eventId || null, details: { recipients: recipients.length, sent } });
+    await logAudit({
+      userId: req.user.id,
+      action: 'send_marketing_email',
+      entityType: 'event',
+      entityId: eventId || null,
+      details: { recipients: recipients.length, sent },
+    });
     res.json({ message: `Marketing email sent to ${sent}/${recipients.length} recipients` });
   } catch (err) {
     console.error('[organizerController.sendMarketingEmail]', err);
@@ -1661,24 +1673,6 @@ export const createMarketingCampaign = async (req, res) => {
   } catch (err) {
     console.error('[organizerController.createMarketingCampaign]', err);
     res.status(500).json({ message: 'Server error' });
-  }
-};
-
-export const sendMarketingEmail = async (req, res) => {
-  try {
-    const { to, subject, html, message, eventId } = req.body;
-    if (!subject) return res.status(400).json({ message: 'Subject is required' });
-
-    if (to) {
-      await dispatchMarketingEmail(to, subject, html || `<p>${message || ''}</p>`);
-      return res.json({ message: `Marketing email dispatched to ${to}` });
-    }
-
-    // If no single recipient, broadcast to event attendees
-    return createMarketingCampaign(req, res);
-  } catch (err) {
-    console.error('[organizerController.sendMarketingEmail]', err);
-    res.status(500).json({ message: 'Server error sending marketing email' });
   }
 };
 
