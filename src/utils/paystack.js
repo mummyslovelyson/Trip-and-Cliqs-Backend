@@ -42,10 +42,10 @@ export const initializeTransaction = async ({
     const rawOrigins = (process.env.FRONTEND_URL || '').split(',').map((s) => s.trim()).filter(Boolean);
     let resolvedFrontend = rawOrigins[0] ? rawOrigins[0].replace(/\/+$/, '') : '';
     if (!resolvedFrontend || !resolvedFrontend.startsWith('http')) {
-      resolvedFrontend = process.env.NODE_ENV === 'production' ? 'https://tribesandcliqsevent.vercel.app' : 'http://localhost:5173';
+      resolvedFrontend = process.env.NODE_ENV === 'production' ? 'https://tribesandcliqs.app' : 'http://localhost:5173';
     }
 
-    let resolvedCallbackUrl = callback_url;
+    let resolvedCallbackUrl = callback_url || process.env.PAYSTACK_CALLBACK_URL;
     if (resolvedCallbackUrl) {
       if (resolvedCallbackUrl.includes(',')) {
         resolvedCallbackUrl = resolvedCallbackUrl.split(',')[0].trim();
@@ -54,7 +54,7 @@ export const initializeTransaction = async ({
         resolvedCallbackUrl = `${resolvedFrontend}${resolvedCallbackUrl}`;
       }
     } else {
-      resolvedCallbackUrl = `${resolvedFrontend}/payment/callback`;
+      resolvedCallbackUrl = `${resolvedFrontend}/paystack_success`;
     }
 
     // Safety fallback: ensure it is a parseable URL
@@ -62,7 +62,7 @@ export const initializeTransaction = async ({
       const u = new URL(resolvedCallbackUrl);
       resolvedCallbackUrl = u.toString();
     } catch {
-      resolvedCallbackUrl = `${resolvedFrontend}/payment/callback`;
+      resolvedCallbackUrl = `${resolvedFrontend}/paystack_success`;
     }
 
     const response = await fetch(`${BASE_URL}/transaction/initialize`, {

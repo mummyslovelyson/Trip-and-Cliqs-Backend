@@ -84,6 +84,8 @@ const parseOrigins = () => {
     'https://tribesandcliqsevent.vercel.app',
     'https://tribesandcliqs.com',
     'https://www.tribesandcliqs.com',
+    'https://tribesandcliqs.app',
+    'https://www.tribesandcliqs.app',
   ];
   return new Set([...defaults, ...custom]);
 };
