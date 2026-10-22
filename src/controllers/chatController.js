@@ -35,10 +35,11 @@ import { initializeTransaction, verifyTransaction } from '../utils/paystack.js';
 import { sendTicketConfirmationEmail } from '../utils/email.js';
 import { sendTicketConfirmationSMS } from '../utils/sms.js';
 import { completeOrder } from './orderController.js';
+import { getGeminiApiKey as fetchGeminiApiKey } from '../utils/settings.js';
 
 export { agentTools };
 
-const getGeminiApiKey = () => process.env.GEMINI_API_KEY || '';
+const getGeminiApiKey = async () => (await fetchGeminiApiKey?.()) || process.env.GEMINI_API_KEY || '';
 const GEMINI_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-flash-latest'];
 
 /**
@@ -658,7 +659,7 @@ export async function resendAgentTicket({ userId, channel = 'email' }) {
  * Helper to call Gemini API with model fallback
  */
 async function callGemini(contents, systemInstruction, temperature = 0.4) {
-  const apiKey = getGeminiApiKey();
+  const apiKey = await getGeminiApiKey();
   if (!apiKey) return null;
 
   for (const model of GEMINI_MODELS) {
@@ -754,7 +755,7 @@ export const handleChatMessage = async (req, res) => {
 
     // ─── TRANSCRIBE NATIVE AUDIO / VOICE NOTES VIA GEMINI ───
     if (audioBase64 && (!rawMessage || rawMessage === 'voice_note' || rawMessage === 'audio')) {
-      const apiKey = getGeminiApiKey();
+      const apiKey = await getGeminiApiKey();
       if (apiKey) {
         try {
           const cleanBase64 = audioBase64.replace(/^data:audio\/[a-z0-9_-]+;base64,/, '');
@@ -801,8 +802,21 @@ export const handleChatMessage = async (req, res) => {
       }
     }
 
-    if (!rawMessage) {
-      return res.status(400).json({ message: 'Message or audio is required' });
+    if (!rawMessage || rawMessage === 'voice_note' || rawMessage === 'audio') {
+      return res.json({
+        reply: "I heard your voice note, but couldn't transcribe the words clearly. Try speaking a bit closer to your mic, or tap a suggestion below!",
+        voiceReply: "I heard your voice note, but couldn't transcribe the words clearly. Try speaking a bit closer to your mic, or tap a suggestion below!",
+        intent: 'GENERAL_CHAT',
+        events: [],
+        tickets: [],
+        actions: [],
+        suggestions: [
+          'What events are happening this weekend?',
+          'Concerts and music in Accra',
+          'Order tickets for Afrochella',
+          'Show my active passes',
+        ],
+      });
     }
 
     const user = req.user || null;

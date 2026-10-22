@@ -47,6 +47,11 @@ export const getPaystackPublicKey = async () => {
   return dbKey || process.env.PAYSTACK_PUBLIC_KEY || '';
 };
 
+export const getGeminiApiKey = async () => {
+  const dbKey = await getSetting('gemini_api_key');
+  return dbKey || process.env.GEMINI_API_KEY || '';
+};
+
 export const getSmsApiKey = async () => {
   const dbKey = await getSetting('smsonlinegh_api_key') || await getSetting('sms_api_key');
   return dbKey || process.env.SMSONLINEGH_API_KEY || process.env.SMS_API_KEY || process.env.SMSONLINE_API_KEY || '';
