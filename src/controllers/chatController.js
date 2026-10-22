@@ -759,41 +759,52 @@ export const handleChatMessage = async (req, res) => {
       if (apiKey) {
         try {
           const cleanBase64 = audioBase64.replace(/^data:audio\/[a-z0-9_-]+;base64,/, '');
-          const transcribeRes = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                contents: [
-                  {
-                    parts: [
+          const transcribeModels = ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-flash-lite-latest'];
+          for (const model of transcribeModels) {
+            try {
+              const transcribeRes = await fetch(
+                `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`,
+                {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'x-goog-api-key': apiKey,
+                  },
+                  body: JSON.stringify({
+                    contents: [
                       {
-                        text: "You are the speech-to-text listener for Clqs Bot on Tribes & Cliqs. Listen carefully to this audio voice message. Transcribe the user's speech accurately into clear, plain English text. If the user mentions placing an order, buying tickets, finding events, dates, or prices, transcribe every word cleanly. Output ONLY the plain English transcription without quotes, explanations, or formatting.",
-                      },
-                      {
-                        inlineData: {
-                          mimeType: audioMimeType || 'audio/m4a',
-                          data: cleanBase64,
-                        },
+                        parts: [
+                          {
+                            text: "You are the speech-to-text listener for Clqs Bot on Tribes & Cliqs. Listen carefully to this audio voice message. Transcribe the user's speech accurately into clear, plain English text. If the user mentions placing an order, buying tickets, finding events, dates, or prices, transcribe every word cleanly. Output ONLY the plain English transcription without quotes, explanations, or formatting.",
+                          },
+                          {
+                            inlineData: {
+                              mimeType: audioMimeType || 'audio/m4a',
+                              data: cleanBase64,
+                            },
+                          },
+                        ],
                       },
                     ],
-                  },
-                ],
-                generationConfig: {
-                  temperature: 0.1,
-                  maxOutputTokens: 250,
-                },
-              }),
-              signal: AbortSignal.timeout(9000),
-            }
-          );
+                    generationConfig: {
+                      temperature: 0.1,
+                      maxOutputTokens: 250,
+                    },
+                  }),
+                  signal: AbortSignal.timeout(9000),
+                }
+              );
 
-          if (transcribeRes.ok) {
-            const trData = await transcribeRes.json();
-            const text = trData?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-            if (text) {
-              rawMessage = text;
+              if (transcribeRes.ok) {
+                const trData = await transcribeRes.json();
+                const text = trData?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+                if (text) {
+                  rawMessage = text;
+                  break;
+                }
+              }
+            } catch (mErr) {
+              console.warn(`[chatController.audioTranscribe] ${model} attempt failed:`, mErr.message);
             }
           }
         } catch (audioErr) {
