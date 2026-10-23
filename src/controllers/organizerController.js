@@ -188,6 +188,42 @@ export const getDashboardStats = async (req, res) => {
       topEvents = top || [];
     } catch {}
 
+    // Real ticket tier breakdown.
+    let ticketTiers = [];
+    try {
+      const [tiers] = await pool.execute(
+        `SELECT tt.name, COUNT(t.id) AS count
+         FROM tickets t
+         JOIN ticket_types tt ON tt.id = t.ticket_type_id
+         JOIN events e ON e.id = t.event_id
+         WHERE e.organizer_id = ? AND t.status = 'active'
+         GROUP BY tt.name
+         ORDER BY count DESC
+         LIMIT 5`,
+        [organizerId],
+      );
+      ticketTiers = tiers || [];
+    } catch {}
+
+    // Real check-in statistics.
+    let checkInStats = { total: 0, checkedIn: 0 };
+    try {
+      const [checkRows] = await pool.execute(
+        `SELECT COUNT(t.id) AS total,
+                COALESCE(SUM(CASE WHEN t.status = 'used' OR t.checked_in_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS checkedin
+         FROM tickets t
+         JOIN events e ON e.id = t.event_id
+         WHERE e.organizer_id = ? AND t.status = 'active'`,
+        [organizerId],
+      );
+      if (checkRows[0]) {
+        checkInStats = {
+          total: Number(checkRows[0].total || 0),
+          checkedIn: Number(checkRows[0].checkedin || 0),
+        };
+      }
+    } catch {}
+
     res.json({
       organization: {
         name: orgRow.organization_name || orgRow.name || '',
@@ -209,6 +245,8 @@ export const getDashboardStats = async (req, res) => {
       recentOrders,
       upcomingEvents,
       topEvents,
+      ticketTiers,
+      checkInStats,
     });
   } catch (err) {
     console.error('[organizerController.getDashboardStats]', err);
@@ -315,7 +353,8 @@ export const getRevenue = async (req, res) => {
     // Daily revenue series within the range (for the dashboard chart).
     const [daily] = await pool.execute(
       `SELECT DATE(o.created_at) AS date,
-              COALESCE(SUM(o.total_amount - o.discount_amount), 0) AS revenue
+              COALESCE(SUM(o.total_amount - o.discount_amount), 0) AS revenue,
+              COUNT(o.id) AS orders
        FROM orders o
        JOIN events e ON e.id = o.event_id
        WHERE e.organizer_id = ? AND o.payment_status = 'completed'
