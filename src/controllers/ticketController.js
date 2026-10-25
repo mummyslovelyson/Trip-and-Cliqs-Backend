@@ -124,6 +124,14 @@ export const createTicketType = async (req, res) => {
       return res.status(403).json({ message: 'Only the event organizer can add ticket types' });
     }
 
+    // Kwame Blueprint / System Rule: An event must be approved by admin before a ticket can be created
+    if (event.approval_status !== 'approved') {
+      return res.status(400).json({
+        message: 'Tickets cannot be created because this event has not yet been approved by an administrator.',
+        approval_status: event.approval_status,
+      });
+    }
+
     const [result] = await pool.execute(
       `INSERT INTO ticket_types (
         event_id, name, price, quantity, quantity_sold, sale_start, sale_end, description,

@@ -46,7 +46,7 @@ export const getEvents = async (req, res) => {
     const searchTerm = (search || searchQuery || '').trim();
     const loc = (location || city || '').trim();
 
-    const conditions = [`e.status = 'published'`, `e.visibility = 'public'`];
+    const conditions = [`e.status = 'published'`, `e.approval_status = 'approved'`, `e.visibility = 'public'`];
     const params = [];
 
     // Category filter (supports comma-separated list)
@@ -331,9 +331,10 @@ export const createEvent = async (req, res) => {
       return res.status(400).json({ message: 'Missing required event fields' });
     }
 
-    // Organizers and admins publish immediately unless explicitly saving as a draft
-    let status = req.body.status === 'draft' ? 'draft' : 'published';
-    let approval_status = status === 'draft' ? 'pending' : 'approved';
+    // Admins can publish directly as approved; organizers create as pending admin approval
+    const isAdmin = req.user.role === 'admin';
+    let status = req.body.status === 'draft' ? 'draft' : (isAdmin ? 'published' : 'pending');
+    let approval_status = isAdmin ? 'approved' : 'pending';
 
     // The wizard submits the category name; resolve it to its id so both the
     // display column and the FK are populated.
@@ -573,7 +574,7 @@ export const updateEvent = async (req, res) => {
       values.push(categoryId);
     }
 
-    if (req.body.status === 'published') {
+    if (req.body.status === 'published' && req.user.role === 'admin') {
       fields.push('approval_status = ?');
       values.push('approved');
     }
@@ -872,8 +873,17 @@ const setEventStatus = async (req, res, status) => {
       return res.status(403).json({ message: 'You can only manage your own events' });
     }
 
+    const isAdmin = req.user.role === 'admin';
     let targetStatus = status;
-    let targetApprovalStatus = status === 'published' ? 'approved' : (status === 'draft' ? 'pending' : 'pending');
+    let targetApprovalStatus = isAdmin
+      ? (status === 'published' ? 'approved' : 'pending')
+      : 'pending';
+
+    // If a non-admin organizer attempts to publish, event goes to pending review
+    if (!isAdmin && status === 'published') {
+      targetStatus = 'pending';
+      targetApprovalStatus = 'pending';
+    }
 
     await pool.execute(
       `UPDATE events SET status = ?, approval_status = ?, rejection_reason = NULL WHERE id = ?`,
@@ -973,20 +983,20 @@ export const getFeaturedEvents = async (req, res) => {
               (SELECT MIN(price) FROM ticket_types WHERE event_id = e.id) AS min_price
        FROM events e
        LEFT JOIN users u ON u.id = e.organizer_id
-       WHERE e.status = 'published' AND e.is_featured = TRUE
+       WHERE e.status = 'published' AND e.approval_status = 'approved' AND e.is_featured = TRUE
          AND e.visibility = 'public' AND e.start_date >= CURRENT_DATE
        ORDER BY e.start_date ASC
        LIMIT ${limitNum}`,
     );
 
-    // Resilient fallback: if no upcoming featured events exist, return published events
+    // Resilient fallback: if no upcoming featured events exist, return published approved events
     if (!rows || rows.length === 0) {
       const [fallbackRows] = await pool.execute(
         `SELECT e.*, u.name AS organizer_name,
                 (SELECT MIN(price) FROM ticket_types WHERE event_id = e.id) AS min_price
          FROM events e
          LEFT JOIN users u ON u.id = e.organizer_id
-         WHERE e.status = 'published' AND e.visibility = 'public'
+         WHERE e.status = 'published' AND e.approval_status = 'approved' AND e.visibility = 'public'
          ORDER BY e.is_featured DESC, e.start_date DESC, e.created_at DESC
          LIMIT ${limitNum}`,
       );
@@ -1025,7 +1035,7 @@ export const getTrendingEvents = async (req, res) => {
        LEFT JOIN users u ON u.id = e.organizer_id
        LEFT JOIN ticket_types tt ON tt.event_id = e.id
        LEFT JOIN tickets t ON t.ticket_type_id = tt.id AND t.status = 'active'
-       WHERE e.status = 'published' AND e.start_date >= CURRENT_DATE
+       WHERE e.status = 'published' AND e.approval_status = 'approved' AND e.start_date >= CURRENT_DATE
          AND e.visibility = 'public'
        GROUP BY e.id, e.organizer_id, e.category_id, e.title, e.slug, e.description,
                 e.category, e.venue, e.address, e.city, e.country, e.start_date, e.end_date,
@@ -1049,7 +1059,7 @@ export const getTrendingEvents = async (req, res) => {
          LEFT JOIN users u ON u.id = e.organizer_id
          LEFT JOIN ticket_types tt ON tt.event_id = e.id
          LEFT JOIN tickets t ON t.ticket_type_id = tt.id AND t.status = 'active'
-         WHERE e.status = 'published' AND e.visibility = 'public'
+         WHERE e.status = 'published' AND e.approval_status = 'approved' AND e.visibility = 'public'
          GROUP BY e.id, e.organizer_id, e.category_id, e.title, e.slug, e.description,
                   e.category, e.venue, e.address, e.city, e.country, e.start_date, e.end_date,
                   e.start_time, e.end_time, e.capacity, e.banner_image, e.status, e.is_featured,
