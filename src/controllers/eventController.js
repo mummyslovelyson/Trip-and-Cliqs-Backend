@@ -331,19 +331,9 @@ export const createEvent = async (req, res) => {
       return res.status(400).json({ message: 'Missing required event fields' });
     }
 
-    // Organizers can save a draft or submit for review. Only admins can directly publish.
-    let status = 'draft';
-    let approval_status = 'pending';
-    if (req.user.role === 'admin' && req.body.status === 'published') {
-      status = 'published';
-      approval_status = 'approved';
-    } else if (req.body.status === 'draft') {
-      status = 'draft';
-      approval_status = 'pending';
-    } else {
-      status = 'pending';
-      approval_status = 'pending';
-    }
+    // Organizers and admins publish immediately unless explicitly saving as a draft
+    let status = req.body.status === 'draft' ? 'draft' : 'published';
+    let approval_status = status === 'draft' ? 'pending' : 'approved';
 
     // The wizard submits the category name; resolve it to its id so both the
     // display column and the FK are populated.
@@ -495,6 +485,7 @@ export const createEvent = async (req, res) => {
       ).catch(() => {});
     }
 
+    cache.clearPrefix('events');
     conn.release();
     res.status(201).json({ message: 'Event created', eventId });
   } catch (err) {
@@ -520,17 +511,14 @@ export const updateEvent = async (req, res) => {
       return res.status(403).json({ message: 'You can only update your own events' });
     }
 
-    // Organizers may edit content fields only. Status and featured flags are
-    // server/admin-controlled — organizers can neither publish nor feature
-    // their own events (they submit via PATCH /:id/publish for review).
     const allowed = [
       'title','description','category','venue','address','city','country',
       'location_type','gps_location','latitude','longitude','start_date','end_date','start_time','end_time',
       'capacity','dress_code','contact_email','contact_phone','banner_image',
-      'ticket_template','images','tags','visibility',
+      'ticket_template','images','tags','visibility','status',
     ];
     if (req.user.role === 'admin') {
-      allowed.push('status', 'is_featured', 'organizer_id');
+      allowed.push('is_featured', 'organizer_id', 'approval_status');
       if (req.body.organizerId !== undefined && req.body.organizer_id === undefined) {
         req.body.organizer_id = req.body.organizerId;
       }
@@ -585,12 +573,18 @@ export const updateEvent = async (req, res) => {
       values.push(categoryId);
     }
 
+    if (req.body.status === 'published') {
+      fields.push('approval_status = ?');
+      values.push('approved');
+    }
+
     if (fields.length === 0) {
       return res.status(400).json({ message: 'No fields to update' });
     }
 
     values.push(id);
     await pool.execute(`UPDATE events SET ${fields.join(', ')} WHERE id = ?`, values);
+    cache.clearPrefix('events');
 
     // Persist ticket types update if supplied
     const ticketTypes = Array.isArray(req.body.ticket_types) || Array.isArray(req.body.ticketTypes)
@@ -878,15 +872,8 @@ const setEventStatus = async (req, res, status) => {
       return res.status(403).json({ message: 'You can only manage your own events' });
     }
 
-    // Organizers cannot publish directly without admin approval.
-    // When an organizer requests to publish, it submits the event for review (pending).
     let targetStatus = status;
-    let targetApprovalStatus = status === 'published' ? 'approved' : 'pending';
-
-    if (status === 'published' && req.user.role !== 'admin') {
-      targetStatus = 'pending';
-      targetApprovalStatus = 'pending';
-    }
+    let targetApprovalStatus = status === 'published' ? 'approved' : (status === 'draft' ? 'pending' : 'pending');
 
     await pool.execute(
       `UPDATE events SET status = ?, approval_status = ?, rejection_reason = NULL WHERE id = ?`,
@@ -981,7 +968,7 @@ export const getFeaturedEvents = async (req, res) => {
     const cached = cache.get(cacheKey);
     if (cached) return res.json(cached);
 
-    const [rows] = await pool.execute(
+    let [rows] = await pool.execute(
       `SELECT e.*, u.name AS organizer_name,
               (SELECT MIN(price) FROM ticket_types WHERE event_id = e.id) AS min_price
        FROM events e
@@ -991,6 +978,21 @@ export const getFeaturedEvents = async (req, res) => {
        ORDER BY e.start_date ASC
        LIMIT ${limitNum}`,
     );
+
+    // Resilient fallback: if no upcoming featured events exist, return published events
+    if (!rows || rows.length === 0) {
+      const [fallbackRows] = await pool.execute(
+        `SELECT e.*, u.name AS organizer_name,
+                (SELECT MIN(price) FROM ticket_types WHERE event_id = e.id) AS min_price
+         FROM events e
+         LEFT JOIN users u ON u.id = e.organizer_id
+         WHERE e.status = 'published' AND e.visibility = 'public'
+         ORDER BY e.is_featured DESC, e.start_date DESC, e.created_at DESC
+         LIMIT ${limitNum}`,
+      );
+      rows = fallbackRows || [];
+    }
+
     const result = { events: rows };
     cache.set(cacheKey, result, 120_000); // 2 minutes
     res.json(result);
@@ -1011,7 +1013,7 @@ export const getTrendingEvents = async (req, res) => {
     const cached = cache.get(cacheKey);
     if (cached) return res.json(cached);
 
-    const [rows] = await pool.execute(
+    let [rows] = await pool.execute(
       `SELECT e.id, e.organizer_id, e.category_id, e.title, e.slug, e.description,
               e.category, e.venue, e.address, e.city, e.country, e.start_date, e.end_date,
               e.start_time, e.end_time, e.capacity, e.banner_image, e.status, e.is_featured,
@@ -1032,6 +1034,32 @@ export const getTrendingEvents = async (req, res) => {
        ORDER BY tickets_sold DESC, e.created_at DESC
        LIMIT ${limitNum}`,
     );
+
+    // Resilient fallback: if no future events exist with sales, return published events
+    if (!rows || rows.length === 0) {
+      const [fallbackRows] = await pool.execute(
+        `SELECT e.id, e.organizer_id, e.category_id, e.title, e.slug, e.description,
+                e.category, e.venue, e.address, e.city, e.country, e.start_date, e.end_date,
+                e.start_time, e.end_time, e.capacity, e.banner_image, e.status, e.is_featured,
+                e.visibility, e.created_at, e.updated_at,
+                u.name AS organizer_name,
+                COUNT(t.id) AS tickets_sold,
+                (SELECT MIN(price) FROM ticket_types WHERE event_id = e.id) AS min_price
+         FROM events e
+         LEFT JOIN users u ON u.id = e.organizer_id
+         LEFT JOIN ticket_types tt ON tt.event_id = e.id
+         LEFT JOIN tickets t ON t.ticket_type_id = tt.id AND t.status = 'active'
+         WHERE e.status = 'published' AND e.visibility = 'public'
+         GROUP BY e.id, e.organizer_id, e.category_id, e.title, e.slug, e.description,
+                  e.category, e.venue, e.address, e.city, e.country, e.start_date, e.end_date,
+                  e.start_time, e.end_time, e.capacity, e.banner_image, e.status, e.is_featured,
+                  e.visibility, e.created_at, e.updated_at, u.name
+         ORDER BY tickets_sold DESC, e.created_at DESC
+         LIMIT ${limitNum}`,
+      );
+      rows = fallbackRows || [];
+    }
+
     const result = { events: rows };
     cache.set(cacheKey, result, 120_000); // 2 minutes
     res.json(result);
@@ -1111,7 +1139,7 @@ export const getRecommendedEvents = async (req, res) => {
     const userId = req.user?.id;
     const clientCity = req.query.city ? String(req.query.city).trim().toLowerCase() : null;
 
-    const [candidates] = await pool.execute(
+    let [candidates] = await pool.execute(
       `SELECT e.id, e.title, e.slug, e.description, e.banner_image, e.venue, e.category, e.city,
               e.start_date, e.end_date, e.start_time, e.is_featured, e.organizer_id, e.tags,
               u.name AS organizer_name,
@@ -1122,6 +1150,20 @@ export const getRecommendedEvents = async (req, res) => {
          AND e.visibility = 'public'
        ORDER BY e.start_date ASC`,
     );
+
+    if (!candidates || candidates.length === 0) {
+      const [allPublished] = await pool.execute(
+        `SELECT e.id, e.title, e.slug, e.description, e.banner_image, e.venue, e.category, e.city,
+                e.start_date, e.end_date, e.start_time, e.is_featured, e.organizer_id, e.tags,
+                u.name AS organizer_name,
+                (SELECT MIN(price) FROM ticket_types WHERE event_id = e.id) AS min_price
+         FROM events e
+         LEFT JOIN users u ON u.id = e.organizer_id
+         WHERE e.status = 'published' AND e.visibility = 'public'
+         ORDER BY e.is_featured DESC, e.start_date DESC, e.created_at DESC`,
+      );
+      candidates = allPublished || [];
+    }
 
     // Anonymous fallback: featured first, then soonest
     if (!userId) {

@@ -18,29 +18,8 @@ export const getTicketTypes = async (req, res) => {
       [eventId],
     );
 
-    // Auto-seed Ghanaian standard ticket tiers if none exist yet
-    if (!rows || rows.length === 0) {
-      const [evtRows] = await pool.execute('SELECT id FROM events WHERE id = ?', [eventId]);
-      if (evtRows.length > 0) {
-        const standardTiers = [
-          { name: 'Regular Ticket', price: 100.00, quantity: 250, description: 'Standard admission pass with full event and venue access.' },
-          { name: 'VIP Ticket', price: 250.00, quantity: 80, description: 'Express queue entry, designated VIP lounge access, and complimentary welcome drink.' },
-          { name: 'VVIP Ticket', price: 500.00, quantity: 25, description: 'Front-row seating, dedicated concierge, priority backstage pass, and luxury hospitality.' },
-        ];
-        for (const tier of standardTiers) {
-          await pool.execute(
-            `INSERT INTO ticket_types (event_id, name, price, quantity, quantity_sold, description)
-             VALUES (?, ?, ?, ?, 0, ?)`,
-            [eventId, tier.name, tier.price, tier.quantity, tier.description],
-          );
-        }
-        const [seededRows] = await pool.execute(
-          `SELECT * FROM ticket_types WHERE event_id = ? ORDER BY price ASC`,
-          [eventId],
-        );
-        rows = seededRows;
-      }
-    }
+    // Return empty array if no ticket types configured yet
+    if (!rows) rows = [];
 
     for (const tt of (rows || [])) {
       try {
