@@ -109,11 +109,21 @@ export const createTicketType = async (req, res) => {
 
     const sale_start = req.body.sale_start || req.body.saleStartDate || req.body.sale_start_date || null;
     const sale_end = req.body.sale_end || req.body.saleEndDate || req.body.sale_end_date || null;
-    const image = req.body.image || req.body.imageUrl || req.body.image_url || req.body.ticket_image || null;
+    let image = req.body.image || req.body.imageUrl || req.body.image_url || req.body.ticket_image || null;
 
     const uploadedList = Array.isArray(req.body.uploadedTickets) || Array.isArray(req.body.uploaded_tickets)
       ? (req.body.uploadedTickets || req.body.uploaded_tickets)
       : [];
+
+    if ((!image || image.startsWith('/assets/')) && uploadedList.length > 0) {
+      const firstImg = uploadedList.find((u) => {
+        const f = (u.file_name || u.file_url || u.url || '').toLowerCase();
+        return f.endsWith('.jpg') || f.endsWith('.jpeg') || f.endsWith('.png') || f.endsWith('.webp');
+      });
+      if (firstImg) {
+        image = firstImg.file_url || firstImg.url;
+      }
+    }
 
     let finalQuantity = Number(quantity);
     if (uploadedList.length > 0) {
@@ -176,6 +186,13 @@ export const createTicketType = async (req, res) => {
             ut.seat_number || ut.seatNumber || null,
           ],
         );
+      }
+    }
+
+    // If the parent event has no custom banner or only has a placeholder, sync with this real uploaded image
+    if (image && !image.startsWith('/assets/')) {
+      if (!event.banner_image || event.banner_image.startsWith('/assets/')) {
+        await pool.execute('UPDATE events SET banner_image = ? WHERE id = ?', [image, eventId]);
       }
     }
 
@@ -271,6 +288,16 @@ export const updateTicketType = async (req, res) => {
       req.body.image = req.body.ticket_image || null;
     }
 
+    if ((!req.body.image || req.body.image.startsWith('/assets/')) && uploadedList.length > 0) {
+      const firstImg = uploadedList.find((u) => {
+        const f = (u.file_name || u.file_url || u.url || '').toLowerCase();
+        return f.endsWith('.jpg') || f.endsWith('.jpeg') || f.endsWith('.png') || f.endsWith('.webp');
+      });
+      if (firstImg) {
+        req.body.image = firstImg.file_url || firstImg.url;
+      }
+    }
+
     const allowed = [
       'name', 'price', 'quantity', 'sale_start', 'sale_end', 'description',
       'early_bird_price', 'early_bird_deadline', 'early_bird_max_qty', 'section_type', 'perks', 'image',
@@ -310,6 +337,16 @@ export const updateTicketType = async (req, res) => {
     if (fields.length > 0) {
       values.push(id);
       await pool.execute(`UPDATE ticket_types SET ${fields.join(', ')} WHERE id = ?`, values);
+    }
+
+    // If a real image exists on the ticket, and the parent event has no custom banner or has a placeholder, sync it
+    const finalImage = req.body.image || tt.image;
+    if (finalImage && !finalImage.startsWith('/assets/')) {
+      const [parentEventRows] = await pool.execute('SELECT banner_image FROM events WHERE id = ?', [tt.event_id]);
+      const parentEvt = parentEventRows[0];
+      if (parentEvt && (!parentEvt.banner_image || parentEvt.banner_image.startsWith('/assets/'))) {
+        await pool.execute('UPDATE events SET banner_image = ? WHERE id = ?', [finalImage, tt.event_id]);
+      }
     }
 
     res.json({ message: 'Ticket type updated' });

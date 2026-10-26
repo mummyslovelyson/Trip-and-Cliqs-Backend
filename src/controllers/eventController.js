@@ -154,7 +154,9 @@ export const getEvents = async (req, res) => {
 
     const dataSql = `
       SELECT e.*, u.name AS organizer_name,
-             (SELECT MIN(price) FROM ticket_types WHERE event_id = e.id) AS min_price
+             (SELECT MIN(price) FROM ticket_types WHERE event_id = e.id) AS min_price,
+             (SELECT image FROM ticket_types WHERE event_id = e.id AND image IS NOT NULL AND image != '' AND image NOT LIKE '/assets/%' LIMIT 1) AS ticket_image,
+             (SELECT file_url FROM uploaded_tickets WHERE event_id = e.id AND file_url IS NOT NULL AND (file_url LIKE '%.jpg' OR file_url LIKE '%.jpeg' OR file_url LIKE '%.png' OR file_url LIKE '%.webp') ORDER BY id DESC LIMIT 1) AS uploaded_ticket_image
       FROM events e
       LEFT JOIN users u ON u.id = e.organizer_id
       WHERE ${where}
