@@ -22,6 +22,9 @@ export const getTicketTypes = async (req, res) => {
     if (!rows) rows = [];
 
     for (const tt of (rows || [])) {
+      tt.saleStartDate = tt.sale_start;
+      tt.saleEndDate = tt.sale_end;
+      tt.image = tt.image || null;
       try {
         const [utRows] = await pool.execute(
           `SELECT id, file_url, file_name, barcode, seat_number, is_assigned
@@ -97,9 +100,13 @@ export const createTicketType = async (req, res) => {
   try {
     const { eventId } = req.params;
     const {
-      name, price, quantity, sale_start, sale_end, description,
-      early_bird_price, early_bird_deadline, early_bird_max_qty, section_type, perks, image,
+      name, price, quantity, description,
+      early_bird_price, early_bird_deadline, early_bird_max_qty, section_type, perks,
     } = req.body;
+
+    const sale_start = req.body.sale_start || req.body.saleStartDate || req.body.sale_start_date || null;
+    const sale_end = req.body.sale_end || req.body.saleEndDate || req.body.sale_end_date || null;
+    const image = req.body.image || req.body.imageUrl || req.body.image_url || req.body.ticket_image || null;
 
     const uploadedList = Array.isArray(req.body.uploadedTickets) || Array.isArray(req.body.uploaded_tickets)
       ? (req.body.uploadedTickets || req.body.uploaded_tickets)
@@ -237,6 +244,28 @@ export const updateTicketType = async (req, res) => {
           );
         }
       }
+    }
+
+    if (req.body.saleStartDate !== undefined && req.body.sale_start === undefined) {
+      req.body.sale_start = req.body.saleStartDate || null;
+    }
+    if (req.body.sale_start_date !== undefined && req.body.sale_start === undefined) {
+      req.body.sale_start = req.body.sale_start_date || null;
+    }
+    if (req.body.saleEndDate !== undefined && req.body.sale_end === undefined) {
+      req.body.sale_end = req.body.saleEndDate || null;
+    }
+    if (req.body.sale_end_date !== undefined && req.body.sale_end === undefined) {
+      req.body.sale_end = req.body.sale_end_date || null;
+    }
+    if (req.body.imageUrl !== undefined && req.body.image === undefined) {
+      req.body.image = req.body.imageUrl || null;
+    }
+    if (req.body.image_url !== undefined && req.body.image === undefined) {
+      req.body.image = req.body.image_url || null;
+    }
+    if (req.body.ticket_image !== undefined && req.body.image === undefined) {
+      req.body.image = req.body.ticket_image || null;
     }
 
     const allowed = [

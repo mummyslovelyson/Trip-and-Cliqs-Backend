@@ -310,8 +310,9 @@ export const createEvent = async (req, res) => {
       title, description, category, venue, address, city, country,
       start_date, end_date, start_time, end_time,
       capacity, dress_code, contact_email, contact_phone,
-      banner_image, ticket_template, ticketTemplate, images, tags, visibility,
+      ticket_template, ticketTemplate, images, tags, visibility,
     } = req.body;
+    const banner_image = req.body.banner_image || req.body.bannerImage || req.body.image || null;
 
     const location_type = req.body.location_type || req.body.locationType || (venue?.toLowerCase().includes('online') ? 'online' : 'physical');
     const gps_location = req.body.gps_location || req.body.gpsLocation || null;
@@ -419,9 +420,9 @@ export const createEvent = async (req, res) => {
         const [ttRes] = await conn.execute(
           `INSERT INTO ticket_types (
              event_id, name, price, quantity, quantity_sold, sale_start, sale_end, description,
-             early_bird_price, early_bird_deadline, early_bird_max_qty, section_type, perks
+             early_bird_price, early_bird_deadline, early_bird_max_qty, section_type, perks, image
            )
-           VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             eventId,
             tt.name,
@@ -435,6 +436,7 @@ export const createEvent = async (req, res) => {
             tt.earlyBirdMaxQty || tt.early_bird_max_qty ? Number(tt.earlyBirdMaxQty || tt.early_bird_max_qty) : null,
             tt.sectionType || tt.section_type || 'general',
             tt.perks ? JSON.stringify(Array.isArray(tt.perks) ? tt.perks : [tt.perks]) : null,
+            tt.image || tt.imageUrl || tt.image_url || null,
           ],
         );
 
@@ -541,6 +543,12 @@ export const updateEvent = async (req, res) => {
 
     if (req.body.ticketTemplate !== undefined && req.body.ticket_template === undefined) {
       req.body.ticket_template = req.body.ticketTemplate;
+    }
+    if (req.body.bannerImage !== undefined && req.body.banner_image === undefined) {
+      req.body.banner_image = req.body.bannerImage;
+    }
+    if (req.body.image !== undefined && req.body.banner_image === undefined) {
+      req.body.banner_image = req.body.image;
     }
 
     const fields = [];
