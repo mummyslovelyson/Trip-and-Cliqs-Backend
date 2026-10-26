@@ -153,6 +153,7 @@ async function initDb() {
         `ALTER TABLE ticket_types ADD COLUMN IF NOT EXISTS early_bird_price DECIMAL(10,2)`,
         `ALTER TABLE ticket_types ADD COLUMN IF NOT EXISTS section_type VARCHAR(50) DEFAULT 'general'`,
         `ALTER TABLE ticket_types ADD COLUMN IF NOT EXISTS perks JSONB`,
+        `ALTER TABLE ticket_types ADD COLUMN IF NOT EXISTS image TEXT`,
         `ALTER TABLE coupons ADD COLUMN IF NOT EXISTS min_quantity INT DEFAULT 1`,
         `ALTER TABLE orders ADD COLUMN IF NOT EXISTS invoice_number VARCHAR(64)`,
         `ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS rejection_reason VARCHAR(255)`,

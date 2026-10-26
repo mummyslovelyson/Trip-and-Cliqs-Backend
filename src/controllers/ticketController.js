@@ -98,7 +98,7 @@ export const createTicketType = async (req, res) => {
     const { eventId } = req.params;
     const {
       name, price, quantity, sale_start, sale_end, description,
-      early_bird_price, early_bird_deadline, early_bird_max_qty, section_type, perks,
+      early_bird_price, early_bird_deadline, early_bird_max_qty, section_type, perks, image,
     } = req.body;
 
     const uploadedList = Array.isArray(req.body.uploadedTickets) || Array.isArray(req.body.uploaded_tickets)
@@ -135,8 +135,8 @@ export const createTicketType = async (req, res) => {
     const [result] = await pool.execute(
       `INSERT INTO ticket_types (
         event_id, name, price, quantity, quantity_sold, sale_start, sale_end, description,
-        early_bird_price, early_bird_deadline, early_bird_max_qty, section_type, perks
-      ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        early_bird_price, early_bird_deadline, early_bird_max_qty, section_type, perks, image
+      ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         eventId, name, finalPrice, finalQuantity,
         sale_start || null, sale_end || null, description || null,
@@ -145,6 +145,7 @@ export const createTicketType = async (req, res) => {
         early_bird_max_qty || null,
         section_type || 'general',
         perks ? JSON.stringify(perks) : null,
+        image || null,
       ],
     );
 
@@ -240,7 +241,7 @@ export const updateTicketType = async (req, res) => {
 
     const allowed = [
       'name', 'price', 'quantity', 'sale_start', 'sale_end', 'description',
-      'early_bird_price', 'early_bird_deadline', 'early_bird_max_qty', 'section_type', 'perks',
+      'early_bird_price', 'early_bird_deadline', 'early_bird_max_qty', 'section_type', 'perks', 'image',
     ];
     const fields = [];
     const values = [];
