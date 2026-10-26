@@ -189,6 +189,9 @@ export const getEvents = async (req, res) => {
 export const getEvent = async (req, res) => {
   try {
     const { id } = req.params;
+    if (!id || id === 'undefined' || id === 'null' || isNaN(Number(id))) {
+      return res.status(404).json({ message: 'Event not found' });
+    }
     const [rows] = await pool.execute(
       `SELECT e.*, u.name AS organizer_name, u.avatar AS organizer_avatar,
               op.organization_name, op.is_verified AS organizer_is_verified
@@ -196,7 +199,7 @@ export const getEvent = async (req, res) => {
        LEFT JOIN users u ON u.id = e.organizer_id
        LEFT JOIN organizer_profiles op ON op.user_id = e.organizer_id
        WHERE e.id = ?`,
-      [id],
+      [Number(id)],
     );
     const event = rows[0];
     if (!event) return res.status(404).json({ message: 'Event not found' });
@@ -1606,9 +1609,12 @@ export const getRecommendedEvents = async (req, res) => {
 export const toggleEventReminder = async (req, res) => {
   try {
     const { id } = req.params;
+    if (!id || id === 'undefined' || id === 'null' || isNaN(Number(id))) {
+      return res.status(404).json({ message: 'Event not found' });
+    }
     const userId = req.user.id;
 
-    const [eventRows] = await pool.execute('SELECT id, title, start_date FROM events WHERE id = ?', [id]);
+    const [eventRows] = await pool.execute('SELECT id, title, start_date FROM events WHERE id = ?', [Number(id)]);
     const event = eventRows[0];
     if (!event) return res.status(404).json({ message: 'Event not found' });
 
@@ -1679,12 +1685,15 @@ export const updateReminderPreferences = async (req, res) => {
 export const getEventReminderStatus = async (req, res) => {
   try {
     const { id } = req.params;
+    if (!id || id === 'undefined' || id === 'null' || isNaN(Number(id))) {
+      return res.json({ isReminded: false, preferences: null });
+    }
     const userId = req.user?.id;
     if (!userId) return res.json({ isReminded: false, preferences: null });
 
     const [rows] = await pool.execute(
       'SELECT id, preferences FROM event_reminders WHERE user_id = ? AND event_id = ?',
-      [userId, id],
+      [userId, Number(id)],
     );
 
     if (rows.length === 0) {

@@ -13,9 +13,12 @@ import { completeOrder, generateTicketsForOrder } from './orderController.js';
 export const getTicketTypes = async (req, res) => {
   try {
     const { eventId } = req.params;
+    if (!eventId || eventId === 'undefined' || eventId === 'null' || isNaN(Number(eventId))) {
+      return res.json([]);
+    }
     let [rows] = await pool.execute(
       `SELECT * FROM ticket_types WHERE event_id = ? ORDER BY price ASC`,
-      [eventId],
+      [Number(eventId)],
     );
 
     // Return empty array if no ticket types configured yet

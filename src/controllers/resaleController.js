@@ -65,7 +65,11 @@ const getTicketWithEvent = async (ticketId) => {
 /* ------------------------------------------------------------------ */
 export const getEventResale = async (req, res) => {
   try {
-    const eventId = Number(req.params.eventId);
+    const rawId = req.params.eventId;
+    if (!rawId || rawId === 'undefined' || rawId === 'null' || isNaN(Number(rawId))) {
+      return res.json({ listings: [], data: [] });
+    }
+    const eventId = Number(rawId);
     const [rows] = await pool.execute(
       `SELECT rl.*, u.name AS seller_name, u.avatar AS seller_avatar,
               tt.name AS ticket_type_name, tt.price AS ticket_type_price,

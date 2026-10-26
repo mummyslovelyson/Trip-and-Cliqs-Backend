@@ -71,7 +71,11 @@ const decorate = async (meetup, userId) => {
 /* ------------------------------------------------------------------ */
 export const getEventMeetups = async (req, res) => {
   try {
-    const eventId = Number(req.params.eventId);
+    const rawId = req.params.eventId;
+    if (!rawId || rawId === 'undefined' || rawId === 'null' || isNaN(Number(rawId))) {
+      return res.json({ meetups: [] });
+    }
+    const eventId = Number(rawId);
     const [rows] = await pool.execute(
       `SELECT * FROM event_meetups WHERE event_id = ? ORDER BY created_at DESC`,
       [eventId],
@@ -229,7 +233,11 @@ export const getMyMeetups = async (req, res) => {
 /* ------------------------------------------------------------------ */
 export const getEventAttendees = async (req, res) => {
   try {
-    const eventId = Number(req.params.eventId);
+    const rawId = req.params.eventId;
+    if (!rawId || rawId === 'undefined' || rawId === 'null' || isNaN(Number(rawId))) {
+      return res.json({ totalAttendees: 0, attendees: [] });
+    }
+    const eventId = Number(rawId);
     const [[{ total }]] = await pool.execute(
       `SELECT COUNT(DISTINCT user_id) AS total FROM tickets WHERE event_id = ? AND status = 'active'`,
       [eventId],
@@ -256,7 +264,11 @@ export const getEventAttendees = async (req, res) => {
 /* ------------------------------------------------------------------ */
 export const getEventDiscussions = async (req, res) => {
   try {
-    const eventId = Number(req.params.eventId);
+    const rawId = req.params.eventId;
+    if (!rawId || rawId === 'undefined' || rawId === 'null' || isNaN(Number(rawId))) {
+      return res.json({ discussions: [] });
+    }
+    const eventId = Number(rawId);
     const [rows] = await pool.execute(
       `SELECT ed.id, ed.event_id, ed.user_id, ed.message, ed.created_at,
               u.name AS user_name, COALESCE(u.avatar_url, u.avatar) AS user_avatar
@@ -309,7 +321,11 @@ export const postEventDiscussion = async (req, res) => {
 /* ------------------------------------------------------------------ */
 export const getFriendsAttending = async (req, res) => {
   try {
-    const eventId = Number(req.params.eventId);
+    const rawId = req.params.eventId;
+    if (!rawId || rawId === 'undefined' || rawId === 'null' || isNaN(Number(rawId))) {
+      return res.json({ count: 0, friends: [], headline: '' });
+    }
+    const eventId = Number(rawId);
     const userId = req.user?.id;
     if (!userId) {
       return res.json({ count: 0, friends: [], headline: '' });
