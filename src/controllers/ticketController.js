@@ -319,10 +319,11 @@ export const updateTicketType = async (req, res) => {
 
     // If uploaded passes were provided, ensure quantity reflects total uploaded tickets
     if (hasUploadedList) {
-      const [[{ countUploaded }]] = await pool.execute(
-        'SELECT COUNT(*) AS countUploaded FROM uploaded_tickets WHERE ticket_type_id = ?',
+      const [cntRows] = await pool.execute(
+        'SELECT COUNT(*) AS count_uploaded FROM uploaded_tickets WHERE ticket_type_id = ?',
         [id]
       );
+      const countUploaded = Number(cntRows[0]?.count_uploaded ?? cntRows[0]?.countuploaded ?? cntRows[0]?.countUploaded ?? 0);
       if (countUploaded > 0 || uploadedList.length > 0) {
         // Only override if quantity wasn't explicitly provided or if syncing to uploaded count
         if (req.body.quantity === undefined) {

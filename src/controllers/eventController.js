@@ -555,6 +555,30 @@ export const updateEvent = async (req, res) => {
     if (req.body.image !== undefined && req.body.banner_image === undefined) {
       req.body.banner_image = req.body.image;
     }
+    if (req.body.startDate !== undefined && req.body.start_date === undefined) {
+      req.body.start_date = req.body.startDate;
+    }
+    if (req.body.endDate !== undefined && req.body.end_date === undefined) {
+      req.body.end_date = req.body.endDate;
+    }
+    if (req.body.startTime !== undefined && req.body.start_time === undefined) {
+      req.body.start_time = req.body.startTime;
+    }
+    if (req.body.endTime !== undefined && req.body.end_time === undefined) {
+      req.body.end_time = req.body.endTime;
+    }
+    if (req.body.contactEmail !== undefined && req.body.contact_email === undefined) {
+      req.body.contact_email = req.body.contactEmail;
+    }
+    if (req.body.contactPhone !== undefined && req.body.contact_phone === undefined) {
+      req.body.contact_phone = req.body.contactPhone;
+    }
+    if (req.body.dressCode !== undefined && req.body.dress_code === undefined) {
+      req.body.dress_code = req.body.dressCode;
+    }
+    if (req.body.totalCapacity !== undefined && req.body.capacity === undefined) {
+      req.body.capacity = req.body.totalCapacity;
+    }
 
     const fields = [];
     const values = [];
@@ -660,10 +684,11 @@ export const updateEvent = async (req, res) => {
           // Count remaining uploaded tickets to ensure accurate quantity
           let updateQty = Math.max(Number(tt.quantity) || 0, 0);
           if (hasUtList) {
-            const [[{ countUploaded }]] = await pool.execute(
-              'SELECT COUNT(*) AS countUploaded FROM uploaded_tickets WHERE ticket_type_id = ?',
+            const [cntRows] = await pool.execute(
+              'SELECT COUNT(*) AS count_uploaded FROM uploaded_tickets WHERE ticket_type_id = ?',
               [tt.id]
             );
+            const countUploaded = Number(cntRows[0]?.count_uploaded ?? cntRows[0]?.countuploaded ?? cntRows[0]?.countUploaded ?? 0);
             if (countUploaded > 0 || utList.length > 0) {
               updateQty = countUploaded;
             }
@@ -827,7 +852,7 @@ export const updateEvent = async (req, res) => {
       }
     }
 
-    res.json({ message: 'Event updated' });
+    res.json({ message: 'Event updated', id: Number(id), eventId: Number(id) });
   } catch (err) {
     console.error('[eventController.updateEvent]', err);
     res.status(500).json({ message: 'Server error updating event' });
