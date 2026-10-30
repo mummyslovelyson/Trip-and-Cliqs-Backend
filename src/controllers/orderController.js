@@ -733,7 +733,13 @@ export const getReceiptOrder = async (req, res) => {
     if (!rawIdentifier) return res.status(400).json({ message: 'Receipt identifier is required' });
 
     const identifier = String(rawIdentifier).trim();
-    const isNum = !isNaN(Number(identifier));
+    const isNum = !isNaN(Number(identifier)) && identifier !== '';
+    const numId = isNum ? Number(identifier) : -1;
+
+    // Also strip common prefixes like TC-ORD-, ORD-, ORDER-, INV-, # to extract possible numeric ID
+    const stripped = identifier.replace(/^(TC-ORD-|ORD-|ORDER-|INV-|#)/i, '').trim();
+    const isStrippedNum = !isNaN(Number(stripped)) && stripped !== '';
+    const strippedNum = isStrippedNum ? Number(stripped) : -1;
 
     const [rows] = await pool.execute(
       `SELECT o.*, 
@@ -741,20 +747,40 @@ export const getReceiptOrder = async (req, res) => {
               e.start_date AS event_date, e.start_time AS event_time, e.end_date, e.end_time,
               e.banner_image, e.organizer_id,
               org.name AS organizer_name,
-              u.name AS buyer_name, u.email AS buyer_email, u.phone AS buyer_phone
+              COALESCE(u.name, 'Valued Attendee') AS buyer_name,
+              COALESCE(u.email, '—') AS buyer_email,
+              COALESCE(u.phone, '') AS buyer_phone
        FROM orders o
        LEFT JOIN events e ON e.id = o.event_id
        LEFT JOIN users u ON u.id = o.user_id
        LEFT JOIN users org ON org.id = e.organizer_id
-       WHERE (o.id = ?) OR (o.payment_reference = ?) OR (o.invoice_number = ?)`,
-      [isNum ? Number(identifier) : -1, identifier, identifier],
+       WHERE (o.id = ?)
+          OR (o.id = ?)
+          OR (UPPER(COALESCE(o.payment_reference, '')) = UPPER(?))
+          OR (UPPER(COALESCE(o.paystack_ref, '')) = UPPER(?))
+          OR (UPPER(COALESCE(o.invoice_number, '')) = UPPER(?))
+          OR o.id IN (
+            SELECT oi.order_id
+            FROM order_items oi
+            JOIN tickets t ON t.order_item_id = oi.id
+            WHERE UPPER(COALESCE(t.ticket_number, '')) = UPPER(?) OR t.id = ?
+          )`,
+      [numId, strippedNum, identifier, identifier, identifier, identifier, numId],
     );
 
     const order = rows[0];
     if (!order) return res.status(404).json({ message: 'Receipt not found' });
 
-    // Authorization check: if authenticated user is logged in, ensure they are owner, admin, or organizer
-    if (req.user) {
+    // Bearer token proof: if requested by payment_reference, paystack_ref, invoice_number, or ticket number,
+    // this secret string itself acts as proof of purchase.
+    // Only verify user ownership if queried purely by numeric ID and user session is present.
+    const isSecretTokenMatch = (
+      (order.payment_reference && order.payment_reference.toUpperCase() === identifier.toUpperCase()) ||
+      (order.paystack_ref && order.paystack_ref.toUpperCase() === identifier.toUpperCase()) ||
+      (order.invoice_number && order.invoice_number.toUpperCase() === identifier.toUpperCase())
+    );
+
+    if (req.user && !isSecretTokenMatch && isNum) {
       const isOwner = Number(order.user_id) === Number(req.user.id);
       const isAdmin = ['admin', 'system_admin', 'superadmin', 'staff'].includes(req.user.role);
       const isOrganizer = req.user.role === 'organizer' && Number(order.organizer_id) === Number(req.user.id);
@@ -763,7 +789,7 @@ export const getReceiptOrder = async (req, res) => {
       }
     }
 
-    const [items] = await pool.execute(
+    let [items] = await pool.execute(
       `SELECT oi.*, COALESCE(tt.name, 'General Admission') AS ticket_type_name
        FROM order_items oi
        LEFT JOIN ticket_types tt ON tt.id = oi.ticket_type_id
@@ -778,7 +804,7 @@ export const getReceiptOrder = async (req, res) => {
                 t.ticket_file_url, t.ticket_file_name,
                 COALESCE(tt.name, 'Admission Pass') AS ticket_type_name
          FROM tickets t
-         JOIN order_items oi ON oi.id = t.order_item_id
+         LEFT JOIN order_items oi ON oi.id = t.order_item_id
          LEFT JOIN ticket_types tt ON tt.id = t.ticket_type_id
          WHERE oi.order_id = ?
          ORDER BY t.id ASC`,
@@ -787,11 +813,23 @@ export const getReceiptOrder = async (req, res) => {
       tickets = tRows || [];
     } catch {}
 
+    // Fallback: if order_items has no rows, build items from tickets
+    if ((!items || items.length === 0) && tickets.length > 0) {
+      items = tickets.map((t) => ({
+        ticket_type_name: t.ticket_type_name || 'Admission Pass',
+        quantity: 1,
+        unit_price: Number(order.total_amount || 0) / tickets.length,
+        subtotal: Number(order.total_amount || 0) / tickets.length,
+      }));
+    }
+
     res.json({
       order: {
         ...order,
-        items,
-        tickets,
+        totalAmount: Number(order.total_amount || 0),
+        reference: order.payment_reference,
+        items: items || [],
+        tickets: tickets || [],
       },
     });
   } catch (err) {
