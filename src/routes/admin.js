@@ -101,6 +101,8 @@ router.get('/reports/growth', getGrowthReport);
 router.get('/support', getSupportTickets);
 router.get('/support/:id', getSupportTicket);
 router.post('/support/:id/respond', writeLimiter, respondToSupportTicket);
+router.post('/support/:id/resolve', writeLimiter, resolveSupportTicket);
+router.put('/support/:id/resolve', writeLimiter, resolveSupportTicket);
 router.post('/support/:id/close', writeLimiter, closeSupportTicket);
 router.get('/support-tickets', getSupportTickets);
 router.put('/support-tickets/:id/resolve', writeLimiter, resolveSupportTicket);

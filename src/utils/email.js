@@ -1035,5 +1035,223 @@ export const sendEventInviteEmail = async ({
   });
 };
 
+/**
+ * User Confirmation: Sent when a user submits a support ticket.
+ */
+export const sendSupportTicketCreatedEmail = async ({
+  to,
+  userName = 'Member',
+  ticketId,
+  reference = '',
+  subject = '',
+  category = 'General',
+  priority = 'medium',
+}) => {
+  const cleanName = escapeHtml(userName);
+  const cleanSubj = escapeHtml(subject);
+  const cleanRef = escapeHtml(reference || `#${ticketId}`);
+  const cleanCat = escapeHtml(category);
+  const ticketLink = `${FRONTEND_URL}/attendee/support`;
+
+  return sendEmail({
+    to,
+    subject: `🎫 Support Ticket Received: [${cleanRef}] ${cleanSubj}`,
+    html: `
+      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:580px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
+        <div style="text-align:center;margin-bottom:20px;">
+          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(59,130,246,0.15);color:#60A5FA;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">
+            Support Request Logged
+          </span>
+        </div>
+        <h2 style="margin-top:0;color:#FFFFFF;text-align:center;font-size:22px;">We're on It!</h2>
+        <p style="color:#A1A1AA;line-height:1.6;font-size:14px;text-align:center;">
+          Hello ${cleanName}, thank you for contacting Tribes &amp; Cliqs customer care. We have registered your support request.
+        </p>
+
+        <div style="margin:24px 0;padding:24px;background:#1C232B;border-radius:14px;border:1px solid #363F48;">
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Ticket Ref:</strong> <code style="font-family:monospace;color:#FBBF24;">${cleanRef}</code></p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Subject:</strong> ${cleanSubj}</p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Category:</strong> ${cleanCat}</p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Priority:</strong> <span style="text-transform:capitalize;">${escapeHtml(priority)}</span></p>
+        </div>
+
+        <p style="color:#CBD5E1;font-size:13px;line-height:1.6;">
+          Our dedicated operations team is investigating your inquiry. You will receive an email as soon as an agent replies.
+        </p>
+
+        <div style="text-align:center;margin:28px 0;">
+          <a href="${ticketLink}" style="display:inline-block;padding:12px 28px;background:#EFEFF1;color:#14191E;font-weight:bold;border-radius:8px;text-decoration:none;font-size:14px;">
+            View Support Thread
+          </a>
+        </div>
+
+        <p style="color:#64748B;font-size:12px;text-align:center;">
+          Tribes &amp; Cliqs Helpdesk Operations.
+        </p>
+      </div>`,
+    text: `Support Request Logged: [${reference || ticketId}] ${subject}\n\nHello ${userName}, we received your ticket.\nCategory: ${category}\nPriority: ${priority}\n\nTrack your ticket: ${ticketLink}`,
+  });
+};
+
+/**
+ * Admin Alert: Sent to platform staff when a new support ticket is opened.
+ */
+export const sendAdminNewSupportTicketEmail = async ({
+  to,
+  userName = 'Member',
+  userEmail = '',
+  ticketId,
+  reference = '',
+  subject = '',
+  message = '',
+  category = 'General',
+  priority = 'medium',
+}) => {
+  const cleanName = escapeHtml(userName);
+  const cleanEmail = escapeHtml(userEmail);
+  const cleanSubj = escapeHtml(subject);
+  const cleanRef = escapeHtml(reference || `#${ticketId}`);
+  const cleanMsg = escapeHtml(message.slice(0, 300));
+  const isUrgent = priority === 'urgent' || priority === 'high';
+  const badgeColor = isUrgent ? '#EF4444' : '#FBBF24';
+  const badgeBg = isUrgent ? 'rgba(239,68,68,0.15)' : 'rgba(234,179,8,0.15)';
+  const adminLink = `${FRONTEND_URL}/admin/support`;
+
+  return sendEmail({
+    to,
+    subject: `🚨 [Support ${priority.toUpperCase()}] ${cleanRef}: ${cleanSubj}`,
+    html: `
+      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:580px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
+        <div style="text-align:center;margin-bottom:20px;">
+          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:${badgeBg};color:${badgeColor};font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">
+            ${priority.toUpperCase()} Support Ticket
+          </span>
+        </div>
+        <h2 style="margin-top:0;color:#FFFFFF;text-align:center;font-size:22px;">New Support Inquiry</h2>
+        <p style="color:#A1A1AA;line-height:1.6;font-size:14px;text-align:center;">
+          A customer has submitted a new support ticket requiring assistance.
+        </p>
+
+        <div style="margin:24px 0;padding:24px;background:#1C232B;border-radius:14px;border:1px solid #363F48;">
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Ticket:</strong> <code style="font-family:monospace;color:#FBBF24;">${cleanRef}</code></p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>User:</strong> ${cleanName} (${cleanEmail})</p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Category:</strong> ${escapeHtml(category)}</p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Subject:</strong> ${cleanSubj}</p>
+          <div style="margin-top:12px;padding:12px;background:#14191E;border-radius:8px;border:1px solid #2B333B;color:#CBD5E1;font-size:13px;line-height:1.5;">
+            ${cleanMsg}${message.length > 300 ? '...' : ''}
+          </div>
+        </div>
+
+        <div style="text-align:center;margin:28px 0;">
+          <a href="${adminLink}" style="display:inline-block;padding:12px 28px;background:#EFEFF1;color:#14191E;font-weight:bold;border-radius:8px;text-decoration:none;font-size:14px;">
+            Open in Support Center
+          </a>
+        </div>
+      </div>`,
+    text: `New Support Ticket [${priority.toUpperCase()}]: ${cleanRef}\nUser: ${userName} (${userEmail})\nSubject: ${subject}\n\n${message}\n\nOpen Helpdesk: ${adminLink}`,
+  });
+};
+
+/**
+ * User Alert: Sent when support staff responds to a ticket.
+ */
+export const sendSupportTicketReplyEmail = async ({
+  to,
+  userName = 'Member',
+  ticketId,
+  reference = '',
+  subject = '',
+  replyMessage = '',
+  staffName = 'Tribes & Cliqs Support',
+}) => {
+  const cleanName = escapeHtml(userName);
+  const cleanSubj = escapeHtml(subject);
+  const cleanRef = escapeHtml(reference || `#${ticketId}`);
+  const cleanStaff = escapeHtml(staffName);
+  const cleanReply = escapeHtml(replyMessage)
+    .split('\n')
+    .filter((p) => p.trim())
+    .map((p) => `<p style="margin:0 0 10px 0;color:#CBD5E1;font-size:14px;line-height:1.6;">${p}</p>`)
+    .join('');
+  const ticketLink = `${FRONTEND_URL}/attendee/support`;
+
+  return sendEmail({
+    to,
+    subject: `💬 New Reply on Ticket [${cleanRef}]: ${cleanSubj}`,
+    html: `
+      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:580px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
+        <div style="text-align:center;margin-bottom:20px;">
+          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(16,185,129,0.15);color:#10B981;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">
+            Support Staff Response
+          </span>
+        </div>
+        <h2 style="margin-top:0;color:#FFFFFF;text-align:center;font-size:22px;">New Message from Support</h2>
+        <p style="color:#A1A1AA;line-height:1.6;font-size:14px;text-align:center;">
+          Hello ${cleanName}, an agent has replied to your inquiry <strong>"${cleanSubj}"</strong>.
+        </p>
+
+        <div style="margin:24px 0;padding:24px;background:#1C232B;border-radius:14px;border:1px solid #363F48;">
+          <p style="margin:0 0 12px 0;color:#FFFFFF;font-size:13px;font-weight:600;">Reply from ${cleanStaff}:</p>
+          ${cleanReply}
+        </div>
+
+        <div style="text-align:center;margin:28px 0;">
+          <a href="${ticketLink}" style="display:inline-block;padding:12px 28px;background:#EFEFF1;color:#14191E;font-weight:bold;border-radius:8px;text-decoration:none;font-size:14px;">
+            Reply to Ticket
+          </a>
+        </div>
+
+        <p style="color:#64748B;font-size:12px;text-align:center;">
+          You can continue this conversation anytime directly in your account support portal.
+        </p>
+      </div>`,
+    text: `Support Response [${cleanRef}]: ${subject}\n\nFrom: ${staffName}\n\n${replyMessage}\n\nView and reply: ${ticketLink}`,
+  });
+};
+
+/**
+ * User Alert: Sent when a support ticket is resolved.
+ */
+export const sendSupportTicketResolvedEmail = async ({
+  to,
+  userName = 'Member',
+  ticketId,
+  reference = '',
+  subject = '',
+}) => {
+  const cleanName = escapeHtml(userName);
+  const cleanSubj = escapeHtml(subject);
+  const cleanRef = escapeHtml(reference || `#${ticketId}`);
+  const ticketLink = `${FRONTEND_URL}/attendee/support`;
+
+  return sendEmail({
+    to,
+    subject: `✅ Ticket Resolved [${cleanRef}]: ${cleanSubj}`,
+    html: `
+      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:580px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
+        <div style="text-align:center;margin-bottom:20px;">
+          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(16,185,129,0.15);color:#10B981;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">
+            Ticket Resolved
+          </span>
+        </div>
+        <h2 style="margin-top:0;color:#FFFFFF;text-align:center;font-size:22px;">Issue Resolved!</h2>
+        <p style="color:#A1A1AA;line-height:1.6;font-size:14px;text-align:center;">
+          Hello ${cleanName}, your support ticket <strong>[${cleanRef}] ${cleanSubj}</strong> has been marked as resolved by our team.
+        </p>
+
+        <p style="color:#CBD5E1;font-size:14px;text-align:center;line-height:1.6;margin:20px 0;">
+          If you have further questions or if this issue requires additional attention, you can reopen this ticket by simply replying.
+        </p>
+
+        <div style="text-align:center;margin:28px 0;">
+          <a href="${ticketLink}" style="display:inline-block;padding:12px 28px;background:#EFEFF1;color:#14191E;font-weight:bold;border-radius:8px;text-decoration:none;font-size:14px;">
+            Open Support Portal
+          </a>
+        </div>
+      </div>`,
+    text: `Ticket Resolved [${cleanRef}]: ${subject}\n\nHello ${userName}, your ticket has been resolved.\nIf you still need assistance, you can reply directly: ${ticketLink}`,
+  });
+};
+
 export default sendEmail;
 

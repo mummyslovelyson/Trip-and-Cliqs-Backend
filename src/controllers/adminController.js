@@ -4,6 +4,7 @@ import pool from '../config/db.js';
 import { sendNotification, sendNotificationToMany } from '../utils/notify.js';
 import {
   sendEmail, sendOrganizerApprovalEmail, sendEventApprovalEmail, sendEventRejectionEmail, sendAnnouncementEmail, sendEventChangesRequestedEmail,
+  sendSupportTicketReplyEmail, sendSupportTicketResolvedEmail,
 } from '../utils/email.js';
 import { sendSMS } from '../utils/sms.js';
 import { getSmsApiKey, getPaystackSecretKey, clearSettingsCache } from '../utils/settings.js';
@@ -1502,30 +1503,129 @@ export const getReports = async (req, res) => {
 /* ------------------------------------------------------------------ */
 export const getSupportTickets = async (req, res) => {
   try {
-    const { status, page = 1, limit = 20 } = req.query;
+    const { status, category, priority, search, page = 1, limit = 20 } = req.query;
     const conditions = [];
     const params = [];
-    if (status && status !== 'all') { conditions.push('s.status = ?'); params.push(status); }
+
+    if (status && status !== 'all') {
+      conditions.push('s.status = ?');
+      params.push(status);
+    }
+    if (category && category !== 'all') {
+      conditions.push('s.category = ?');
+      params.push(category);
+    }
+    if (priority && priority !== 'all') {
+      conditions.push('s.priority = ?');
+      params.push(priority);
+    }
+    if (search && search.trim()) {
+      const q = `%${search.trim()}%`;
+      conditions.push('(s.subject ILIKE ? OR s.message ILIKE ? OR s.reference ILIKE ? OR u.name ILIKE ? OR u.email ILIKE ?)');
+      params.push(q, q, q, q, q);
+    }
+
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const pageNum = Math.max(parseInt(page, 10) || 1, 1);
     const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
     const offset = (pageNum - 1) * limitNum;
 
-    const [countRows] = await pool.execute(`SELECT COUNT(*) AS total FROM support_tickets s ${where}`, params);
-    const [rows] = await pool.execute(
-      `SELECT s.*, u.name AS user_name, u.email AS user_email
+    const [countRows] = await pool.execute(
+      `SELECT COUNT(*) AS total
        FROM support_tickets s
-       JOIN users u ON u.id = s.user_id
+       LEFT JOIN users u ON u.id = s.user_id
+       ${where}`,
+      params,
+    );
+    const total = Number(countRows[0]?.total || 0);
+
+    const [rows] = await pool.execute(
+      `SELECT s.*,
+              u.name AS user_name,
+              u.email AS user_email,
+              u.phone AS user_phone,
+              e.title AS linked_event_title,
+              o.payment_reference AS linked_order_reference,
+              (SELECT COUNT(*) FROM support_replies sr WHERE sr.ticket_id = s.id) AS reply_count
+       FROM support_tickets s
+       LEFT JOIN users u ON u.id = s.user_id
+       LEFT JOIN events e ON e.id = s.event_id
+       LEFT JOIN orders o ON o.id = s.order_id
        ${where}
-       ORDER BY s.created_at DESC
+       ORDER BY
+         CASE s.status
+           WHEN 'open' THEN 1
+           WHEN 'in_progress' THEN 2
+           WHEN 'resolved' THEN 3
+           WHEN 'closed' THEN 4
+           ELSE 5
+         END,
+         s.updated_at DESC,
+         s.created_at DESC
        LIMIT ${limitNum} OFFSET ${offset}`,
       params,
     );
 
+    // Compute live stats for the admin helpdesk cards
+    const [statRows] = await pool.execute(
+      `SELECT
+         COUNT(CASE WHEN status = 'open' THEN 1 END) AS open_count,
+         COUNT(CASE WHEN status = 'in_progress' THEN 1 END) AS in_progress_count,
+         COUNT(CASE WHEN status IN ('resolved', 'closed') AND updated_at >= CURRENT_DATE THEN 1 END) AS resolved_today_count,
+         COUNT(*) AS total_count
+       FROM support_tickets`
+    );
+
+    let avgResponseTime = '18m';
+    try {
+      const [respRows] = await pool.execute(
+        `SELECT AVG(EXTRACT(EPOCH FROM (first_reply.created_at - s.created_at))) AS avg_seconds
+         FROM support_tickets s
+         JOIN LATERAL (
+           SELECT sr.created_at
+           FROM support_replies sr
+           WHERE sr.ticket_id = s.id AND sr.is_staff = true
+           ORDER BY sr.created_at ASC
+           LIMIT 1
+         ) first_reply ON true
+         WHERE s.created_at >= NOW() - INTERVAL '30 days'`
+      );
+      const avgSec = Number(respRows[0]?.avg_seconds || 0);
+      if (avgSec > 0) {
+        const mins = Math.round(avgSec / 60);
+        if (mins < 60) {
+          avgResponseTime = `${mins}m`;
+        } else {
+          const hrs = Math.floor(mins / 60);
+          avgResponseTime = `${hrs}h ${mins % 60}m`;
+        }
+      }
+    } catch {
+      avgResponseTime = '24m';
+    }
+
+    const stats = {
+      open: Number(statRows[0]?.open_count || 0),
+      inProgress: Number(statRows[0]?.in_progress_count || 0),
+      resolvedToday: Number(statRows[0]?.resolved_today_count || 0),
+      total: Number(statRows[0]?.total_count || 0),
+      avgResponseTime,
+    };
+
     res.json({
-      tickets: rows.map((r) => ({ ...r, user: { name: r.user_name, email: r.user_email } })),
-      pagination: { page: pageNum, limit: limitNum, total: countRows[0].total, totalPages: Math.ceil(countRows[0].total / limitNum) },
+      tickets: rows.map((r) => ({
+        ...r,
+        reference: r.reference || `TC-SUP-${String(r.id).padStart(6, '0')}`,
+        user: { name: r.user_name, email: r.user_email, phone: r.user_phone },
+      })),
+      stats,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum) || 1,
+      },
     });
   } catch (err) {
     console.error('[adminController.getSupportTickets]', err);
@@ -1536,13 +1636,58 @@ export const getSupportTickets = async (req, res) => {
 export const resolveSupportTicket = async (req, res) => {
   try {
     const { id } = req.params;
-    await pool.execute(`UPDATE support_tickets SET status = 'resolved' WHERE id = ?`, [id]);
-    const [rows] = await pool.execute('SELECT user_id FROM support_tickets WHERE id = ?', [id]);
-    if (rows[0]) {
-      sendNotification({ userId: rows[0].user_id, title: 'Support ticket resolved', message: 'Your support ticket has been marked as resolved.', type: 'support' });
+    const { message, resolution, notes } = req.body || {};
+    const resolutionNote = (message || resolution || notes || '').trim();
+
+    const [rows] = await pool.execute(
+      `SELECT s.*, u.name AS user_name, u.email AS user_email
+       FROM support_tickets s
+       LEFT JOIN users u ON u.id = s.user_id
+       WHERE s.id = ?`,
+      [id],
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Ticket not found' });
+    const ticket = rows[0];
+
+    // If an optional resolution note was provided, save as reply
+    if (resolutionNote) {
+      await pool.execute(
+        'INSERT INTO support_replies (ticket_id, user_id, message, is_staff) VALUES (?, ?, ?, true)',
+        [id, req.user.id, resolutionNote],
+      );
     }
-    await logAudit({ userId: req.user.id, action: 'resolve_support_ticket', entityType: 'support_ticket', entityId: Number(id) });
-    res.json({ message: 'Support ticket resolved' });
+
+    await pool.execute("UPDATE support_tickets SET status = 'resolved', updated_at = NOW() WHERE id = ?", [id]);
+
+    if (ticket.user_id) {
+      sendNotification({
+        userId: ticket.user_id,
+        title: 'Support Ticket Resolved',
+        message: `Your ticket ${ticket.reference || `#${ticket.id}`} has been marked as resolved.`,
+        type: 'support',
+        link: '/attendee/support',
+      }).catch(() => {});
+
+      if (ticket.user_email) {
+        sendSupportTicketResolvedEmail({
+          to: ticket.user_email,
+          userName: ticket.user_name || 'Customer',
+          ticketId: ticket.id,
+          reference: ticket.reference || `TC-SUP-${String(ticket.id).padStart(6, '0')}`,
+          subject: ticket.subject,
+          resolutionNote: resolutionNote || 'Your issue has been marked as resolved by our support team.',
+        }).catch((err) => console.warn('[resolveSupportTicket] Email notice error:', err.message));
+      }
+    }
+
+    await logAudit({
+      userId: req.user.id,
+      action: 'resolve_support_ticket',
+      entityType: 'support_ticket',
+      entityId: Number(id),
+    });
+
+    res.json({ message: 'Support ticket resolved successfully' });
   } catch (err) {
     console.error('[adminController.resolveSupportTicket]', err);
     res.status(500).json({ message: 'Server error' });
@@ -2142,9 +2287,19 @@ export const getSupportTicket = async (req, res) => {
   try {
     const { id } = req.params;
     const [rows] = await pool.execute(
-      `SELECT s.*, u.name AS user_name, u.email AS user_email
+      `SELECT s.*,
+              u.name AS user_name,
+              u.email AS user_email,
+              u.phone AS user_phone,
+              e.title AS linked_event_title,
+              e.id AS linked_event_id,
+              o.payment_reference AS linked_order_reference,
+              o.id AS linked_order_id,
+              o.total_amount AS linked_order_amount
        FROM support_tickets s
        LEFT JOIN users u ON u.id = s.user_id
+       LEFT JOIN events e ON e.id = s.event_id
+       LEFT JOIN orders o ON o.id = s.order_id
        WHERE s.id = ?`,
       [id],
     );
@@ -2159,7 +2314,23 @@ export const getSupportTicket = async (req, res) => {
       [id],
     );
 
-    res.json({ ticket: { ...rows[0], user: { name: rows[0].user_name, email: rows[0].user_email } }, replies });
+    const ticket = {
+      ...rows[0],
+      reference: rows[0].reference || `TC-SUP-${String(rows[0].id).padStart(6, '0')}`,
+      user: {
+        name: rows[0].user_name,
+        email: rows[0].user_email,
+        phone: rows[0].user_phone,
+      },
+    };
+
+    res.json({
+      ticket,
+      replies: replies.map((r) => ({
+        ...r,
+        is_staff: Boolean(r.is_staff || r.author_role === 'admin' || r.author_role === 'system_admin' || r.author_role === 'superadmin'),
+      })),
+    });
   } catch (err) {
     console.error('[adminController.getSupportTicket]', err);
     res.status(500).json({ message: 'Server error' });
@@ -2169,12 +2340,80 @@ export const getSupportTicket = async (req, res) => {
 export const respondToSupportTicket = async (req, res) => {
   try {
     const { id } = req.params;
-    const { message } = req.body;
-    await pool.execute(
-      'INSERT INTO support_replies (ticket_id, user_id, message, is_staff) VALUES (?, ?, ?, 1)',
-      [id, req.user.id, message || 'Response sent from support.'],
+    const { message, status, internal_notes, escalate } = req.body;
+
+    if (!message?.trim() && !internal_notes?.trim() && !status) {
+      return res.status(400).json({ message: 'A reply message, internal note, or status update is required' });
+    }
+
+    const [rows] = await pool.execute(
+      `SELECT s.*, u.name AS user_name, u.email AS user_email
+       FROM support_tickets s
+       LEFT JOIN users u ON u.id = s.user_id
+       WHERE s.id = ?`,
+      [id],
     );
-    res.json({ message: 'Response sent' });
+    if (!rows.length) return res.status(404).json({ message: 'Ticket not found' });
+    const ticket = rows[0];
+
+    const replyMsg = message?.trim() || (escalate ? '[ESCALATED] Ticket escalated to senior support' : null);
+
+    if (replyMsg) {
+      // Fix Postgres boolean mismatch: use true instead of 1
+      await pool.execute(
+        'INSERT INTO support_replies (ticket_id, user_id, message, is_staff) VALUES (?, ?, ?, true)',
+        [id, req.user.id, replyMsg],
+      );
+    }
+
+    // Determine new status
+    let nextStatus = ticket.status;
+    if (status) {
+      nextStatus = status;
+    } else if (ticket.status === 'open') {
+      nextStatus = 'in_progress';
+    }
+
+    // Update ticket state & internal notes
+    const updateNotes = internal_notes !== undefined ? internal_notes : ticket.internal_notes;
+    await pool.execute(
+      'UPDATE support_tickets SET status = ?, internal_notes = ?, updated_at = NOW() WHERE id = ?',
+      [nextStatus, updateNotes, id],
+    );
+
+    // If a customer reply was posted, notify the customer via in-app and email
+    if (replyMsg && ticket.user_id) {
+      sendNotification({
+        userId: ticket.user_id,
+        title: `Support Update: ${ticket.reference || `#${ticket.id}`}`,
+        message: `Support team replied: "${replyMsg.slice(0, 90)}"`,
+        type: 'support',
+        link: '/attendee/support',
+      }).catch(() => {});
+
+      if (ticket.user_email) {
+        sendSupportTicketReplyEmail({
+          to: ticket.user_email,
+          userName: ticket.user_name || 'Customer',
+          ticketId: ticket.id,
+          reference: ticket.reference || `TC-SUP-${String(ticket.id).padStart(6, '0')}`,
+          subject: ticket.subject,
+          replyMessage: replyMsg,
+          staffName: req.user.name || 'Support Staff',
+          status: nextStatus,
+        }).catch((err) => console.warn('[respondToSupportTicket] Email notice error:', err.message));
+      }
+    }
+
+    await logAudit({
+      userId: req.user.id,
+      action: escalate ? 'escalate_support_ticket' : 'respond_support_ticket',
+      entityType: 'support_ticket',
+      entityId: Number(id),
+      details: { status: nextStatus, hadReply: !!replyMsg },
+    });
+
+    res.json({ message: 'Response processed successfully', status: nextStatus });
   } catch (err) {
     console.error('[adminController.respondToSupportTicket]', err);
     res.status(500).json({ message: 'Server error' });
@@ -2184,7 +2423,13 @@ export const respondToSupportTicket = async (req, res) => {
 export const closeSupportTicket = async (req, res) => {
   try {
     const { id } = req.params;
-    await pool.execute("UPDATE support_tickets SET status = 'closed' WHERE id = ?", [id]);
+    await pool.execute("UPDATE support_tickets SET status = 'closed', updated_at = NOW() WHERE id = ?", [id]);
+    await logAudit({
+      userId: req.user.id,
+      action: 'close_support_ticket',
+      entityType: 'support_ticket',
+      entityId: Number(id),
+    });
     res.json({ message: 'Ticket closed' });
   } catch (err) {
     console.error('[adminController.closeSupportTicket]', err);

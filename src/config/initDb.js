@@ -108,6 +108,10 @@ async function initDb() {
         `ALTER TABLE announcements DROP CONSTRAINT IF EXISTS announcements_target_role_check`,
         `ALTER TABLE announcements ADD COLUMN IF NOT EXISTS sent_count INT DEFAULT 0`,
         `ALTER TABLE announcements ADD COLUMN IF NOT EXISTS failed_count INT DEFAULT 0`,
+        `ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS reference VARCHAR(50)`,
+        `ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS order_id BIGINT`,
+        `ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS event_id BIGINT`,
+        `ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS internal_notes TEXT`,
         `ALTER TABLE pending_registrations ADD COLUMN IF NOT EXISTS metadata JSONB`,
         `CREATE TABLE IF NOT EXISTS pending_registrations (
           id                BIGSERIAL PRIMARY KEY,
