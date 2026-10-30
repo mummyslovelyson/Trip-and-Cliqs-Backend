@@ -104,6 +104,10 @@ async function initDb() {
         `ALTER TABLE events ADD COLUMN IF NOT EXISTS gps_location VARCHAR(255)`,
         `ALTER TABLE events DROP CONSTRAINT IF EXISTS events_approval_status_check`,
         `ALTER TABLE events ADD CONSTRAINT events_approval_status_check CHECK (approval_status IN ('pending','approved','rejected','changes_requested'))`,
+        `ALTER TABLE announcements DROP CONSTRAINT IF EXISTS announcements_channel_check`,
+        `ALTER TABLE announcements DROP CONSTRAINT IF EXISTS announcements_target_role_check`,
+        `ALTER TABLE announcements ADD COLUMN IF NOT EXISTS sent_count INT DEFAULT 0`,
+        `ALTER TABLE announcements ADD COLUMN IF NOT EXISTS failed_count INT DEFAULT 0`,
         `ALTER TABLE pending_registrations ADD COLUMN IF NOT EXISTS metadata JSONB`,
         `CREATE TABLE IF NOT EXISTS pending_registrations (
           id                BIGSERIAL PRIMARY KEY,

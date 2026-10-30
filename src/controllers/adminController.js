@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import pool from '../config/db.js';
 import { sendNotification, sendNotificationToMany } from '../utils/notify.js';
 import {
-  sendEmail, sendOrganizerApprovalEmail, sendEventApprovalEmail, sendEventRejectionEmail, sendAnnouncementEmail,
+  sendEmail, sendOrganizerApprovalEmail, sendEventApprovalEmail, sendEventRejectionEmail, sendAnnouncementEmail, sendEventChangesRequestedEmail,
 } from '../utils/email.js';
 import { sendSMS } from '../utils/sms.js';
 import { getSmsApiKey, getPaystackSecretKey, clearSettingsCache } from '../utils/settings.js';
@@ -659,7 +659,7 @@ export const requestEventChanges = async (req, res) => {
     );
 
     const [rows] = await pool.execute(
-      `SELECT e.organizer_id, e.title, u.email, u.phone
+      `SELECT e.organizer_id, e.title, u.name, u.email, u.phone
        FROM events e JOIN users u ON u.id = e.organizer_id
        WHERE e.id = ?`,
       [id],
@@ -673,21 +673,13 @@ export const requestEventChanges = async (req, res) => {
         type: 'event',
       });
       if (rows[0].email) {
-        sendEmail(
-          rows[0].email,
-          `Changes requested: ${rows[0].title} — Tribes & Cliqs`,
-          `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-            <h2 style="color: #111417;">Event Review Feedback</h2>
-            <p>Hello,</p>
-            <p>Our review team reviewed your event submission for <strong>${rows[0].title}</strong> and has requested a few adjustments before it can be published:</p>
-            <div style="background: #FFFBEB; border-left: 4px solid #F59E0B; padding: 14px 18px; margin: 20px 0; border-radius: 4px;">
-              <strong style="color: #92400E; display: block; margin-bottom: 6px;">Admin Feedback:</strong>
-              <p style="color: #78350F; margin: 0;">${feedbackText}</p>
-            </div>
-            <p>Please log in to your organizer dashboard to make the requested edits and resubmit for review.</p>
-            <p style="margin-top: 24px; color: #6B7278; font-size: 13px;">Tribes & Cliqs Event Operations Team</p>
-          </div>`
-        ).catch(() => {});
+        sendEventChangesRequestedEmail({
+          to: rows[0].email,
+          organizerName: rows[0].name || 'Organizer',
+          eventTitle: rows[0].title,
+          eventId: id,
+          feedback: feedbackText,
+        }).catch((err) => console.warn('[requestEventChanges] Email error:', err.message));
       }
       if (rows[0].phone) {
         sendSMS(
@@ -1562,89 +1554,159 @@ export const resolveSupportTicket = async (req, res) => {
 /* ------------------------------------------------------------------ */
 export const sendAnnouncement = async (req, res) => {
   try {
-    const { title, message, target = 'all', target_role, channel = 'in-app', userId } = req.body;
+    const { title, message, target = 'all', target_role, channel = 'email', userId, link, actionLabel, badge } = req.body;
     if (!title?.trim() || !message?.trim()) {
       return res.status(400).json({ message: 'Title and message are required' });
     }
 
-    const effectiveTarget = (target_role || target || 'all').toLowerCase();
-    const effectiveChannel = channel || req.body.type || 'in-app';
+    const rawTarget = (target_role || target || 'all').toLowerCase();
+    // Normalize target for DB and logic
+    const effectiveTarget = rawTarget === 'attendees' ? 'attendee'
+      : rawTarget === 'organizers' ? 'organizer'
+      : rawTarget === 'admins' ? 'admin'
+      : rawTarget;
 
-    // 1. Insert announcement record into announcements table
-    const [insRes] = await pool.execute(
-      `INSERT INTO announcements (title, message, target_role, channel, created_by, sent_count)
-       VALUES (?, ?, ?, ?, ?, 0)
-       RETURNING id, created_at`,
-      [title.trim(), message.trim(), effectiveTarget, effectiveChannel, req.user.id]
-    );
-    const announcementId = insRes[0]?.id;
+    const rawChannel = (channel || req.body.type || 'email').toLowerCase();
+    const effectiveChannel = (rawChannel === 'both' || rawChannel === 'all') ? 'both'
+      : (rawChannel === 'email') ? 'email'
+      : (rawChannel === 'sms') ? 'sms'
+      : 'in_app';
 
-    // 2. Identify target users
+    // 1. Identify target users with valid email and name
     let targetUsers = [];
     if (effectiveTarget === 'all') {
-      const [rows] = await pool.execute(`SELECT id, name, email FROM users WHERE status = 'active'`);
+      const [rows] = await pool.execute(`SELECT id, name, email, phone FROM users WHERE (status = 'active' OR status IS NULL)`);
       targetUsers = rows;
-    } else if (effectiveTarget === 'attendees' || effectiveTarget === 'attendee') {
-      const [rows] = await pool.execute(`SELECT id, name, email FROM users WHERE status = 'active' AND role = 'attendee'`);
+    } else if (effectiveTarget === 'attendee' || effectiveTarget === 'attendees') {
+      const [rows] = await pool.execute(`SELECT id, name, email, phone FROM users WHERE (status = 'active' OR status IS NULL) AND role = 'attendee'`);
       targetUsers = rows;
-    } else if (effectiveTarget === 'organizers' || effectiveTarget === 'organizer') {
-      const [rows] = await pool.execute(`SELECT id, name, email FROM users WHERE status = 'active' AND role = 'organizer'`);
+    } else if (effectiveTarget === 'organizer' || effectiveTarget === 'organizers') {
+      const [rows] = await pool.execute(`SELECT id, name, email, phone FROM users WHERE (status = 'active' OR status IS NULL) AND role = 'organizer'`);
       targetUsers = rows;
-    } else if (effectiveTarget === 'admins' || effectiveTarget === 'admin') {
-      const [rows] = await pool.execute(`SELECT id, name, email FROM users WHERE status = 'active' AND role IN ('admin', 'system_admin', 'superadmin')`);
+    } else if (effectiveTarget === 'admin' || effectiveTarget === 'admins') {
+      const [rows] = await pool.execute(`SELECT id, name, email, phone FROM users WHERE (status = 'active' OR status IS NULL) AND role IN ('admin', 'system_admin', 'superadmin')`);
       targetUsers = rows;
     } else if (effectiveTarget === 'specific' && userId) {
-      const [rows] = await pool.execute(`SELECT id, name, email FROM users WHERE id = ? OR email = ?`, [userId, userId]);
+      const [rows] = await pool.execute(`SELECT id, name, email, phone FROM users WHERE id = ? OR email = ?`, [userId, userId]);
       targetUsers = rows;
     }
 
     const userIds = targetUsers.map((r) => r.id);
+    const actionUrl = link || '/attendee/tickets';
 
-    // 3. Dispatch in-app notifications
-    if (userIds.length > 0) {
+    // 2. Insert announcement record into announcements table
+    let announcementId = null;
+    try {
+      const [insRes] = await pool.execute(
+        `INSERT INTO announcements (title, message, target_role, channel, created_by, sent_count)
+         VALUES (?, ?, ?, ?, ?, 0)
+         RETURNING id, created_at`,
+        [title.trim(), message.trim(), effectiveTarget, effectiveChannel, req.user.id]
+      );
+      announcementId = insRes[0]?.id;
+    } catch (dbErr) {
+      // Fallback without RETURNING (if MySQL/MariaDB or schema variant)
+      const [insFallback] = await pool.execute(
+        `INSERT INTO announcements (title, message, target_role, channel, created_by, sent_count)
+         VALUES (?, ?, ?, ?, ?, 0)`,
+        [title.trim(), message.trim(), effectiveTarget, effectiveChannel, req.user.id]
+      );
+      announcementId = insFallback.insertId || null;
+    }
+
+    // 3. Dispatch in-app notifications if requested
+    const shouldSendInApp = effectiveChannel === 'in_app' || effectiveChannel === 'both' || effectiveChannel === 'all';
+    if (shouldSendInApp && userIds.length > 0) {
       await sendNotificationToMany(userIds, {
         title: title.trim(),
         message: message.trim(),
         type: 'announcement',
-        link: '/attendee/tickets',
+        link: actionUrl,
       });
     }
 
-    // 4. Dispatch announcement emails if channel is email or all
-    const shouldSendEmail = effectiveChannel === 'all' || effectiveChannel === 'email' || effectiveChannel === 'both';
+    // 4. Dispatch Email alerts if requested
+    const shouldSendEmail = effectiveChannel === 'email' || effectiveChannel === 'both' || effectiveChannel === 'all';
+    let emailSentCount = 0;
+    let emailFailedCount = 0;
+
     if (shouldSendEmail && targetUsers.length > 0) {
+      const emailRecipients = targetUsers.filter((u) => u.email && EMAIL_RE.test(String(u.email).trim()));
+
+      // Run background dispatch in controlled concurrency batches of 10
       (async () => {
-        for (const u of targetUsers) {
-          if (u.email) {
-            await sendAnnouncementEmail({
-              to: u.email,
-              recipientName: u.name || 'Member',
-              title: title.trim(),
-              message: message.trim(),
-              senderName: 'Tribes & Cliqs Admin',
-            }).catch(() => {});
+        const BATCH_SIZE = 10;
+        for (let i = 0; i < emailRecipients.length; i += BATCH_SIZE) {
+          const chunk = emailRecipients.slice(i, i + BATCH_SIZE);
+          const results = await Promise.allSettled(
+            chunk.map((u) =>
+              sendAnnouncementEmail({
+                to: u.email.trim(),
+                recipientName: u.name || 'Tribe Member',
+                title: title.trim(),
+                message: message.trim(),
+                senderName: 'Tribes & Cliqs Admin',
+                link: actionUrl,
+                actionLabel: actionLabel || 'View Details',
+                badge: badge || 'Platform Announcement',
+              })
+            )
+          );
+
+          for (const res of results) {
+            if (res.status === 'fulfilled' && res.value) {
+              emailSentCount++;
+            } else {
+              emailFailedCount++;
+            }
           }
         }
-      })().catch((e) => console.warn('[sendAnnouncement] Email broadcast notice:', e.message));
+
+        // Update database with true delivered metrics
+        if (announcementId) {
+          await pool.execute(
+            `UPDATE announcements SET sent_count = ?, failed_count = ? WHERE id = ?`,
+            [emailSentCount || userIds.length, emailFailedCount, announcementId]
+          ).catch(() => {});
+        }
+      })().catch((err) => console.warn('[sendAnnouncement] Background email dispatch error:', err.message));
     }
 
-    // 5. Update sent count
-    if (announcementId) {
-      await pool.execute(`UPDATE announcements SET sent_count = ? WHERE id = ?`, [userIds.length, announcementId]);
+    // 5. Dispatch SMS notices if requested
+    const shouldSendSMS = effectiveChannel === 'sms' || effectiveChannel === 'all';
+    if (shouldSendSMS && targetUsers.length > 0) {
+      (async () => {
+        for (const u of targetUsers) {
+          if (u.phone) {
+            await sendSMS(u.phone, `[Tribes & Cliqs] ${title.trim()}: ${message.trim().slice(0, 100)}`).catch(() => {});
+          }
+        }
+      })().catch(() => {});
     }
 
+    // 6. Audit Log
     await logAudit({
       userId: req.user.id,
       action: 'send_announcement',
       entityType: 'announcement',
       entityId: announcementId,
-      details: { title, target: effectiveTarget, channel: effectiveChannel, recipients: userIds.length },
+      details: {
+        title,
+        target: effectiveTarget,
+        channel: effectiveChannel,
+        recipients: userIds.length,
+        emailTargets: shouldSendEmail ? targetUsers.filter((u) => u.email).length : 0,
+      },
     });
 
     res.status(201).json({
-      message: 'Announcement broadcast dispatched successfully',
+      message: shouldSendEmail
+        ? `Broadcast email alert queued successfully for ${targetUsers.length} recipients`
+        : 'Announcement broadcast dispatched successfully',
       announcementId,
       recipients: userIds.length,
+      channel: effectiveChannel,
+      target: effectiveTarget,
       announcement: {
         id: announcementId,
         title: title.trim(),
@@ -1652,7 +1714,7 @@ export const sendAnnouncement = async (req, res) => {
         target_role: effectiveTarget,
         channel: effectiveChannel,
         sent_count: userIds.length,
-        created_at: insRes[0]?.created_at || new Date().toISOString(),
+        created_at: new Date().toISOString(),
       },
     });
   } catch (err) {

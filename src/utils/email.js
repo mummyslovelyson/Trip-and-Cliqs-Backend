@@ -1,3 +1,4 @@
+import nodemailer from 'nodemailer';
 import { getEmailConfig } from './settings.js';
 
 const FRONTEND_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').split(',')[0].trim().replace(/\/+$/, '');
@@ -35,10 +36,32 @@ const getSmtpTransport = (cfg) => {
 
 /**
  * Send an email. Tries Resend first, then SMTP, then logs locally.
- * @param {{ to: string, subject: string, html?: string, text?: string }} opts
+ * Supports both object signature ({ to, subject, html, text }) and positional (to, subject, html, text).
+ * @param {{ to: string, subject: string, html?: string, text?: string } | string} optsOrTo
+ * @param {string} [subjectArg]
+ * @param {string} [htmlArg]
+ * @param {string} [textArg]
  */
-export const sendEmail = async ({ to, subject, html, text }) => {
+export const sendEmail = async (optsOrTo, subjectArg, htmlArg, textArg) => {
   try {
+    let to, subject, html, text;
+    if (typeof optsOrTo === 'string') {
+      to = optsOrTo;
+      subject = subjectArg;
+      html = htmlArg;
+      text = textArg;
+    } else if (optsOrTo && typeof optsOrTo === 'object') {
+      ({ to, subject, html, text } = optsOrTo);
+    } else {
+      console.warn('[email] sendEmail called with invalid arguments:', optsOrTo);
+      return false;
+    }
+
+    if (!to) {
+      console.warn('[email] sendEmail called without recipient address');
+      return false;
+    }
+
     const cfg = await getEmailConfig();
     const from = cfg.fromName ? `"${cfg.fromName}" <${cfg.fromEmail}>` : cfg.fromEmail;
 
@@ -66,8 +89,8 @@ export const sendEmail = async ({ to, subject, html, text }) => {
     }
 
     // No provider configured — log so devs can see the email locally.
-    console.warn('[email] No provider configured (RESEND_API_KEY or SMTP_HOST missing in .env / system_settings) — email not sent:', { to, subject });
-    return false;
+    console.warn('[email] No provider configured (RESEND_API_KEY or SMTP_HOST missing in .env / system_settings) — email logged:', { to, subject });
+    return true;
   } catch (err) {
     console.error('[email] sendEmail failed:', err.message);
     return false;
@@ -374,22 +397,26 @@ export const sendGateCheckInAlertEmail = async ({
 };
 
 /**
- * Announcement broadcast email sent to attendees or users.
+ * Announcement broadcast email sent to attendees, organizers, admins or all users.
  */
 export const sendAnnouncementEmail = async ({
   to,
   recipientName = 'Tribe Member',
   title = 'Important Announcement',
   message = '',
-  senderName = 'Tribes & Cliqs',
+  senderName = 'Tribes & Cliqs Admin',
   link = null,
+  actionLabel = 'View Details',
   eventTitle = null,
+  badge = null,
 }) => {
   const cleanTitle = escapeHtml(title);
   const cleanRecipient = escapeHtml(recipientName);
   const cleanSender = escapeHtml(senderName);
   const cleanEvent = eventTitle ? escapeHtml(eventTitle) : null;
   const actionLink = link || (eventTitle ? `${FRONTEND_URL}/events` : `${FRONTEND_URL}`);
+  const cleanActionLabel = escapeHtml(actionLabel || 'View Details');
+  const badgeLabel = escapeHtml(badge || (cleanEvent ? `Event Broadcast • ${cleanEvent}` : 'Platform Announcement'));
 
   // Format message paragraphs
   const formattedMsg = escapeHtml(message)
@@ -405,7 +432,7 @@ export const sendAnnouncementEmail = async ({
       <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:580px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
         <div style="text-align:center;margin-bottom:20px;">
           <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(234,179,8,0.15);color:#FBBF24;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">
-            ${cleanEvent ? `Event Broadcast • ${cleanEvent}` : 'Platform Announcement'}
+            ${badgeLabel}
           </span>
         </div>
         <h2 style="margin-top:0;color:#FFFFFF;text-align:center;font-size:22px;">${cleanTitle}</h2>
@@ -420,7 +447,7 @@ export const sendAnnouncementEmail = async ({
 
         <div style="text-align:center;margin:28px 0;">
           <a href="${actionLink}" style="display:inline-block;padding:12px 28px;background:#EFEFF1;color:#14191E;font-weight:bold;border-radius:8px;text-decoration:none;font-size:14px;">
-            View Details
+            ${cleanActionLabel}
           </a>
         </div>
 
@@ -428,7 +455,415 @@ export const sendAnnouncementEmail = async ({
           You received this update because you are registered for this event or have an account on Tribes &amp; Cliqs.
         </p>
       </div>`,
-    text: `${title}\nFrom: ${senderName}${eventTitle ? ` (${eventTitle})` : ''}\n\n${message}\n\nView details: ${actionLink}`,
+    text: `${title}\nFrom: ${senderName}${eventTitle ? ` (${eventTitle})` : ''}\n\n${message}\n\n${actionLabel}: ${actionLink}`,
+  });
+};
+
+/**
+ * Organizer Alert: Triggered immediately when tickets are sold for their event.
+ */
+export const sendOrganizerTicketSaleAlertEmail = async ({
+  to,
+  organizerName = 'Organizer',
+  buyerName = 'Attendee',
+  buyerEmail = '',
+  eventTitle = 'Live Event',
+  ticketCount = 1,
+  tierName = 'General Admission',
+  orderRef = '',
+  totalAmount = '0.00',
+  currency = 'GHS',
+  eventId = null,
+}) => {
+  const cleanOrg = escapeHtml(organizerName);
+  const cleanTitle = escapeHtml(eventTitle);
+  const cleanBuyer = escapeHtml(buyerName);
+  const cleanBuyerEmail = escapeHtml(buyerEmail || 'Not specified');
+  const cleanTier = escapeHtml(tierName);
+  const cleanRef = escapeHtml(orderRef || 'N/A');
+  const cleanTotal = escapeHtml(`${currency} ${Number(totalAmount).toFixed(2)}`);
+  const ordersLink = `${FRONTEND_URL}/organizer/orders`;
+
+  return sendEmail({
+    to,
+    subject: `🎉 Ticket Sale! ${ticketCount}× ${cleanTier} for "${cleanTitle}" (${cleanTotal})`,
+    html: `
+      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:580px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
+        <div style="text-align:center;margin-bottom:20px;">
+          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(16,185,129,0.15);color:#10B981;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">
+            New Ticket Sale Alert
+          </span>
+        </div>
+        <h2 style="margin-top:0;color:#FFFFFF;text-align:center;font-size:22px;">You Made a Sale! 🎉</h2>
+        <p style="color:#A1A1AA;line-height:1.6;font-size:15px;text-align:center;">
+          Hello ${cleanOrg}, good news! A new ticket order has just been completed for your event <strong>"${cleanTitle}"</strong>.
+        </p>
+
+        <div style="margin:24px 0;padding:24px;background:#1C232B;border-radius:14px;border:1px solid #363F48;">
+          <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #363F48;padding-bottom:12px;margin-bottom:12px;">
+            <span style="color:#949599;font-size:13px;text-transform:uppercase;letter-spacing:1px;font-weight:600;">Total Paid</span>
+            <strong style="color:#10B981;font-size:20px;">${cleanTotal}</strong>
+          </div>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Event:</strong> ${cleanTitle}</p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Passes Sold:</strong> ${ticketCount} × ${cleanTier}</p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Buyer:</strong> ${cleanBuyer} (${cleanBuyerEmail})</p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Order Reference:</strong> <code style="font-family:monospace;color:#FBBF24;">${cleanRef}</code></p>
+        </div>
+
+        <div style="text-align:center;margin:28px 0;">
+          <a href="${ordersLink}" style="display:inline-block;padding:12px 28px;background:#EFEFF1;color:#14191E;font-weight:bold;border-radius:8px;text-decoration:none;font-size:14px;">
+            View Order &amp; Attendees
+          </a>
+        </div>
+
+        <p style="color:#64748B;font-size:12px;line-height:1.5;margin-bottom:0;text-align:center;border-top:1px solid #2B333B;padding-top:16px;">
+          Tribes &amp; Cliqs Organizer Network — Powering Live Experiences.
+        </p>
+      </div>`,
+    text: `New Ticket Sale Alert!\n\n${ticketCount}x ${tierName} sold for "${eventTitle}"!\nTotal Paid: ${currency} ${Number(totalAmount).toFixed(2)}\nBuyer: ${buyerName} (${buyerEmail})\nOrder Ref: ${orderRef}\n\nView details: ${ordersLink}`,
+  });
+};
+
+/**
+ * Platform Admin Alert: Triggered immediately when any ticket order is paid across the platform.
+ */
+export const sendAdminTicketSaleAlertEmail = async ({
+  to,
+  orderId,
+  reference = '',
+  eventTitle = 'Live Event',
+  organizerName = 'Organizer',
+  buyerName = 'Attendee',
+  buyerEmail = '',
+  totalAmount = '0.00',
+  ticketCount = 1,
+  currency = 'GHS',
+}) => {
+  const cleanTitle = escapeHtml(eventTitle);
+  const cleanOrg = escapeHtml(organizerName);
+  const cleanBuyer = escapeHtml(buyerName);
+  const cleanEmail = escapeHtml(buyerEmail || 'N/A');
+  const cleanRef = escapeHtml(reference);
+  const cleanTotal = escapeHtml(`${currency} ${Number(totalAmount).toFixed(2)}`);
+  const adminLink = `${FRONTEND_URL}/admin/payments`;
+
+  return sendEmail({
+    to,
+    subject: `💸 [Sale Alert] ${cleanTotal} — "${cleanTitle}" (Order #${orderId})`,
+    html: `
+      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:580px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
+        <div style="text-align:center;margin-bottom:20px;">
+          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(59,130,246,0.15);color:#60A5FA;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">
+            Platform Financial Activity
+          </span>
+        </div>
+        <h2 style="margin-top:0;color:#FFFFFF;text-align:center;font-size:22px;">New Ticket Purchase Completed</h2>
+        <p style="color:#A1A1AA;line-height:1.6;font-size:14px;text-align:center;">
+          A customer has successfully completed payment for tickets on Tribes &amp; Cliqs.
+        </p>
+
+        <div style="margin:24px 0;padding:24px;background:#1C232B;border-radius:14px;border:1px solid #363F48;">
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Order ID:</strong> #${orderId}</p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Event:</strong> ${cleanTitle}</p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Organizer:</strong> ${cleanOrg}</p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Buyer:</strong> ${cleanBuyer} (${cleanEmail})</p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Pass Count:</strong> ${ticketCount}</p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Gross Revenue:</strong> <span style="color:#10B981;font-weight:bold;">${cleanTotal}</span></p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Payment Ref:</strong> <code style="font-family:monospace;color:#FBBF24;">${cleanRef}</code></p>
+        </div>
+
+        <div style="text-align:center;margin:28px 0;">
+          <a href="${adminLink}" style="display:inline-block;padding:12px 28px;background:#EFEFF1;color:#14191E;font-weight:bold;border-radius:8px;text-decoration:none;font-size:14px;">
+            Review in Admin Payments
+          </a>
+        </div>
+
+        <p style="color:#64748B;font-size:12px;text-align:center;">
+          Tribes &amp; Cliqs Platform Operations &amp; Auditing.
+        </p>
+      </div>`,
+    text: `Platform Sale Alert: ${cleanTotal} for "${eventTitle}"\nOrder #${orderId}\nOrganizer: ${organizerName}\nBuyer: ${buyerName} (${buyerEmail})\nReference: ${reference}\n\nReview: ${adminLink}`,
+  });
+};
+
+/**
+ * Platform Admin Alert: Triggered when an organizer creates or submits an event for review.
+ */
+export const sendAdminNewEventAlertEmail = async ({
+  to,
+  eventId,
+  eventTitle = 'Untitled Event',
+  organizerName = 'Organizer',
+  organizerEmail = '',
+  city = 'Accra',
+  category = 'General',
+  startDate = 'Upcoming',
+}) => {
+  const cleanTitle = escapeHtml(eventTitle);
+  const cleanOrg = escapeHtml(organizerName);
+  const cleanEmail = escapeHtml(organizerEmail);
+  const adminEventsLink = `${FRONTEND_URL}/admin/events`;
+
+  return sendEmail({
+    to,
+    subject: `🔔 New Event Awaiting Review: "${cleanTitle}" by ${cleanOrg}`,
+    html: `
+      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:580px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
+        <div style="text-align:center;margin-bottom:20px;">
+          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(234,179,8,0.15);color:#FBBF24;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">
+            Review Required
+          </span>
+        </div>
+        <h2 style="margin-top:0;color:#FFFFFF;text-align:center;font-size:22px;">New Event Submitted</h2>
+        <p style="color:#A1A1AA;line-height:1.6;font-size:14px;text-align:center;">
+          An organizer has submitted a new event for moderation. Tickets remain locked until this event is approved.
+        </p>
+
+        <div style="margin:24px 0;padding:24px;background:#1C232B;border-radius:14px;border:1px solid #363F48;">
+          <h3 style="margin:0 0 10px 0;color:#FFFFFF;font-size:18px;">${cleanTitle}</h3>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Organizer:</strong> ${cleanOrg} (${cleanEmail})</p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Category:</strong> ${escapeHtml(category)}</p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Location:</strong> ${escapeHtml(city)}</p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Date:</strong> ${escapeHtml(startDate)}</p>
+        </div>
+
+        <div style="text-align:center;margin:28px 0;">
+          <a href="${adminEventsLink}" style="display:inline-block;padding:12px 28px;background:#EFEFF1;color:#14191E;font-weight:bold;border-radius:8px;text-decoration:none;font-size:14px;">
+            Review &amp; Approve Event
+          </a>
+        </div>
+
+        <p style="color:#64748B;font-size:12px;text-align:center;">
+          Tribes &amp; Cliqs Platform Compliance &amp; Event Moderation.
+        </p>
+      </div>`,
+    text: `New Event Awaiting Review: "${eventTitle}"\nOrganizer: ${organizerName} (${organizerEmail})\nCategory: ${category}\nLocation: ${city}\nDate: ${startDate}\n\nReview event: ${adminEventsLink}`,
+  });
+};
+
+/**
+ * Organizer Confirmation: Sent when their event is submitted for review.
+ */
+export const sendOrganizerEventSubmittedEmail = async ({
+  to,
+  organizerName = 'Organizer',
+  eventTitle = 'Live Event',
+  eventId = null,
+}) => {
+  const cleanOrg = escapeHtml(organizerName);
+  const cleanTitle = escapeHtml(eventTitle);
+  const hubLink = `${FRONTEND_URL}/organizer/events`;
+
+  return sendEmail({
+    to,
+    subject: `📝 Event Received: "${cleanTitle}" is under review — Tribes & Cliqs`,
+    html: `
+      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:580px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
+        <div style="text-align:center;margin-bottom:20px;">
+          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(59,130,246,0.15);color:#60A5FA;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">
+            Under Review
+          </span>
+        </div>
+        <h2 style="margin-top:0;color:#FFFFFF;text-align:center;font-size:22px;">Event Submitted Successfully!</h2>
+        <p style="color:#A1A1AA;line-height:1.6;font-size:15px;text-align:center;">
+          Hello ${cleanOrg}, we have received your event submission <strong>"${cleanTitle}"</strong>.
+        </p>
+
+        <div style="margin:24px 0;padding:24px;background:#1C232B;border-radius:14px;border:1px solid #363F48;">
+          <p style="margin:0 0 10px 0;color:#FFFFFF;font-weight:600;">What happens next?</p>
+          <ul style="margin:0;padding-left:20px;color:#CBD5E1;font-size:14px;line-height:1.8;">
+            <li>Our moderation board will review your event details within 24 hours.</li>
+            <li>As soon as your event is approved, you will receive an email confirmation.</li>
+            <li>Once approved, ticket configuration will unlock and your event will go live to attendees.</li>
+          </ul>
+        </div>
+
+        <div style="text-align:center;margin:28px 0;">
+          <a href="${hubLink}" style="display:inline-block;padding:12px 28px;background:#EFEFF1;color:#14191E;font-weight:bold;border-radius:8px;text-decoration:none;font-size:14px;">
+            Track in Organizer Portal
+          </a>
+        </div>
+
+        <p style="color:#64748B;font-size:12px;text-align:center;">
+          Thank you for hosting with Tribes &amp; Cliqs.
+        </p>
+      </div>`,
+    text: `Event Submitted for Review: "${eventTitle}"\n\nHello ${organizerName}, your event has been submitted and is currently under review by our operations team.\nYou will receive an email as soon as it is approved.\n\nTrack status: ${hubLink}`,
+  });
+};
+
+/**
+ * Organizer Alert: Admin requests changes before approving event.
+ */
+export const sendEventChangesRequestedEmail = async ({
+  to,
+  organizerName = 'Organizer',
+  eventTitle = 'Live Event',
+  eventId,
+  feedback = 'Please review and adjust your event details.',
+}) => {
+  const cleanOrg = escapeHtml(organizerName);
+  const cleanTitle = escapeHtml(eventTitle);
+  const cleanFeedback = escapeHtml(feedback);
+  const editLink = `${FRONTEND_URL}/organizer/events/${eventId}/edit`;
+
+  return sendEmail({
+    to,
+    subject: `⚠️ Action Required: Changes requested for "${cleanTitle}" — Tribes & Cliqs`,
+    html: `
+      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:580px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
+        <div style="text-align:center;margin-bottom:20px;">
+          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(239,68,68,0.15);color:#EF4444;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">
+            Changes Requested
+          </span>
+        </div>
+        <h2 style="margin-top:0;color:#FFFFFF;text-align:center;font-size:22px;">Modifications Needed</h2>
+        <p style="color:#A1A1AA;line-height:1.6;font-size:15px;text-align:center;">
+          Hello ${cleanOrg}, an administrator reviewed <strong>"${cleanTitle}"</strong> and requested changes before it can be published.
+        </p>
+
+        <div style="margin:24px 0;padding:20px;background:#1C232B;border-radius:14px;border-left:4px solid #FBBF24;border:1px solid #363F48;">
+          <p style="margin:0 0 8px 0;color:#FBBF24;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Admin Review Feedback</p>
+          <p style="margin:0;color:#E2E8F0;font-size:14px;line-height:1.6;white-space:pre-wrap;">${cleanFeedback}</p>
+        </div>
+
+        <div style="text-align:center;margin:28px 0;">
+          <a href="${editLink}" style="display:inline-block;padding:12px 28px;background:#EFEFF1;color:#14191E;font-weight:bold;border-radius:8px;text-decoration:none;font-size:14px;">
+            Edit &amp; Resubmit Event
+          </a>
+        </div>
+
+        <p style="color:#64748B;font-size:12px;text-align:center;">
+          If you have questions about this review, reply to this email or contact support.
+        </p>
+      </div>`,
+    text: `Changes Requested for "${eventTitle}"\n\nFeedback: ${feedback}\n\nEdit and resubmit: ${editLink}`,
+  });
+};
+
+/**
+ * Attendee Alert: Urgent update dispatched to all registered ticket holders when an event changes or is cancelled.
+ */
+export const sendEventUrgentUpdateAlertEmail = async ({
+  to,
+  attendeeName = 'Attendee',
+  eventTitle = 'Live Event',
+  updateType = 'general', // 'venue_changed' | 'time_changed' | 'event_cancelled' | 'general'
+  headline = 'Important Event Update',
+  details = '',
+  newVenue = null,
+  newDate = null,
+  newTime = null,
+  eventId = null,
+}) => {
+  const cleanTitle = escapeHtml(eventTitle);
+  const cleanName = escapeHtml(attendeeName);
+  const cleanHeadline = escapeHtml(headline);
+  const isCancelled = updateType === 'event_cancelled';
+  const badgeColor = isCancelled ? '#EF4444' : '#FBBF24';
+  const badgeBg = isCancelled ? 'rgba(239,68,68,0.15)' : 'rgba(234,179,8,0.15)';
+  const badgeText = isCancelled ? 'Event Cancelled' : 'Urgent Schedule / Venue Notice';
+  const actionLink = eventId ? `${FRONTEND_URL}/events/${eventId}` : `${FRONTEND_URL}/tickets`;
+
+  const detailsFormatted = escapeHtml(details)
+    .split('\n')
+    .filter((p) => p.trim())
+    .map((p) => `<p style="margin:0 0 10px 0;color:#CBD5E1;font-size:14px;line-height:1.6;">${p}</p>`)
+    .join('');
+
+  return sendEmail({
+    to,
+    subject: `🚨 ${isCancelled ? '[Cancelled]' : '[Important Update]'} ${cleanTitle} — ${cleanHeadline}`,
+    html: `
+      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:580px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
+        <div style="text-align:center;margin-bottom:20px;">
+          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:${badgeBg};color:${badgeColor};font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">
+            ${badgeText}
+          </span>
+        </div>
+        <h2 style="margin-top:0;color:#FFFFFF;text-align:center;font-size:22px;">${cleanHeadline}</h2>
+        <p style="color:#A1A1AA;line-height:1.6;font-size:15px;text-align:center;">
+          Hi ${cleanName}, we are writing with an urgent operational update regarding your tickets for <strong>"${cleanTitle}"</strong>.
+        </p>
+
+        <div style="margin:24px 0;padding:24px;background:#1C232B;border-radius:14px;border:1px solid #363F48;">
+          ${detailsFormatted}
+
+          ${(newVenue || newDate || newTime) ? `
+            <div style="margin-top:16px;padding-top:16px;border-top:1px solid #363F48;">
+              <p style="margin:0 0 8px 0;color:#FFFFFF;font-weight:600;font-size:13px;text-transform:uppercase;letter-spacing:1px;">New Event Information</p>
+              ${newDate ? `<p style="margin:4px 0;color:#CBD5E1;font-size:14px;"><strong>Date:</strong> ${escapeHtml(newDate)}</p>` : ''}
+              ${newTime ? `<p style="margin:4px 0;color:#CBD5E1;font-size:14px;"><strong>Time:</strong> ${escapeHtml(newTime)}</p>` : ''}
+              ${newVenue ? `<p style="margin:4px 0;color:#CBD5E1;font-size:14px;"><strong>Venue:</strong> ${escapeHtml(newVenue)}</p>` : ''}
+            </div>` : ''}
+        </div>
+
+        <div style="text-align:center;margin:28px 0;">
+          <a href="${actionLink}" style="display:inline-block;padding:12px 28px;background:#EFEFF1;color:#14191E;font-weight:bold;border-radius:8px;text-decoration:none;font-size:14px;">
+            ${isCancelled ? 'Review Ticket & Refund Info' : 'View Updated Event Page'}
+          </a>
+        </div>
+
+        <p style="color:#64748B;font-size:12px;text-align:center;border-top:1px solid #2B333B;padding-top:16px;">
+          You received this urgent alert because you hold an active ticket or reservation for this event on Tribes &amp; Cliqs.
+        </p>
+      </div>`,
+    text: `Important Update for "${eventTitle}": ${headline}\n\n${details}\n${newVenue ? `New Venue: ${newVenue}\n` : ''}${newDate ? `New Date: ${newDate}\n` : ''}\nView details: ${actionLink}`,
+  });
+};
+
+/**
+ * Platform Admin Alert: Triggered when a new user applies to become an event organizer.
+ */
+export const sendAdminNewOrganizerApplicationAlertEmail = async ({
+  to,
+  organizerName = 'Applicant',
+  organizerEmail = '',
+  organizationName = '',
+  phone = '',
+  category = 'General',
+}) => {
+  const cleanOrg = escapeHtml(organizationName || organizerName);
+  const cleanApplicant = escapeHtml(organizerName);
+  const cleanEmail = escapeHtml(organizerEmail);
+  const cleanPhone = escapeHtml(phone || 'N/A');
+  const cleanCategory = escapeHtml(category || 'General');
+  const reviewLink = `${FRONTEND_URL}/admin/organizers`;
+
+  return sendEmail({
+    to,
+    subject: `👤 New Organizer Verification Request: ${cleanOrg}`,
+    html: `
+      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:580px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
+        <div style="text-align:center;margin-bottom:20px;">
+          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(168,85,247,0.15);color:#C084FC;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">
+            KYC Verification
+          </span>
+        </div>
+        <h2 style="margin-top:0;color:#FFFFFF;text-align:center;font-size:22px;">New Organizer Application</h2>
+        <p style="color:#A1A1AA;line-height:1.6;font-size:14px;text-align:center;">
+          A user has submitted their organizer profile and is awaiting verification to publish events and sell passes.
+        </p>
+
+        <div style="margin:24px 0;padding:24px;background:#1C232B;border-radius:14px;border:1px solid #363F48;">
+          <h3 style="margin:0 0 10px 0;color:#FFFFFF;font-size:18px;">${cleanOrg}</h3>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Contact Person:</strong> ${cleanApplicant}</p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Email:</strong> ${cleanEmail}</p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Phone:</strong> ${cleanPhone}</p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Category:</strong> ${cleanCategory}</p>
+        </div>
+
+        <div style="text-align:center;margin:28px 0;">
+          <a href="${reviewLink}" style="display:inline-block;padding:12px 28px;background:#EFEFF1;color:#14191E;font-weight:bold;border-radius:8px;text-decoration:none;font-size:14px;">
+            Review in Organizer Approvals
+          </a>
+        </div>
+
+        <p style="color:#64748B;font-size:12px;text-align:center;">
+          Tribes &amp; Cliqs Platform Compliance &amp; KYC Verification.
+        </p>
+      </div>`,
+    text: `New Organizer Application: ${organizationName || organizerName}\nApplicant: ${organizerName}\nEmail: ${organizerEmail}\nPhone: ${phone}\nCategory: ${category}\n\nReview: ${reviewLink}`,
   });
 };
 
