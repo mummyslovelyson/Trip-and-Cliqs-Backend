@@ -70,6 +70,7 @@ before(async () => {
     title: 'Festival of Music',
     description: 'Annual Concert',
     status: 'published',
+    approval_status: 'approved',
     start_date: '2026-10-01',
     created_at: new Date().toISOString(),
   });

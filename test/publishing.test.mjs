@@ -322,3 +322,86 @@ test('rejected events stay hidden from the public but visible to owner', async (
   assert.equal(asOwner.status, 200);
   assert.equal(asOwner.json.status, 'rejected');
 });
+
+test('attendee cannot create events; organizer creates event which requires admin approval before tickets can be added', async () => {
+  // 1. Seed an attendee user
+  const userHash = await bcrypt.hash('User@Pass1234', 10);
+  const attendeeUser = {
+    id: 99,
+    name: 'Kwame Mensah',
+    email: 'kwame@test.com',
+    password: userHash,
+    role: 'attendee',
+    status: 'active',
+    is_approved: 1,
+    email_verified: 1,
+    phone: '+233240009999',
+    created_at: new Date().toISOString(),
+  };
+  db.tables.users.push(attendeeUser);
+
+  const loginRes = await api('POST', '/api/auth/login', {
+    body: { email: 'kwame@test.com', password: 'User@Pass1234' },
+  });
+  assert.equal(loginRes.status, 200);
+  const attendeeToken = loginRes.json.accessToken;
+
+  // 2. Attendee attempts to create event -> Forbidden (403)
+  const attendeeCreate = await api('POST', '/api/events', {
+    token: attendeeToken,
+    body: eventPayload({ title: 'Attendee Event' }),
+  });
+  assert.equal(attendeeCreate.status, 403, 'Attendees must not have access to create events');
+
+  // 3. Organizer creates event
+  const createRes = await api('POST', '/api/events', {
+    token: organizerToken,
+    body: eventPayload({
+      title: 'Community Tech Meetup',
+      status: 'published', // attempts to publish directly
+    }),
+  });
+  assert.equal(createRes.status, 201);
+  const userEventId = createRes.json.eventId;
+  assert.ok(userEventId);
+
+  // 4. Verify event is routed to pending admin review
+  const ev = db.tables.events.find((e) => e.id === userEventId);
+  assert.equal(ev.status, 'pending', 'Organizer-created event must start in pending status');
+  assert.equal(ev.approval_status, 'pending', 'Organizer-created event must require admin approval');
+
+  // 5. Attempting to add tickets before approval must be blocked (400)
+  const prematureTicket = await api('POST', `/api/tickets/${userEventId}/types`, {
+    token: organizerToken,
+    body: {
+      name: 'Early Bird Pass',
+      price: 50,
+      quantity: 100,
+    },
+  });
+  assert.equal(prematureTicket.status, 400);
+  assert.ok(
+    prematureTicket.json.message.includes('not yet been approved'),
+    'ticket creation must fail before event is approved',
+  );
+
+  // 6. Admin reviews and approves the event
+  const approveRes = await api('POST', `/api/admin/events/${userEventId}/approve`, {
+    token: adminToken,
+  });
+  assert.equal(approveRes.status, 200);
+  assert.equal(ev.status, 'published');
+  assert.equal(ev.approval_status, 'approved');
+
+  // 7. Organizer can now add tickets
+  const validTicket = await api('POST', `/api/tickets/${userEventId}/types`, {
+    token: organizerToken,
+    body: {
+      name: 'Early Bird Pass',
+      price: 50,
+      quantity: 100,
+    },
+  });
+  assert.equal(validTicket.status, 201, 'ticket creation succeeds after admin approval');
+  assert.ok(validTicket.json.id, 'ticket type ID returned');
+});

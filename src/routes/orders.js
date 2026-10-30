@@ -1,11 +1,11 @@
 import { Router } from 'express';
 import {
-  createOrder, getOrder, getOrders, getUserOrders, getOrganizerOrders,
+  createOrder, getOrder, getReceiptOrder, getOrders, getUserOrders, getOrganizerOrders,
   cancelOrder, requestRefund, verifyPayment,
   applyCouponHandler, initiateOrderPayment, getOrderInvoice, testWebhook,
   paymentCallbackBridge,
 } from '../controllers/orderController.js';
-import { authenticate, authorize } from '../middleware/auth.js';
+import { authenticate, authorize, optionalAuth } from '../middleware/auth.js';
 import { rateLimit } from '../middleware/rateLimit.js';
 
 const router = Router();
@@ -19,6 +19,10 @@ router.get('/payment-callback', paymentCallbackBridge);
 router.post('/verify-payment', verifyPayment);
 router.post('/webhook', verifyPayment);
 router.post('/webhook/test', testWebhook);
+
+// Dedicated Receipt Endpoints (accessible with optionalAuth for public/authenticated receipt view)
+router.get('/receipt/:identifier', optionalAuth, getReceiptOrder);
+router.get('/:id/receipt', optionalAuth, getReceiptOrder);
 
 // Authenticated
 router.post('/', authenticate, orderLimiter, createOrder);

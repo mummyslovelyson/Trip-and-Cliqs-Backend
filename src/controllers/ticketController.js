@@ -198,7 +198,7 @@ export const createTicketType = async (req, res) => {
 
     await logAudit({ userId: req.user.id, action: 'create_ticket_type', entityType: 'ticket_type', entityId: ticketTypeId });
 
-    res.status(201).json({ message: 'Ticket type created', ticketTypeId });
+    res.status(201).json({ message: 'Ticket type created', id: ticketTypeId, ticketTypeId });
   } catch (err) {
     console.error('[ticketController.createTicketType]', err);
     res.status(500).json({ message: 'Server error' });
@@ -1250,8 +1250,10 @@ export const verifyTicketByCode = async (req, res) => {
           OR UPPER(t.qr_code) = UPPER(?) 
           OR UPPER(t.ticket_number) = UPPER(?)
           OR UPPER(t.ticket_number) = UPPER(?)
+          OR UPPER(COALESCE(o.payment_reference, '')) = UPPER(?)
+          OR UPPER(COALESCE(o.invoice_number, '')) = UPPER(?)
           OR (?::bigint > 0 AND t.id = ?)`,
-      [code, parsedQrCode, cleanSearchCode, parsedTicketNumber, searchId || 0, searchId || 0],
+      [code, parsedQrCode, cleanSearchCode, parsedTicketNumber, cleanSearchCode, cleanSearchCode, searchId || 0, searchId || 0],
     );
     const ticket = rows[0];
     if (!ticket) {

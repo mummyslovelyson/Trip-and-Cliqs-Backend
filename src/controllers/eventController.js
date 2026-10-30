@@ -470,8 +470,8 @@ export const createEvent = async (req, res) => {
     cache.clearPrefix('events');
 
     notifyAdmins({
-      title: 'New Event Created',
-      message: `Organizer "${req.user.name || 'Organizer'}" created "${title}" (${category || 'General'}) in ${city || 'Accra'}.`,
+      title: status === 'pending' ? 'New Event Submitted for Approval' : 'New Event Created',
+      message: `${req.user.name || 'User'} created "${title}" (${category || 'General'}) in ${city || 'Accra'}${status === 'pending' ? ' and submitted it for review.' : '.'}`,
       type: 'system',
       link: '/admin/events',
     }).catch(() => {});

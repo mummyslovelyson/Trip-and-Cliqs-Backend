@@ -631,8 +631,9 @@ export const approveEvent = async (req, res) => {
       sendNotification({
         userId: rows[0].organizer_id,
         title: 'Event approved',
-        message: `Your event "${rows[0].title}" has been approved and is now live.`,
+        message: `Your event "${rows[0].title}" has been approved! You can now start adding ticket tiers and managing passes.`,
         type: 'event',
+        link: `/organizer/tickets?event=${id}`,
       });
       if (rows[0].email) {
         sendEventApprovalEmail(rows[0].email, { id, title: rows[0].title }).catch(() => {});

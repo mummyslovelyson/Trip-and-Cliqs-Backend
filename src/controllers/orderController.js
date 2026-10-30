@@ -670,15 +670,17 @@ export const getOrderInvoice = async (req, res) => {
 export const getOrder = async (req, res) => {
   try {
     const { id } = req.params;
+    const isNum = !isNaN(Number(id));
     const [rows] = await pool.execute(
-      `SELECT o.*, e.title AS event_title, e.venue AS event_venue, e.start_date AS event_date, e.start_time AS event_time,
+      `SELECT o.*, e.title AS event_title, e.venue AS event_venue, e.location AS event_location,
+              e.start_date AS event_date, e.start_time AS event_time,
               e.banner_image, e.organizer_id,
               u.name AS buyer_name, u.email AS buyer_email, u.phone AS buyer_phone
        FROM orders o
        JOIN events e ON e.id = o.event_id
        JOIN users u ON u.id = o.user_id
-       WHERE o.id = ?`,
-      [id],
+       WHERE (o.id = ?) OR (o.payment_reference = ?) OR (o.invoice_number = ?)`,
+      [isNum ? Number(id) : -1, String(id), String(id)],
     );
     const order = rows[0];
     if (!order) return res.status(404).json({ message: 'Order not found' });
@@ -696,13 +698,105 @@ export const getOrder = async (req, res) => {
        FROM order_items oi
        LEFT JOIN ticket_types tt ON tt.id = oi.ticket_type_id
        WHERE oi.order_id = ?`,
-      [id],
+      [order.id],
     );
 
-    res.json({ order: { ...order, items } });
+    let tickets = [];
+    try {
+      const [tRows] = await pool.execute(
+        `SELECT t.id, t.ticket_number, t.qr_code, t.status, t.seat_number, t.created_at,
+                t.ticket_file_url, t.ticket_file_name,
+                COALESCE(tt.name, 'Admission Pass') AS ticket_type_name
+         FROM tickets t
+         JOIN order_items oi ON oi.id = t.order_item_id
+         LEFT JOIN ticket_types tt ON tt.id = t.ticket_type_id
+         WHERE oi.order_id = ?
+         ORDER BY t.id ASC`,
+        [order.id],
+      );
+      tickets = tRows || [];
+    } catch {}
+
+    res.json({ order: { ...order, items, tickets } });
   } catch (err) {
     console.error('[orderController.getOrder]', err);
     res.status(500).json({ message: 'Server error' });
+  }
+};
+
+/* ------------------------------------------------------------------ */
+/* Get receipt data for dedicated receipt page (public or authenticated) */
+/* ------------------------------------------------------------------ */
+export const getReceiptOrder = async (req, res) => {
+  try {
+    const rawIdentifier = req.params.identifier || req.params.id;
+    if (!rawIdentifier) return res.status(400).json({ message: 'Receipt identifier is required' });
+
+    const identifier = String(rawIdentifier).trim();
+    const isNum = !isNaN(Number(identifier));
+
+    const [rows] = await pool.execute(
+      `SELECT o.*, 
+              e.title AS event_title, e.venue AS event_venue, e.location AS event_location, e.city AS event_city,
+              e.start_date AS event_date, e.start_time AS event_time, e.end_date, e.end_time,
+              e.banner_image, e.organizer_id,
+              org.name AS organizer_name,
+              u.name AS buyer_name, u.email AS buyer_email, u.phone AS buyer_phone
+       FROM orders o
+       LEFT JOIN events e ON e.id = o.event_id
+       LEFT JOIN users u ON u.id = o.user_id
+       LEFT JOIN users org ON org.id = e.organizer_id
+       WHERE (o.id = ?) OR (o.payment_reference = ?) OR (o.invoice_number = ?)`,
+      [isNum ? Number(identifier) : -1, identifier, identifier],
+    );
+
+    const order = rows[0];
+    if (!order) return res.status(404).json({ message: 'Receipt not found' });
+
+    // Authorization check: if authenticated user is logged in, ensure they are owner, admin, or organizer
+    if (req.user) {
+      const isOwner = Number(order.user_id) === Number(req.user.id);
+      const isAdmin = ['admin', 'system_admin', 'superadmin', 'staff'].includes(req.user.role);
+      const isOrganizer = req.user.role === 'organizer' && Number(order.organizer_id) === Number(req.user.id);
+      if (!isOwner && !isAdmin && !isOrganizer) {
+        return res.status(403).json({ message: 'Access denied' });
+      }
+    }
+
+    const [items] = await pool.execute(
+      `SELECT oi.*, COALESCE(tt.name, 'General Admission') AS ticket_type_name
+       FROM order_items oi
+       LEFT JOIN ticket_types tt ON tt.id = oi.ticket_type_id
+       WHERE oi.order_id = ?`,
+      [order.id],
+    );
+
+    let tickets = [];
+    try {
+      const [tRows] = await pool.execute(
+        `SELECT t.id, t.ticket_number, t.qr_code, t.status, t.seat_number, t.created_at,
+                t.ticket_file_url, t.ticket_file_name,
+                COALESCE(tt.name, 'Admission Pass') AS ticket_type_name
+         FROM tickets t
+         JOIN order_items oi ON oi.id = t.order_item_id
+         LEFT JOIN ticket_types tt ON tt.id = t.ticket_type_id
+         WHERE oi.order_id = ?
+         ORDER BY t.id ASC`,
+        [order.id],
+      );
+      tickets = tRows || [];
+    } catch {}
+
+    res.json({
+      order: {
+        ...order,
+        items,
+        tickets,
+      },
+    });
+  } catch (err) {
+    console.error('[orderController.getReceiptOrder]', err);
+    res.status(500).json({ message: 'Server error retrieving receipt' });
   }
 };
 
@@ -1568,6 +1662,6 @@ export const paymentCallbackBridge = async (req, res) => {
 };
 
 export default {
-  createOrder, getOrder, getUserOrders, getOrganizerOrders, cancelOrder, requestRefund, verifyPayment,
+  createOrder, getOrder, getReceiptOrder, getUserOrders, getOrganizerOrders, cancelOrder, requestRefund, verifyPayment,
   applyCouponHandler, initiateOrderPayment, getOrderInvoice, testWebhook, paymentCallbackBridge,
 };

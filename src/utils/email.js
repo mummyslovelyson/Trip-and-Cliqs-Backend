@@ -310,9 +310,12 @@ export const sendTicketConfirmationEmail = async (to, order) => {
           </div>
         </div>
 
-        <div style="text-align:center;margin:30px 0;">
-          <a href="${link}" style="display:inline-block;padding:14px 32px;background:#EFEFF1;color:#14191E;font-weight:bold;border-radius:8px;text-decoration:none;font-size:15px;box-shadow:0 6px 16px rgba(0,0,0,0.3);">
+        <div style="text-align:center;margin:30px 0;display:flex;justify-content:center;gap:12px;flex-wrap:wrap;">
+          <a href="${link}" style="display:inline-block;padding:14px 28px;background:#EFEFF1;color:#14191E;font-weight:bold;border-radius:8px;text-decoration:none;font-size:14px;box-shadow:0 6px 16px rgba(0,0,0,0.3);">
             View My Tickets &amp; QR Pass
+          </a>
+          <a href="${FRONTEND_URL}/receipt/${encodeURIComponent(order.reference || order.id)}" style="display:inline-block;padding:14px 28px;background:#242B32;color:#FFFFFF;font-weight:bold;border-radius:8px;text-decoration:none;font-size:14px;border:1px solid #494F55;">
+            Official Receipt
           </a>
         </div>
 
@@ -326,7 +329,7 @@ export const sendTicketConfirmationEmail = async (to, order) => {
           Questions about this event? Contact the event organizer via the event page or reach out to Tribes &amp; Cliqs support.
         </p>
       </div>`,
-    text: `Order Confirmed! Your tickets for "${cleanTitle}" are ready.\n\nOrder Ref: ${cleanRef}\nTotal: ${cleanTotal}\nVenue: ${cleanVenue}\nDate: ${cleanDate}\n\nAccess your QR tickets here: ${link}`,
+    text: `Order Confirmed! Your tickets for "${cleanTitle}" are ready.\n\nOrder Ref: ${cleanRef}\nTotal: ${cleanTotal}\nVenue: ${cleanVenue}\nDate: ${cleanDate}\n\nAccess your QR tickets here: ${link}\nOfficial Receipt: ${FRONTEND_URL}/receipt/${encodeURIComponent(order.reference || order.id)}`,
   });
 };
 
@@ -446,19 +449,21 @@ export const sendOrganizerApprovalEmail = async (to, orgName) =>
 
 export const sendEventApprovalEmail = async (to, event) => {
   const title = escapeHtml(event.title);
-  const link = eventLink(event.id);
+  const ticketsLink = `${FRONTEND_URL}/organizer/tickets?event=${event.id}`;
+  const publicLink = eventLink(event.id);
   return sendEmail({
     to,
-    subject: `Your event "${event.title}" is live — Tribes & Cliqs`,
+    subject: `Your event "${event.title}" has been approved! Start adding tickets — Tribes & Cliqs`,
     html: `
       <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:580px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
-        <h2 style="margin-top:0;color:#FFFFFF;">Your event is live!</h2>
-        <p style="color:#A1A1AA;line-height:1.6;"><strong>${title}</strong> has been approved and is now visible to everyone on Tribes &amp; Cliqs.</p>
-        <div style="text-align:center;margin:24px 0;">
-          <a href="${link}" style="display:inline-block;padding:12px 28px;background:#EFEFF1;color:#14191E;font-weight:bold;border-radius:8px;text-decoration:none;font-size:14px;">View Live Event</a>
+        <h2 style="margin-top:0;color:#FFFFFF;">Your event is approved!</h2>
+        <p style="color:#A1A1AA;line-height:1.6;"><strong>${title}</strong> has been approved by an administrator. You can now start creating and configuring ticket tiers (VIP, Early Bird, General Admission) and upload barcode passes.</p>
+        <div style="text-align:center;margin:28px 0;display:flex;gap:12px;justify-content:center;">
+          <a href="${ticketsLink}" style="display:inline-block;padding:12px 28px;background:#EFEFF1;color:#14191E;font-weight:bold;border-radius:8px;text-decoration:none;font-size:14px;">Start Adding Tickets</a>
         </div>
+        <p style="color:#71717A;font-size:12px;text-align:center;">You can also preview your public event page <a href="${publicLink}" style="color:#CBD5E1;">here</a>.</p>
       </div>`,
-    text: `Your event "${event.title}" has been approved and is now live. View it here: ${link}`,
+    text: `Your event "${event.title}" has been approved by an administrator! You can now start adding ticket tiers: ${ticketsLink}`,
   });
 };
 
