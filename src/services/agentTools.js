@@ -708,22 +708,43 @@ export async function request_refund({ ticketId, userId, reason = 'Cannot attend
 export async function send_ticket({ ticketId, userId, channel = 'email', target = '' }) {
   if (!userId) throw new Error('User authentication required');
 
-  const [userRows] = await pool.execute('SELECT email, phone FROM users WHERE id = ?', [userId]);
+  const [userRows] = await pool.execute('SELECT id, name, email, phone FROM users WHERE id = ?', [userId]);
   const user = userRows[0];
 
   const destination = target || (channel === 'whatsapp' || channel === 'sms' ? user?.phone : user?.email);
 
+  let ticketInfo = null;
+  try {
+    const [tRows] = await pool.execute(
+      `SELECT t.ticket_number, t.qr_code, e.title, e.venue, e.address, e.city, e.start_date, e.start_time, e.banner_image, tt.name AS tier_name
+       FROM tickets t
+       JOIN events e ON e.id = t.event_id
+       LEFT JOIN ticket_types tt ON tt.id = t.ticket_type_id
+       WHERE t.id = ? AND t.user_id = ?`,
+      [ticketId, userId]
+    );
+    ticketInfo = tRows?.[0] || null;
+  } catch {}
+
+  const passCode = ticketInfo?.ticket_number || `TICKET-${ticketId}`;
+
   if ((channel === 'email' || channel === 'both') && user?.email) {
     await sendTicketConfirmationEmail(user.email, {
-      reference: `TICKET-${ticketId}`,
-      eventTitle: 'Your Event Pass',
+      reference: passCode,
+      eventTitle: ticketInfo?.title || 'Your Event Pass',
+      venue: ticketInfo ? [ticketInfo.venue, ticketInfo.address, ticketInfo.city].filter(Boolean).join(', ') : 'Venue TBA',
+      eventDate: ticketInfo?.start_date ? new Date(ticketInfo.start_date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }) : 'Upcoming',
+      startTime: ticketInfo?.start_time,
+      bannerImage: ticketInfo?.banner_image,
+      attendeeName: user?.name || 'Valued Guest',
+      tickets: ticketInfo ? [{ ticket_number: ticketInfo.ticket_number, qr_code: ticketInfo.qr_code || ticketInfo.ticket_number, tier_name: ticketInfo.tier_name }] : [],
       total: 0,
       items: [],
     }).catch(() => {});
   }
 
   if ((channel === 'sms' || channel === 'whatsapp' || channel === 'both') && user?.phone) {
-    await sendTicketConfirmationSMS(user.phone, `TICKET-${ticketId}`).catch(() => {});
+    await sendTicketConfirmationSMS(user.phone, passCode).catch(() => {});
   }
 
   return {

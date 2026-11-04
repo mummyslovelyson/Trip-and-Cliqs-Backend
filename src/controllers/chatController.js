@@ -627,7 +627,7 @@ export async function resendAgentTicket({ userId, channel = 'email' }) {
   if (!user) throw new Error('User not found');
 
   const [ticketRows] = await pool.execute(
-    `SELECT t.ticket_number, e.title, e.start_date, o.payment_reference, o.total_amount
+    `SELECT t.ticket_number, t.qr_code, e.title, e.venue, e.address, e.city, e.start_date, e.start_time, e.banner_image, o.payment_reference, o.total_amount
      FROM tickets t
      JOIN events e ON e.id = t.event_id
      JOIN order_items oi ON oi.id = t.order_item_id
@@ -645,7 +645,13 @@ export async function resendAgentTicket({ userId, channel = 'email' }) {
     await sendTicketConfirmationEmail(user.email, {
       reference: latest.payment_reference,
       eventTitle: latest.title,
-      total: latest.total_amount,
+      total_amount: latest.total_amount,
+      venue: [latest.venue, latest.address, latest.city].filter(Boolean).join(', ') || 'Venue TBA',
+      eventDate: latest.start_date ? new Date(latest.start_date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }) : 'Upcoming',
+      startTime: latest.start_time,
+      bannerImage: latest.banner_image,
+      attendeeName: user.name || 'Friend',
+      tickets: [{ ticket_number: latest.ticket_number, qr_code: latest.qr_code || latest.ticket_number }],
       items: [],
     });
   }

@@ -3,21 +3,47 @@ import { getEmailConfig } from './settings.js';
 
 const FRONTEND_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').split(',')[0].trim().replace(/\/+$/, '');
 
-let resendClient = null;
-let lastResendKey = '';
+/**
+ * Direct HTTP dispatch to Resend's REST API (api.resend.com/emails).
+ * Zero dependency on the 'resend' npm package.
+ */
+const sendViaResendHttp = async ({ apiKey, from, to, subject, html, text, attachments }) => {
+  const payload = {
+    from,
+    to: Array.isArray(to) ? to : [to],
+    subject,
+    html,
+    text,
+  };
 
-const getResend = async (key) => {
-  if (!key) return null;
-  if (resendClient && lastResendKey === key) return resendClient;
-  try {
-    const { Resend } = await import('resend');
-    resendClient = new Resend(key);
-    lastResendKey = key;
-    return resendClient;
-  } catch {
-    console.warn('[email] "resend" package not installed — falling back to SMTP.');
-    return null;
+  if (Array.isArray(attachments) && attachments.length > 0) {
+    payload.attachments = attachments.map((a) => {
+      let b64 = '';
+      if (Buffer.isBuffer(a.content)) {
+        b64 = a.content.toString('base64');
+      } else if (typeof a.content === 'string') {
+        b64 = Buffer.from(a.content).toString('base64');
+      } else {
+        b64 = String(a.content);
+      }
+      return {
+        filename: a.filename || 'attachment.pdf',
+        content: b64,
+      };
+    });
   }
+
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey.trim()}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await response.json().catch(() => ({}));
+  return { ok: response.ok, status: response.status, data };
 };
 
 const getSmtpTransport = (cfg) => {
@@ -37,63 +63,97 @@ const getSmtpTransport = (cfg) => {
 /**
  * Send an email. Tries Resend first, then SMTP, then logs locally.
  * Supports both object signature ({ to, subject, html, text }) and positional (to, subject, html, text).
- * @param {{ to: string, subject: string, html?: string, text?: string } | string} optsOrTo
+ * @param {{ to: string, subject: string, html?: string, text?: string, attachments?: Array<{ filename: string, content: any, contentType?: string }> } | string} optsOrTo
  * @param {string} [subjectArg]
  * @param {string} [htmlArg]
  * @param {string} [textArg]
+ * @returns {Promise<{ success: boolean, provider?: string, id?: string, error?: string }>}
  */
 export const sendEmail = async (optsOrTo, subjectArg, htmlArg, textArg) => {
   try {
-    let to, subject, html, text;
+    let to, subject, html, text, attachments;
     if (typeof optsOrTo === 'string') {
       to = optsOrTo;
       subject = subjectArg;
       html = htmlArg;
       text = textArg;
     } else if (optsOrTo && typeof optsOrTo === 'object') {
-      ({ to, subject, html, text } = optsOrTo);
+      ({ to, subject, html, text, attachments } = optsOrTo);
     } else {
       console.warn('[email] sendEmail called with invalid arguments:', optsOrTo);
-      return false;
+      return { success: false, error: 'Invalid arguments' };
     }
 
     if (!to) {
       console.warn('[email] sendEmail called without recipient address');
-      return false;
+      return { success: false, error: 'Recipient address required' };
     }
 
     const cfg = await getEmailConfig();
     const from = cfg.fromName ? `"${cfg.fromName}" <${cfg.fromEmail}>` : cfg.fromEmail;
 
     if (cfg.resendKey) {
-      const resend = await getResend(cfg.resendKey);
-      if (resend) {
-        const { error } = await resend.emails.send({
+      try {
+        let sendRes = await sendViaResendHttp({
+          apiKey: cfg.resendKey,
           from,
           to,
           subject,
           html,
           text,
+          attachments,
         });
-        if (error) throw error;
-        console.log(`[email] Email sent via Resend to ${to} (${subject})`);
-        return true;
+
+        // If domain is unverified (initial test mode on Resend), retry automatically with onboarding@resend.dev
+        if (
+          !sendRes.ok &&
+          sendRes.status === 403 &&
+          String(sendRes.data?.message || '').toLowerCase().includes('domain')
+        ) {
+          console.warn(
+            `[email] Domain "${from}" is not yet verified on resend.com. Retrying with test sender "onboarding@resend.dev"...`,
+          );
+          const testFrom = cfg.fromName
+            ? `"${cfg.fromName}" <onboarding@resend.dev>`
+            : 'onboarding@resend.dev';
+
+          sendRes = await sendViaResendHttp({
+            apiKey: cfg.resendKey,
+            from: testFrom,
+            to,
+            subject,
+            html,
+            text,
+            attachments,
+          });
+        }
+
+        if (sendRes.ok) {
+          console.log(`[email] Email sent via Resend API to ${to} (${subject}) — ID: ${sendRes.data?.id}`);
+          return { success: true, provider: 'resend', id: sendRes.data?.id };
+        }
+
+        const errMsg = sendRes.data?.message || sendRes.data?.error || `HTTP ${sendRes.status}`;
+        console.error(`[email] Resend API error (${sendRes.status}):`, errMsg);
+        return { success: false, provider: 'resend', error: errMsg };
+      } catch (resendFetchErr) {
+        console.error('[email] Resend network dispatch failed:', resendFetchErr.message);
       }
     }
 
     const transport = getSmtpTransport(cfg);
     if (transport) {
-      await transport.sendMail({ from, to, subject, html, text });
+      const info = await transport.sendMail({ from, to, subject, html, text, attachments });
       console.log(`[email] Email sent via SMTP to ${to} (${subject})`);
-      return true;
+      return { success: true, provider: 'smtp', messageId: info?.messageId };
     }
 
     // No provider configured — log so devs can see the email locally.
     console.warn('[email] No provider configured (RESEND_API_KEY or SMTP_HOST missing in .env / system_settings) — email logged:', { to, subject });
-    return true;
+    return { success: true, provider: 'dev_log', note: 'Email logged locally (no provider configured)' };
   } catch (err) {
     console.error('[email] sendEmail failed:', err.message);
-    return false;
+    return { success: false, error: err.message };
   }
 };
 
@@ -106,6 +166,42 @@ const escapeHtml = (value) =>
   String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 const eventLink = (eventId) => `${FRONTEND_URL}/events/${eventId}`;
+
+const buildGoogleCalendarUrl = ({ title, description, venue, startDate, startTime }) => {
+  try {
+    let startIso = '';
+    let endIso = '';
+    if (startDate) {
+      const datePart = String(startDate).includes('T') ? String(startDate).split('T')[0] : String(startDate);
+      const timePart = startTime ? String(startTime).replace(/[^0-9]/g, '').slice(0, 4) : '1800';
+      const cleanDate = datePart.replace(/[^0-9]/g, '');
+      if (cleanDate.length === 8) {
+        startIso = `${cleanDate}T${timePart.padEnd(4, '0')}00Z`;
+        const startHour = Number(timePart.slice(0, 2)) || 18;
+        const endHour = String(Math.min(23, startHour + 3)).padStart(2, '0');
+        endIso = `${cleanDate}T${endHour}${timePart.slice(2, 4).padEnd(2, '0')}00Z`;
+      }
+    }
+    const params = new URLSearchParams({
+      action: 'TEMPLATE',
+      text: title || 'Tribes & Cliqs Live Event',
+      details: description || 'Official admission pass booked on Tribes & Cliqs.',
+      location: venue || '',
+    });
+    if (startIso && endIso) {
+      params.set('dates', `${startIso}/${endIso}`);
+    }
+    return `https://calendar.google.com/calendar/render?${params.toString()}`;
+  } catch {
+    return null;
+  }
+};
+
+const buildGoogleMapsUrl = (venue, address, city) => {
+  const parts = [venue, address, city].filter(Boolean).join(', ');
+  if (!parts) return null;
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(parts)}`;
+};
 
 /* ------------------------------------------------------------------ *
  * Templated helpers
@@ -286,73 +382,169 @@ export const sendTicketConfirmationEmail = async (to, order) => {
   const cleanTitle = escapeHtml(order.eventTitle || 'Live Event');
   const cleanRef = escapeHtml(order.reference || order.paymentReference || 'N/A');
   const cleanTotal = escapeHtml(order.total || (order.total_amount ? `GHS ${Number(order.total_amount).toFixed(2)}` : 'GHS 0.00'));
-  const cleanVenue = escapeHtml(order.venue || 'Venue TBA');
+  const fullVenue = [order.venue, order.address, order.city].filter(Boolean).join(', ') || 'Venue TBA';
+  const cleanVenue = escapeHtml(fullVenue);
   const cleanDate = escapeHtml(order.eventDate || order.date || 'Upcoming');
+  const cleanTime = escapeHtml(order.startTime || order.start_time || '');
   const attendeeName = escapeHtml(order.attendeeName || 'Guest');
+  const bannerImage = order.bannerImage || order.banner_image || null;
   const link = `${FRONTEND_URL}/my-tickets`;
+  const receiptLink = `${FRONTEND_URL}/receipt/${encodeURIComponent(order.reference || order.id || '')}`;
 
-  const ticketRows = Array.isArray(order.tickets) && order.tickets.length > 0
-    ? order.tickets.map((t) => `
-        <div style="padding:12px;background:#14191E;border-radius:8px;border:1px solid #2B333B;margin-top:8px;">
-          <div style="display:flex;justify-content:space-between;align-items:center;">
-            <strong style="color:#FFFFFF;font-size:14px;">${escapeHtml(t.tier || t.tier_name || 'Pass')}</strong>
-            <span style="font-family:monospace;background:#242B32;padding:2px 6px;border-radius:4px;color:#FBBF24;font-size:12px;">${escapeHtml(t.ticket_number || t.code || '')}</span>
+  const calUrl = buildGoogleCalendarUrl({
+    title: order.eventTitle,
+    description: `Order ${cleanRef} — Access your tickets: ${link}`,
+    venue: fullVenue,
+    startDate: order.startDate || order.start_date,
+    startTime: order.startTime || order.start_time,
+  });
+
+  const mapsUrl = buildGoogleMapsUrl(order.venue, order.address, order.city);
+
+  const tickets = Array.isArray(order.tickets) && order.tickets.length > 0 ? order.tickets : [];
+
+  const ticketCardsHtml = tickets.length > 0
+    ? tickets.map((t, index) => {
+        const ticketNum = t.ticket_number || t.code || `TC-${index + 1}`;
+        const qrContent = encodeURIComponent(t.qr_code || ticketNum);
+        const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${qrContent}&margin=4`;
+        const tier = escapeHtml(t.tier || t.tier_name || 'Admission Pass');
+        const holder = escapeHtml(t.attendee_name || attendeeName);
+        const seat = t.seat_number ? escapeHtml(t.seat_number) : null;
+
+        return `
+          <div style="background:#1C232B;border-radius:14px;border:1px solid #363F48;margin-bottom:16px;overflow:hidden;box-shadow:0 6px 18px rgba(0,0,0,0.35);">
+            <div style="padding:12px 18px;background:#242B32;border-bottom:1px dashed #363F48;display:flex;justify-content:space-between;align-items:center;">
+              <span style="display:inline-block;padding:4px 10px;border-radius:6px;background:rgba(245,158,11,0.15);color:#FBBF24;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">
+                ${tier}
+              </span>
+              <span style="font-family:monospace;color:#949599;font-size:12px;">Pass #${index + 1}</span>
+            </div>
+            <div style="padding:22px;text-align:center;">
+              <div style="background:#FFFFFF;padding:12px;border-radius:12px;display:inline-block;box-shadow:0 4px 14px rgba(0,0,0,0.25);">
+                <img src="${qrUrl}" alt="Entry QR Code" width="160" height="160" style="display:block;border:0;margin:0 auto;" />
+              </div>
+              <p style="margin:12px 0 0 0;font-family:monospace;font-size:16px;color:#FBBF24;font-weight:bold;letter-spacing:2px;">
+                ${escapeHtml(ticketNum)}
+              </p>
+              <p style="margin:6px 0 0 0;color:#CBD5E1;font-size:13px;">
+                Holder: <strong style="color:#FFFFFF;">${holder}</strong>
+                ${seat ? ` &bull; Seat: <strong style="color:#10B981;">${seat}</strong>` : ''}
+              </p>
+              <div style="margin-top:10px;">
+                <span style="display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(16,185,129,0.12);color:#10B981;font-size:11px;font-weight:600;">
+                  &#10003; Ready for Gate Admission
+                </span>
+              </div>
+            </div>
           </div>
-          ${t.attendee_name ? `<p style="margin:4px 0 0 0;color:#949599;font-size:12px;">Holder: ${escapeHtml(t.attendee_name)}</p>` : ''}
-        </div>
-      `).join('')
+        `;
+      }).join('')
     : (order.items || []).map((i) => `
-        <div style="padding:8px 0;border-bottom:1px solid #2B333B;color:#CBD5E1;font-size:13px;">
-          ${escapeHtml(i.quantity)} × ${escapeHtml(i.name)} — ${escapeHtml(i.subtotal)}
+        <div style="padding:10px 0;border-bottom:1px solid #2B333B;color:#CBD5E1;font-size:13px;display:flex;justify-content:space-between;">
+          <span>${escapeHtml(i.quantity)} &times; ${escapeHtml(i.name || i.ticket_type_name || 'Pass')}</span>
+          <strong style="color:#FFFFFF;">${escapeHtml(i.subtotal ? `GHS ${Number(i.subtotal).toFixed(2)}` : '')}</strong>
         </div>
       `).join('');
+
+  const lineItemsList = Array.isArray(order.items) && order.items.length > 0
+    ? `
+      <div style="margin-top:16px;border-top:1px solid #363F48;padding-top:14px;">
+        <p style="margin:0 0 8px 0;color:#949599;font-size:12px;text-transform:uppercase;letter-spacing:1px;font-weight:600;">Order Summary</p>
+        ${order.items.map((item) => `
+          <div style="padding:6px 0;color:#CBD5E1;font-size:13px;display:flex;justify-content:space-between;">
+            <span>${escapeHtml(item.quantity)} &times; ${escapeHtml(item.name || item.ticket_type_name || 'Ticket')}</span>
+            <span style="color:#FFFFFF;font-weight:600;">GHS ${Number(item.subtotal || (item.quantity * item.unit_price) || 0).toFixed(2)}</span>
+          </div>
+        `).join('')}
+      </div>`
+    : '';
+
+  const bannerHtml = bannerImage
+    ? `<div style="margin:-32px -32px 24px -32px;overflow:hidden;border-radius:16px 16px 0 0;">
+        <img src="${escapeHtml(bannerImage)}" alt="${cleanTitle}" style="width:100%;max-height:220px;object-fit:cover;display:block;" />
+       </div>`
+    : '';
+
+  const calendarButtons = `
+    <div style="text-align:center;margin:18px 0 0 0;">
+      ${calUrl ? `<a href="${calUrl}" target="_blank" style="display:inline-block;padding:8px 16px;background:rgba(255,255,255,0.08);color:#CBD5E1;border-radius:8px;text-decoration:none;font-size:12px;font-weight:600;margin-right:8px;border:1px solid #363F48;">&#128197; Add to Google Calendar</a>` : ''}
+      ${mapsUrl ? `<a href="${mapsUrl}" target="_blank" style="display:inline-block;padding:8px 16px;background:rgba(255,255,255,0.08);color:#CBD5E1;border-radius:8px;text-decoration:none;font-size:12px;font-weight:600;border:1px solid #363F48;">&#128205; Open in Maps</a>` : ''}
+    </div>
+  `;
 
   return sendEmail({
     to,
     subject: `🎟️ Your Tickets for "${cleanTitle}" — Tribes & Cliqs`,
+    attachments: order.attachments || [],
     html: `
-      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:580px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
+      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;max-width:590px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;line-height:1.5;">
+        ${bannerHtml}
         <div style="text-align:center;margin-bottom:20px;">
-          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(16,185,129,0.15);color:#10B981;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">Order Confirmed</span>
+          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(16,185,129,0.15);color:#10B981;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">
+            Order Confirmed &bull; Entry Passes Ready
+          </span>
         </div>
-        <h2 style="margin-top:0;color:#FFFFFF;text-align:center;font-size:24px;">You're Going! 🎟️</h2>
-        <p style="color:#A1A1AA;line-height:1.6;font-size:15px;text-align:center;">
-          Hi ${attendeeName}, thank you for your purchase. Your digital tickets and entry pass are ready.
+        <h2 style="margin-top:0;color:#FFFFFF;text-align:center;font-size:24px;font-weight:800;">You're Going! 🎟️</h2>
+        <p style="color:#A1A1AA;line-height:1.6;font-size:15px;text-align:center;margin-bottom:24px;">
+          Hi ${attendeeName}, your payment was successful and your official ticket passes have been issued.
         </p>
 
-        <div style="margin:24px 0;padding:24px;background:#1C232B;border-radius:14px;border:1px solid #363F48;">
-          <h3 style="margin:0 0 10px 0;color:#FFFFFF;font-size:18px;">${cleanTitle}</h3>
-          <p style="margin:4px 0;color:#CBD5E1;font-size:14px;"><strong>Date:</strong> ${cleanDate}</p>
-          <p style="margin:4px 0;color:#CBD5E1;font-size:14px;"><strong>Venue:</strong> ${cleanVenue}</p>
-          <p style="margin:4px 0;color:#CBD5E1;font-size:14px;"><strong>Order Ref:</strong> <code style="font-family:monospace;color:#FBBF24;">${cleanRef}</code></p>
-          <p style="margin:4px 0;color:#CBD5E1;font-size:14px;"><strong>Total Paid:</strong> ${cleanTotal}</p>
-
-          <div style="margin-top:16px;border-top:1px solid #363F48;padding-top:14px;">
-            <p style="margin:0 0 6px 0;color:#949599;font-size:12px;text-transform:uppercase;letter-spacing:1px;font-weight:600;">Your Entry Passes</p>
-            ${ticketRows}
-          </div>
+        <!-- Event Logistics Card -->
+        <div style="margin:20px 0;padding:22px;background:#1C232B;border-radius:14px;border:1px solid #363F48;">
+          <h3 style="margin:0 0 12px 0;color:#FFFFFF;font-size:20px;font-weight:700;">${cleanTitle}</h3>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;">
+            <strong style="color:#FFFFFF;">Date:</strong> ${cleanDate}${cleanTime ? ` at ${cleanTime}` : ''}
+          </p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;">
+            <strong style="color:#FFFFFF;">Venue:</strong> ${cleanVenue}
+          </p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;">
+            <strong style="color:#FFFFFF;">Order Reference:</strong> <code style="font-family:monospace;color:#FBBF24;font-size:14px;background:#242B32;padding:2px 6px;border-radius:4px;">${cleanRef}</code>
+          </p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;">
+            <strong style="color:#FFFFFF;">Total Paid:</strong> <strong style="color:#10B981;font-size:16px;">${cleanTotal}</strong>
+            ${order.paymentMethod ? ` <span style="color:#949599;font-size:12px;">via ${escapeHtml(order.paymentMethod.toUpperCase())}</span>` : ''}
+          </p>
+          ${calendarButtons}
+          ${lineItemsList}
         </div>
 
+        <!-- Ticket Passes Section -->
+        <div style="margin:26px 0;">
+          <div style="text-align:center;margin-bottom:14px;">
+            <p style="margin:0;color:#949599;font-size:12px;text-transform:uppercase;letter-spacing:1px;font-weight:700;">
+              Your Entry Pass${tickets.length > 1 ? 'es' : ''} (${tickets.length || 1})
+            </p>
+            <p style="margin:4px 0 0 0;color:#64748B;font-size:12px;">
+              Present these QR codes at the gate on your phone screen
+            </p>
+          </div>
+          ${ticketCardsHtml}
+        </div>
+
+        <!-- Action CTAs -->
         <div style="text-align:center;margin:30px 0;display:flex;justify-content:center;gap:12px;flex-wrap:wrap;">
-          <a href="${link}" style="display:inline-block;padding:14px 28px;background:#EFEFF1;color:#14191E;font-weight:bold;border-radius:8px;text-decoration:none;font-size:14px;box-shadow:0 6px 16px rgba(0,0,0,0.3);">
-            View My Tickets &amp; QR Pass
+          <a href="${link}" style="display:inline-block;padding:14px 28px;background:#EFEFF1;color:#14191E;font-weight:bold;border-radius:10px;text-decoration:none;font-size:14px;box-shadow:0 6px 16px rgba(0,0,0,0.3);">
+            Open Live Pass in App
           </a>
-          <a href="${FRONTEND_URL}/receipt/${encodeURIComponent(order.reference || order.id)}" style="display:inline-block;padding:14px 28px;background:#242B32;color:#FFFFFF;font-weight:bold;border-radius:8px;text-decoration:none;font-size:14px;border:1px solid #494F55;">
+          <a href="${receiptLink}" style="display:inline-block;padding:14px 28px;background:#242B32;color:#FFFFFF;font-weight:bold;border-radius:10px;text-decoration:none;font-size:14px;border:1px solid #494F55;">
             Official Receipt
           </a>
         </div>
 
-        <div style="background:#1C232B;padding:16px;border-radius:10px;border:1px solid #363F48;margin-bottom:24px;">
+        <!-- Gate Tip Box -->
+        <div style="background:#1C232B;padding:16px 20px;border-radius:12px;border:1px solid #363F48;margin-bottom:24px;">
           <p style="margin:0;color:#CBD5E1;font-size:13px;line-height:1.5;">
-            <strong>Gate Admission Tip:</strong> Have your QR pass ready on your phone or printed before reaching the gate. The gate scanner will scan your code for instant entry.
+            <strong style="color:#FFFFFF;">Gate Entry Tip:</strong> Screenshot or save these QR passes before arriving at the venue in case mobile data is slow at the entrance. Each QR code is uniquely tied to your order and guarantees 1 entry.
           </p>
         </div>
 
-        <p style="color:#64748B;font-size:12px;line-height:1.5;margin-bottom:0;text-align:center;">
-          Questions about this event? Contact the event organizer via the event page or reach out to Tribes &amp; Cliqs support.
+        <p style="color:#64748B;font-size:12px;line-height:1.5;margin-bottom:0;text-align:center;border-top:1px solid #2B333B;padding-top:16px;">
+          Tribes &amp; Cliqs Ticketing &bull; Need help? Reach out to support@tribesandcliqs.com or message the event organizer on the event page.
         </p>
       </div>`,
-    text: `Order Confirmed! Your tickets for "${cleanTitle}" are ready.\n\nOrder Ref: ${cleanRef}\nTotal: ${cleanTotal}\nVenue: ${cleanVenue}\nDate: ${cleanDate}\n\nAccess your QR tickets here: ${link}\nOfficial Receipt: ${FRONTEND_URL}/receipt/${encodeURIComponent(order.reference || order.id)}`,
+    text: `Order Confirmed! Your tickets for "${cleanTitle}" are ready.\n\nOrder Ref: ${cleanRef}\nTotal Paid: ${cleanTotal}\nDate: ${cleanDate}${cleanTime ? ` at ${cleanTime}` : ''}\nVenue: ${cleanVenue}\n\nView Your Passes: ${link}\nOfficial Receipt: ${receiptLink}\n\nShow your ticket code at the gate: ${tickets.map((t) => t.ticket_number).join(', ')}`,
   });
 };
 
@@ -942,14 +1134,27 @@ export const sendTicketTransferEmail = async ({
   ticketNumber = '',
   ticketTier = 'General Admission',
   venue = 'Venue TBA',
+  address = '',
+  city = '',
   eventDate = 'Upcoming',
+  startTime = '',
+  qrCode = null,
+  seatNumber = null,
   ticketUrl = null,
 }) => {
   const link = ticketUrl || `${FRONTEND_URL}/my-tickets`;
   const cleanEvent = escapeHtml(eventTitle);
   const cleanSender = escapeHtml(senderName);
   const cleanRecipient = escapeHtml(recipientName);
-  const cleanVenue = escapeHtml(venue);
+  const fullVenue = [venue, address, city].filter(Boolean).join(', ') || 'Venue TBA';
+  const cleanVenue = escapeHtml(fullVenue);
+  const cleanDate = escapeHtml(eventDate);
+  const cleanTime = escapeHtml(startTime);
+
+  const qrData = encodeURIComponent(qrCode || ticketNumber);
+  const qrUrl = ticketNumber
+    ? `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${qrData}&margin=4`
+    : null;
 
   return sendEmail({
     to,
@@ -957,19 +1162,31 @@ export const sendTicketTransferEmail = async ({
     html: `
       <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:580px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
         <div style="text-align:center;margin-bottom:24px;">
-          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(239,239,241,0.12);color:#EFEFF1;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">Ticket Transferred</span>
+          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(239,239,241,0.12);color:#EFEFF1;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">
+            Ticket Transferred
+          </span>
         </div>
-        <h2 style="margin-top:0;color:#FFFFFF;text-align:center;font-size:22px;">You Got a Ticket!</h2>
+        <h2 style="margin-top:0;color:#FFFFFF;text-align:center;font-size:22px;">You Got a Ticket! 🎉</h2>
         <p style="color:#A1A1AA;line-height:1.6;font-size:15px;text-align:center;">
           Hi ${cleanRecipient}, <strong>${cleanSender}</strong> has transferred an official entry ticket to you for:
         </p>
 
         <div style="margin:24px 0;padding:24px;background:#1C232B;border-radius:14px;border:1px solid #363F48;">
           <h3 style="margin:0 0 12px 0;color:#FFFFFF;font-size:18px;">${cleanEvent}</h3>
-          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Ticket Tier:</strong> ${escapeHtml(ticketTier)}</p>
-          ${ticketNumber ? `<p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Ticket #:</strong> <code style="background:#111417;padding:3px 6px;border-radius:4px;font-family:monospace;color:#FBBF24;">${escapeHtml(ticketNumber)}</code></p>` : ''}
-          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Date:</strong> ${escapeHtml(eventDate)}</p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Pass Tier:</strong> ${escapeHtml(ticketTier)}</p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Date:</strong> ${cleanDate}${cleanTime ? ` at ${cleanTime}` : ''}</p>
           <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Venue:</strong> ${cleanVenue}</p>
+          ${seatNumber ? `<p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Seat:</strong> ${escapeHtml(seatNumber)}</p>` : ''}
+          ${ticketNumber ? `<p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Ticket Code:</strong> <code style="background:#242B32;padding:3px 6px;border-radius:4px;font-family:monospace;color:#FBBF24;">${escapeHtml(ticketNumber)}</code></p>` : ''}
+
+          ${qrUrl ? `
+            <div style="margin-top:20px;text-align:center;border-top:1px dashed #363F48;padding-top:18px;">
+              <div style="background:#FFFFFF;padding:12px;border-radius:10px;display:inline-block;box-shadow:0 4px 12px rgba(0,0,0,0.25);">
+                <img src="${qrUrl}" alt="Entry QR Code" width="160" height="160" style="display:block;margin:0 auto;border:0;" />
+              </div>
+              <p style="margin:10px 0 0 0;font-size:12px;color:#949599;">Show this QR code at the entrance for direct admission</p>
+            </div>
+          ` : ''}
         </div>
 
         <div style="text-align:center;margin:32px 0;">
@@ -982,7 +1199,85 @@ export const sendTicketTransferEmail = async ({
           Log into Tribes &amp; Cliqs with <strong>${escapeHtml(to)}</strong> to view, download, or present your entry QR code at the gates.
         </p>
       </div>`,
-    text: `You received a ticket from ${senderName} for "${eventTitle}"!\n\nTicket: ${ticketNumber}\nVenue: ${venue}\nDate: ${eventDate}\n\nAccess your ticket here: ${link}`,
+    text: `You received a ticket from ${senderName} for "${eventTitle}"!\n\nTicket: ${ticketNumber}\nVenue: ${fullVenue}\nDate: ${eventDate}\n\nAccess your ticket here: ${link}`,
+  });
+};
+
+/**
+ * Event Reminder Email sent to ticket holders before showtime.
+ */
+export const sendEventReminderEmail = async ({
+  to,
+  attendeeName = 'Attendee',
+  eventTitle = 'Live Event',
+  eventDate = 'Upcoming',
+  startTime = '',
+  venue = 'Venue TBA',
+  address = '',
+  city = '',
+  tickets = [],
+  eventId = null,
+}) => {
+  const cleanTitle = escapeHtml(eventTitle);
+  const cleanAttendee = escapeHtml(attendeeName);
+  const fullVenue = [venue, address, city].filter(Boolean).join(', ') || 'Venue TBA';
+  const cleanVenue = escapeHtml(fullVenue);
+  const cleanDate = escapeHtml(eventDate);
+  const cleanTime = escapeHtml(startTime);
+  const link = `${FRONTEND_URL}/my-tickets`;
+  const mapsUrl = buildGoogleMapsUrl(venue, address, city);
+
+  const ticketRows = Array.isArray(tickets) && tickets.length > 0
+    ? tickets.map((t, idx) => {
+        const ticketNum = t.ticket_number || t.code || `TC-${idx + 1}`;
+        const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(t.qr_code || ticketNum)}&margin=4`;
+        return `
+          <div style="background:#1C232B;border-radius:12px;border:1px solid #363F48;padding:16px;margin-bottom:12px;text-align:center;">
+            <div style="background:#FFFFFF;padding:10px;border-radius:8px;display:inline-block;">
+              <img src="${qrUrl}" alt="QR Pass" width="140" height="140" style="display:block;margin:0 auto;border:0;" />
+            </div>
+            <p style="margin:8px 0 0 0;font-family:monospace;font-size:14px;color:#FBBF24;font-weight:bold;">${escapeHtml(ticketNum)}</p>
+            <p style="margin:2px 0 0 0;color:#CBD5E1;font-size:12px;">${escapeHtml(t.tier || t.tier_name || 'Pass')}</p>
+          </div>
+        `;
+      }).join('')
+    : '';
+
+  return sendEmail({
+    to,
+    subject: `⏰ Reminder: "${cleanTitle}" is coming up! (${cleanDate})`,
+    html: `
+      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:580px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
+        <div style="text-align:center;margin-bottom:20px;">
+          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(245,158,11,0.15);color:#FBBF24;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">
+            Event Reminder
+          </span>
+        </div>
+        <h2 style="margin-top:0;color:#FFFFFF;text-align:center;font-size:22px;">Get Ready for ${cleanTitle}! 🎉</h2>
+        <p style="color:#A1A1AA;line-height:1.6;font-size:15px;text-align:center;">
+          Hi ${cleanAttendee}, your event is just around the corner. Here are your event details and entry passes.
+        </p>
+
+        <div style="margin:24px 0;padding:22px;background:#1C232B;border-radius:14px;border:1px solid #363F48;">
+          <h3 style="margin:0 0 10px 0;color:#FFFFFF;font-size:18px;">${cleanTitle}</h3>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Date:</strong> ${cleanDate}${cleanTime ? ` at ${cleanTime}` : ''}</p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Venue:</strong> ${cleanVenue}</p>
+          ${mapsUrl ? `<div style="margin-top:12px;"><a href="${mapsUrl}" target="_blank" style="color:#10B981;font-size:13px;text-decoration:none;font-weight:bold;">&#128205; View Venue on Google Maps &rarr;</a></div>` : ''}
+        </div>
+
+        ${ticketRows ? `<div style="margin:20px 0;">${ticketRows}</div>` : ''}
+
+        <div style="text-align:center;margin:28px 0;">
+          <a href="${link}" style="display:inline-block;padding:12px 28px;background:#EFEFF1;color:#14191E;font-weight:bold;border-radius:8px;text-decoration:none;font-size:14px;">
+            Open Live Pass in App
+          </a>
+        </div>
+
+        <p style="color:#64748B;font-size:12px;line-height:1.5;margin-bottom:0;text-align:center;border-top:1px solid #2B333B;padding-top:16px;">
+          Have your ticket QR code ready when arriving at the gate. Enjoy the experience!
+        </p>
+      </div>`,
+    text: `Reminder: "${eventTitle}" is coming up on ${eventDate}${startTime ? ` at ${startTime}` : ''} at ${fullVenue}!\n\nAccess your passes: ${link}`,
   });
 };
 
