@@ -1951,49 +1951,69 @@ INSTRUCTIONS:
       ? `IMPORTANT VOICE CONCIERGE DIRECTIVE: The user is speaking directly to you via microphone. Respond strictly in a warm, friendly, natural human conversational voice as if speaking to a friend on the phone (1 to 2 sentences max). Never say you are an AI, a bot, or a language model. Absolutely NO markdown bolding (**), asterisks (*), bullet points (•), brackets, or raw code. Say 'Ghana Cedis' instead of 'GHS', and 'VIP' or 'V.V.I.P.' instead of raw abbreviations.`
       : `Tone: Warm, efficient, polite, concise (2-3 sentences max).\nDo NOT use emojis in raw text output.`;
 
+    const dynamicKnowledgeItems = (aiContext.knowledge || []).filter((k) => k.instruction_or_answer);
+    const dynamicKnowledgeText = dynamicKnowledgeItems.length > 0
+      ? `\nDYNAMIC TRAINED PLATFORM KNOWLEDGE BASE (${dynamicKnowledgeItems.length} verified rules):\n` +
+        dynamicKnowledgeItems.map((k) => `• [${(k.category || 'FAQ').toUpperCase()}] ${k.title}: ${k.instruction_or_answer}`).join('\n')
+      : '';
+
+    const customDirectives = aiContext.customInstructions?.trim()
+      ? `\nADMINISTRATIVE DIRECTIVES & SYSTEM OVERRIDES:\n${aiContext.customInstructions.trim()}\n`
+      : '';
+
     const systemInstruction = `You are the master concierge and assistant for the Tribes & Cliqs platform in Ghana.
 Motto: Tell Cliq what you want, and Cliq handles the rest.
 ${voiceToneRule}
 You speak in a warm, polite, conversational human tone. Never announce yourself as a robot or AI.
-
+${customDirectives}
 COMPREHENSIVE TRIBES & CLIQS PLATFORM KNOWLEDGE BASE:
 1. EVENT DISCOVERY & TICKETS:
    - Discover concerts, parties, raves, festivals, comedy shows, and cultural events across Ghana (Accra, Kumasi, Takoradi, etc.).
    - Categories: Music, Nightlife, Festivals, Comedy, Food & Drink, Arts & Culture, Tech, Sports.
-   - Popular venues: Untamed Empire, Polo Beach Club, Black Star Square, National Theatre, Fantasy Dome, Accra Sports Stadium, Baba Yara.
-   - Ticket tiers: VIP, VVIP, Early Bird, Regular/Standard, Tables.
+   - Popular venues: Untamed Empire, Polo Beach Club, Black Star Square, National Theatre, Fantasy Dome, Accra Sports Stadium, Baba Yara Stadium, Grand Arena.
+   - Ticket tiers: VIP, VVIP, Early Bird, Regular/Standard, Tables (Cabana, Table of 4, Table of 6).
    - Real-time stock, 10-minute reservation holds during checkout.
    - Digital encrypted QR entry passes viewable offline in the "Tickets" tab and sent via email/SMS.
+   - Single ticket purchases display a single admission ticket pass centered post-checkout.
 2. PAYMENTS & CHECKOUT:
    - Processed securely via Paystack in Ghana Cedis (GHS).
-   - Supported methods: MTN Mobile Money (MoMo), Telecel Cash, AT Money, and Visa/Mastercard.
-   - MoMo flow: after placing an order, approve the USSD prompt on your phone with your Mobile Money PIN.
+   - Supported methods: MTN Mobile Money (MoMo), Telecel Cash, AT Money, and Visa/Mastercard debit and credit cards.
+   - MoMo flow: after placing an order, approve the USSD push prompt on your phone with your Mobile Money PIN.
 3. ORGANIZER SERVICES & HOSTING:
-   - Anyone can become an event organizer.
+   - Anyone can become an event organizer on Tribes & Cliqs.
    - 2-Step Publishing Workflow: Step 1 is to create event details (title, dates, venue, banner) and publish it. Step 2 is to configure Ticket Tiers (prices, capacities, perks) on the Tickets management page (/organizer/tickets).
-   - Gate Entry & QR Scanner (/check-in): Organizers and bouncers use the high-speed camera scanner inside the app to validate attendee QR codes at the door in under 1 second with duplicate prevention.
-   - Sales & Payouts: Track real-time ticket revenue and request withdrawals directly to Mobile Money or bank accounts.
+   - Gate Entry & QR Scanner (/check-in): Organizers and door staff use the built-in camera scanner inside the app to validate attendee QR codes at the door in under 1 second with duplicate prevention.
+   - Attendee list: View registered guests and export attendee lists to CSV or Excel.
+   - Sales & Payouts: Track real-time ticket revenue and request withdrawals directly to Mobile Money or bank accounts within 24-48 hours.
 4. TICKET TRANSFERS & RESALE MARKETPLACE:
    - Free peer-to-peer transfers: Revokes the original QR pass immediately and generates a brand new, secure QR pass for the recipient.
-   - Verified Secondary Resale: Official anti-scalping resale marketplace with fair-price caps. When sold, the seller receives instant payout and the buyer gets a valid entry pass.
-5. REFUNDS & POLICIES:
-   - Evaluated based on organizer policies before the event cut-off. If an event is cancelled by the organizer, automatic 100% full refunds are issued to the original payment method. Alternatively, users can list tickets on the resale marketplace.
-6. USER ACCOUNT:
+   - Verified Secondary Resale: Official anti-scalping resale marketplace with fair-price caps (cannot exceed original face value). When sold, the seller receives instant payout and the buyer gets a valid entry pass.
+5. REFUNDS & CANCELLATION POLICIES:
+   - Evaluated based on organizer policies before the event cut-off.
+   - If an event is cancelled by the organizer, automatic 100% full refunds are issued to the original payment method. Alternatively, users can list tickets on the resale marketplace.
+6. SQUAD CHATS & SOCIAL COORDINATION:
+   - Coordinate with friends attending the same event via Squad Chats.
+   - Easy social sharing via WhatsApp, Instagram Stories, X (Twitter), or direct copying of event links.
+7. VENUE GUIDELINES & DRESS CODES:
+   - Dress code guidelines (Smart Casual, All White, Rave, Traditional, Streetwear) configured per event.
+   - Age limits (18+, All Ages) and venue safety instructions clearly outlined.
+8. USER ACCOUNT & SECURITY:
    - View past orders, booking receipts, and payment transactions in Orders (/orders or /attendee/bookings).
    - Saved and bookmarked events in Saved (/saved).
    - Profile settings, role switching, and account security in Profile (/profile).
-7. CUSTOMER SUPPORT:
+9. CUSTOMER SUPPORT:
    - Support Email: support@tribesandcliqs.com.
    - Immediate assistance for gate entry issues, double payments, or transfer questions.
+${dynamicKnowledgeText}
 
 RESPONSE FORMAT:
 You MUST respond strictly with valid JSON conforming to this schema:
 {
   "reply": "Your warm, natural, human response addressing the user's inquiry thoroughly.",
-  "intent": "SEARCH_EVENTS" | "ORGANIZER_GUIDE" | "CHECKIN_SCANNER" | "PAYMENT_INFO" | "TRANSFER_TICKET" | "RESALE_MARKETPLACE" | "ACCOUNT_MANAGEMENT" | "CUSTOMER_SUPPORT" | "GENERAL_CHAT",
+  "intent": "SEARCH_EVENTS" | "ORGANIZER_GUIDE" | "CHECKIN_SCANNER" | "PAYMENT_INFO" | "TRANSFER_TICKET" | "RESALE_MARKETPLACE" | "VENUE_POLICY" | "SQUAD_SOCIAL" | "EVENT_REMINDERS" | "ACCOUNT_MANAGEMENT" | "CUSTOMER_SUPPORT" | "GENERAL_CHAT",
   "showEvents": true or false
 }
-IMPORTANT: Set "showEvents": true ONLY when the user is explicitly searching for, discovering, or buying event passes. For system guidance, organizer queries, payments, check-in, transfers, or platform help, set "showEvents": false so unrelated concert listings are not pushed.
+IMPORTANT: Set "showEvents": true ONLY when the user is explicitly searching for, discovering, or buying event passes. For system guidance, organizer queries, payments, check-in, transfers, dress codes, or platform help, set "showEvents": false so unrelated concert listings are not pushed.
 
 Current User: ${user ? `${user.name} (${user.email}, role: ${user.role || 'attendee'})` : 'Guest User'}.
 Live Available Events in Database:
@@ -2011,21 +2031,86 @@ ${liveEventsSummary || 'None'}`;
       showEvents = geminiRes.showEvents === true;
       returnedIntent = geminiRes.intent || (showEvents ? 'SEARCH_EVENTS' : 'GENERAL_CHAT');
     } else {
-      const isDiscovery =
-        lower.includes('event') ||
-        lower.includes('concert') ||
-        lower.includes('party') ||
-        lower.includes('rave') ||
-        lower.includes('festival') ||
-        lower.includes('weekend') ||
-        lower.includes('ticket');
-      showEvents = isDiscovery;
-      returnedIntent = isDiscovery ? 'SEARCH_EVENTS' : 'GENERAL_CHAT';
-      const cityLabel = reqCity ? ` in ${reqCity}` : '';
-      const timeLabel = startDate && endDate ? (startDate === endDate ? ` on ${startDate}` : ' this weekend') : '';
-      replyText = showEvents && mappedEventCards.length > 0
-        ? `I found ${mappedEventCards.length} events${cityLabel}${timeLabel}. Here are the closest matches:`
-        : `I'm here to help you with events, tickets, hosting, transfers, payments, and everything across Tribes & Cliqs! How can I assist you right now?`;
+      // ─── LOCAL TRAINED KNOWLEDGE BASE & INTENT FALLBACK ENGINE ───
+      let matchedKnowledge = null;
+      for (const item of dynamicKnowledgeItems) {
+        const titleMatch = lower.includes((item.title || '').toLowerCase());
+        const keys = (item.keywords || '').toLowerCase().split(',').map((k) => k.trim()).filter(Boolean);
+        const keyMatch = keys.some((k) => lower.includes(k));
+        if (titleMatch || keyMatch) {
+          matchedKnowledge = item;
+          break;
+        }
+      }
+
+      if (matchedKnowledge) {
+        replyText = matchedKnowledge.instruction_or_answer;
+        showEvents = false;
+        returnedIntent = matchedKnowledge.category === 'organizer'
+          ? 'ORGANIZER_GUIDE'
+          : matchedKnowledge.category === 'payments'
+          ? 'PAYMENT_INFO'
+          : matchedKnowledge.category === 'ticketing'
+          ? 'TRANSFER_TICKET'
+          : 'GENERAL_CHAT';
+      } else {
+        const voicePred = voiceModel.predict(processedMessage, false);
+        const isDiscovery =
+          voicePred.intent === 'SEARCH_EVENTS' ||
+          lower.includes('event') ||
+          lower.includes('concert') ||
+          lower.includes('party') ||
+          lower.includes('rave') ||
+          lower.includes('festival') ||
+          lower.includes('weekend') ||
+          lower.includes('ticket');
+
+        if (isDiscovery) {
+          showEvents = true;
+          returnedIntent = 'SEARCH_EVENTS';
+          const cityLabel = reqCity ? ` in ${reqCity}` : '';
+          const timeLabel = startDate && endDate ? (startDate === endDate ? ` on ${startDate}` : ' this weekend') : '';
+          replyText = mappedEventCards.length > 0
+            ? `I found ${mappedEventCards.length} events${cityLabel}${timeLabel}. Here are the closest matches:`
+            : `I couldn't find any events matching that right now. Browse our full explore list below!`;
+        } else if (voicePred.intent === 'ORGANIZER_GUIDE') {
+          showEvents = false;
+          returnedIntent = 'ORGANIZER_GUIDE';
+          replyText = "To host an event on Tribes & Cliqs, create and publish your event first. Once published, add your ticket tiers with pricing and capacities on the Tickets management page. You can scan guest QR codes at the gate and withdraw payouts to Mobile Money.";
+        } else if (voicePred.intent === 'CHECKIN_SCANNER') {
+          showEvents = false;
+          returnedIntent = 'CHECKIN_SCANNER';
+          replyText = "Organizers and door staff can scan digital QR passes instantly using our built-in camera scanner. It verifies ticket authenticity in real-time and prevents duplicate entries.";
+        } else if (voicePred.intent === 'PAYMENT_INFO') {
+          showEvents = false;
+          returnedIntent = 'PAYMENT_INFO';
+          replyText = "We accept MTN Mobile Money, Telecel Cash, AT Money, and Visa or Mastercard in Ghana Cedis through Paystack. When paying with Mobile Money, approve the USSD prompt on your phone with your PIN.";
+        } else if (voicePred.intent === 'TRANSFER_TICKET') {
+          showEvents = false;
+          returnedIntent = 'TRANSFER_TICKET';
+          replyText = "You can easily transfer a ticket to a friend! Go to My Tickets, tap Transfer, and enter their email or phone. Their new unique QR code will be generated immediately.";
+        } else if (voicePred.intent === 'RESALE_MARKETPLACE') {
+          showEvents = false;
+          returnedIntent = 'RESALE_MARKETPLACE';
+          replyText = "Tribes & Cliqs has a verified ticket resale marketplace. If you cannot attend, list your ticket at face value. When bought, your old pass is cancelled, a new pass is given to the buyer, and you get paid instantly.";
+        } else if (voicePred.intent === 'VENUE_POLICY') {
+          showEvents = false;
+          returnedIntent = 'VENUE_POLICY';
+          replyText = "Each event displays specific dress code, age limit, and venue parking instructions. Check the event details page for complete gate security guidelines.";
+        } else if (voicePred.intent === 'SQUAD_SOCIAL') {
+          showEvents = false;
+          returnedIntent = 'SQUAD_SOCIAL';
+          replyText = "Squad chats let you coordinate with friends attending the same show. You can also share events directly to WhatsApp, Instagram, or Twitter.";
+        } else if (voicePred.intent === 'CUSTOMER_SUPPORT') {
+          showEvents = false;
+          returnedIntent = 'CUSTOMER_SUPPORT';
+          replyText = "Our customer care team is available to help. You can email us at support@tribesandcliqs.com for immediate assistance.";
+        } else {
+          showEvents = false;
+          returnedIntent = 'GENERAL_CHAT';
+          replyText = `I'm here to help you with events, tickets, hosting, transfers, payments, and everything across Tribes & Cliqs! How can I assist you right now?`;
+        }
+      }
     }
 
     const actionsToReturn = showEvents

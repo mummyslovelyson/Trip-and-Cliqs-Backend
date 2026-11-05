@@ -11,7 +11,7 @@ import {
   sendAnnouncement, getAdminAnnouncements, getNotificationTemplates, getAdminNotifications, markAdminNotificationsRead, deleteAdminNotification, getAuditLogs, getSystemSettings, updateSystemSettings,
   testEmailSetting, testSmsSetting, getSmsBalanceSetting, testPaystackSetting,
   getContentPages, createContentPage, updateContentPage, deleteContentPage,
-  getAITrainingData, createAIKnowledgeItem, updateAIKnowledgeItem, deleteAIKnowledgeItem, updateAISettings, testAIPrompt,
+  getAITrainingData, createAIKnowledgeItem, updateAIKnowledgeItem, deleteAIKnowledgeItem, updateAISettings, testAIPrompt, seedAdvanceTrainingData,
   getVoiceModelData, trainVoiceModel, updateVoiceModelSettings, createVoicePronunciationRule, deleteVoicePronunciationRule, createVoiceTrainingSample, deleteVoiceTrainingSample, testVoiceModel,
   getBotConversations, deleteBotConversation,
   getMobileAppConfig, updateMobileAppSettings, createMobileAppBanner, updateMobileAppBanner, deleteMobileAppBanner,
@@ -138,6 +138,7 @@ router.post('/settings/test-paystack', authorize('admin', 'system_admin', 'super
 router.get('/settings/sms-balance', authorize('admin', 'system_admin', 'superadmin'), getSmsBalanceSetting);
 // AI Model Training & Knowledge Management
 router.get('/ai/knowledge', getAITrainingData);
+router.post('/ai/seed-defaults', writeLimiter, seedAdvanceTrainingData);
 router.post('/ai/knowledge', writeLimiter, createAIKnowledgeItem);
 router.put('/ai/knowledge/:id', writeLimiter, updateAIKnowledgeItem);
 router.delete('/ai/knowledge/:id', destructiveLimiter, deleteAIKnowledgeItem);

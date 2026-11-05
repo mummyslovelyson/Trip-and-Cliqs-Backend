@@ -7,7 +7,7 @@ import {
   sendSupportTicketReplyEmail, sendSupportTicketResolvedEmail,
 } from '../utils/email.js';
 import { sendSMS } from '../utils/sms.js';
-import { getSmsApiKey, getPaystackSecretKey, clearSettingsCache } from '../utils/settings.js';
+import { getSmsApiKey, getPaystackSecretKey, clearSettingsCache, getGeminiApiKey } from '../utils/settings.js';
 import { logAudit } from '../utils/audit.js';
 import { validatePassword } from '../utils/password.js';
 import { refundTransaction } from '../utils/paystack.js';
@@ -3492,6 +3492,159 @@ export const createAdminUser = async (req, res) => {
 /* ------------------------------------------------------------------ */
 /* AI Training & Knowledge Management                                 */
 /* ------------------------------------------------------------------ */
+export const COMPREHENSIVE_PLATFORM_KNOWLEDGE = [
+  {
+    title: 'Organizer 2-Step Publishing Workflow',
+    category: 'organizer',
+    keywords: 'create event, publish event, add tickets, organizer workflow, how to host, step by step',
+    instruction_or_answer: 'To host an event on Tribes & Cliqs, you must follow the 2-step publishing flow: Step 1: Create your event details (title, dates, venue, category, and banner image) and publish it. Step 2: Once published, go to Tickets (/organizer/tickets) to add ticket tiers (VIP, Regular, Table) with custom prices and capacities. You cannot add tickets until the event is published.',
+  },
+  {
+    title: 'Organizer Ticket Tiers & Pricing Configuration',
+    category: 'organizer',
+    keywords: 'ticket tiers, ticket pricing, vip, regular, table, early bird, capacity, pause sales',
+    instruction_or_answer: 'Organizers can configure multiple ticket tiers for any published event: Regular, VIP, VVIP, Early Bird (with discount cutoffs), and Table reservations (Cabanas, Table of 4, Table of 6). You can set custom capacities, descriptions, and pause sales at any time from the Tickets management page.',
+  },
+  {
+    title: 'Gate Check-In & High-Speed QR Scanner',
+    category: 'organizer',
+    keywords: 'scan tickets, gate scanner, bouncer, door staff, check in, qr scanner, admissions, anti duplicate',
+    instruction_or_answer: 'Organizers and door security staff use our built-in camera scanner at /organizer/check-in to validate attendee digital passes in under 1 second. Each ticket features a cryptographically signed QR code that prevents duplicate entry. If an attendee phone is discharged or broken, staff can search by ticket number or name.',
+  },
+  {
+    title: 'Organizer Payouts & Revenue Withdrawals',
+    category: 'organizer',
+    keywords: 'payout, withdraw sales, organizer earnings, momo withdrawal, bank payout, revenue',
+    instruction_or_answer: 'Ticket sales revenue is calculated in real time. Organizers can request payouts directly to MTN Mobile Money, Telecel Cash, or direct Ghanaian bank accounts via the Payouts dashboard (/organizer/payouts). Withdrawals are verified and processed within 24 to 48 hours.',
+  },
+  {
+    title: 'Export Attendee Guest Lists',
+    category: 'organizer',
+    keywords: 'export attendees, download guest list, csv export, attendee list, check-in report',
+    instruction_or_answer: 'Organizers can view confirmed guest registrations and export complete attendee reports to CSV or Excel from the Event Management dashboard to coordinate with gate staff, security, or event sponsors.',
+  },
+  {
+    title: 'Digital QR Entry Passes & Offline Wallet',
+    category: 'ticketing',
+    keywords: 'my tickets, qr pass, entry pass, barcode, digital pass, wallet, offline ticket',
+    instruction_or_answer: 'Every ticket purchased is automatically minted and stored in your digital wallet under My Tickets (/attendee/tickets). The high-resolution QR pass works completely offline, so you can enter the venue even if your phone has no active mobile data.',
+  },
+  {
+    title: 'Single Ticket Post-Payment Focused Layout',
+    category: 'ticketing',
+    keywords: 'single ticket, one ticket, post payment, callback, admission pass',
+    instruction_or_answer: 'When you purchase a single ticket, your confirmation screen displays a single, focused admission pass titled "Your Digital Admission Ticket" with zero clutter or duplicate cards. Multi-ticket orders display your complete ticket bundle.',
+  },
+  {
+    title: '10-Minute Cart Reservation Hold',
+    category: 'ticketing',
+    keywords: 'reservation hold, 10 minutes, cart timer, countdown, hold ticket, booking hold',
+    instruction_or_answer: 'During checkout, your chosen tickets are temporarily held for 10 minutes with an active countdown timer. This guarantees your tickets will not be sold to anyone else while you complete your Mobile Money or Card payment.',
+  },
+  {
+    title: 'Free Peer-to-Peer Ticket Transfers',
+    category: 'ticketing',
+    keywords: 'transfer ticket, send to friend, gift ticket, give ticket, share pass, transfer to email',
+    instruction_or_answer: 'You can transfer any active ticket pass to a friend for free! Open My Tickets, select the pass, tap "Transfer", and enter their email or phone number. The original QR code is instantly revoked and a fresh, secure pass is delivered to your recipient.',
+  },
+  {
+    title: 'Verified Resale Marketplace & Fair Price Caps',
+    category: 'ticketing',
+    keywords: 'resell ticket, resale marketplace, can’t attend, buy resale, sell pass, anti-scalping',
+    instruction_or_answer: 'If you cannot attend, list your ticket on our official verified resale marketplace at /explore?filter=resale. To protect fans from scalping, prices are capped at original face value. When purchased, you receive instant payout and the buyer gets a freshly minted QR pass.',
+  },
+  {
+    title: 'Mobile Money Payments (MTN MoMo, Telecel Cash, AT Money)',
+    category: 'payments',
+    keywords: 'payment, momo, mtn momo, telecel cash, at money, ussd prompt, pin, how to pay',
+    instruction_or_answer: 'All payments are processed securely in Ghana Cedis (GHS) via Paystack. For Mobile Money, enter your phone number at checkout and an instant USSD push prompt will appear on your phone. Enter your Mobile Money PIN to authorize the payment.',
+  },
+  {
+    title: 'Card Payments (Visa, Mastercard, Verve)',
+    category: 'payments',
+    keywords: 'visa, mastercard, debit card, credit card, paystack, bank card payment',
+    instruction_or_answer: 'We accept all Visa, Mastercard, and Verve debit and credit cards worldwide through Paystack with 3D-Secure 256-bit encryption for maximum transaction safety.',
+  },
+  {
+    title: 'Official Invoices & Tax Receipts',
+    category: 'payments',
+    keywords: 'receipt, tax receipt, vat invoice, download receipt, proof of payment, order invoice',
+    instruction_or_answer: 'Official receipts and tax invoices are automatically generated for every completed transaction. You can view, print, or download your PDF receipt anytime under Orders or My Tickets by tapping "Receipt".',
+  },
+  {
+    title: 'Payment Verification & Pending Checkouts',
+    category: 'payments',
+    keywords: 'verify payment, payment pending, money deducted, momo approved, confirm payment',
+    instruction_or_answer: 'If your Mobile Money prompt was approved but your pass hasn\'t appeared, click "Verify Payment" on your booking card or visit your orders page. Our system performs an instant server check with Paystack to synchronize your order.',
+  },
+  {
+    title: 'Automatic Full Refunds on Event Cancellation',
+    category: 'faq',
+    keywords: 'refund, cancelled event, postponed event, money back, refund policy',
+    instruction_or_answer: 'If an event is cancelled or called off by the organizer, you will receive an automatic 100% full refund credited back to your original Mobile Money wallet or bank card. For other cases, refunds are subject to organizer policy or you can resell your ticket on the marketplace.',
+  },
+  {
+    title: 'Squad Chats & Social Event Coordination',
+    category: 'faq',
+    keywords: 'squad chat, friends, group booking, social sharing, chat with attendees',
+    instruction_or_answer: 'Tribes & Cliqs features Squad Chats for group coordination with friends attending the same concert or festival. You can also share events directly to WhatsApp, Instagram Stories, X (Twitter), or copy shareable event links.',
+  },
+  {
+    title: 'Venue Guidelines, Directions & Parking',
+    category: 'venue_policy',
+    keywords: 'venue directions, parking, untamed empire, polo beach, black star square, national theatre, accra sports stadium',
+    instruction_or_answer: 'Each event page lists exact venue details, addresses, and map pins across Accra, Kumasi, and Takoradi. Check event descriptions for on-site parking availability and VIP valet services.',
+  },
+  {
+    title: 'Dress Codes & Venue Entry Rules',
+    category: 'venue_policy',
+    keywords: 'dress code, all white, rave, smart casual, traditional, streetwear, gate rules',
+    instruction_or_answer: 'Event organizers configure specific dress codes (e.g. All White, Smart Casual, High Fashion, Beachwear, Rave). Adhering to the specified dress code is required for venue entry as enforced by venue security.',
+  },
+  {
+    title: 'Age Limits & Gate Identification',
+    category: 'venue_policy',
+    keywords: 'age limit, 18+, all ages, family friendly, id required, ghana card, passport',
+    instruction_or_answer: 'Nightclub and rave events are strictly 18+ and require government ID (Ghana Card, Passport, or Driver’s License) at the door. Family and cultural festivals are open to all ages as specified on the event card.',
+  },
+  {
+    title: 'Interactive Seating Maps & Table Reservations',
+    category: 'venue_policy',
+    keywords: 'seating map, seat layout, table reservation, cabana, vip table, booth',
+    instruction_or_answer: 'For table reservations and seated auditoriums, browse the interactive seat map on the event page to select your preferred table layout (Cabana, Front Row VIP, Tables for 4 or 6) before checking out.',
+  },
+  {
+    title: 'Emergency Gate Assistance & Discharged Phones',
+    category: 'faq',
+    keywords: 'gate emergency, dead phone, broken screen, bouncer issue, invalid ticket, door help',
+    instruction_or_answer: 'If your phone battery dies or your screen is damaged at the gate, don\'t panic. Present your valid national ID and phone number to the gate staff, who can locate your booking and admit you via the manual check-in override.',
+  },
+  {
+    title: 'Customer Care & Human Support Escalation',
+    category: 'faq',
+    keywords: 'customer care, support team, email support, talk to human, contact support, help desk',
+    instruction_or_answer: 'Our customer support team is on standby to assist with urgent gate issues, transaction questions, or organizer onboarding. Email us directly at support@tribesandcliqs.com.',
+  },
+  {
+    title: 'Account Security & Email Verification',
+    category: 'custom',
+    keywords: 'verify email, change password, reset password, account security, profile update',
+    instruction_or_answer: 'To keep your tickets and wallet safe, always verify your email address. You can update your profile name, phone number, and password anytime under Profile Settings (/profile).',
+  },
+  {
+    title: 'Early-Bird Discounts & Capacity Alerts',
+    category: 'promotion',
+    keywords: 'early bird discount, promo, discount price, ticket discount, limited offer',
+    instruction_or_answer: 'Early-Bird tickets offer limited-time discounts that expire when the deadline date passes or when the allocated batch sells out. Secure them early to lock in the lowest price.',
+  },
+  {
+    title: 'Becoming an Organizer & Account Switching',
+    category: 'organizer',
+    keywords: 'become an organizer, organizer account, switch role, host parties, event planner',
+    instruction_or_answer: 'Any registered user can apply to become an organizer directly from their profile. Once approved, you gain access to the Organizer Dashboard to create events, configure ticket tiers, scan passes, and track revenue.',
+  },
+];
+
 export const getAITrainingData = async (_req, res) => {
   try {
     // Ensure table exists safely
@@ -3508,9 +3661,22 @@ export const getAITrainingData = async (_req, res) => {
       )
     `);
 
-    const [items] = await pool.execute(
+    let [items] = await pool.execute(
       `SELECT * FROM ai_training_knowledge ORDER BY id DESC`
     );
+
+    // Auto-seed comprehensive system knowledge if empty
+    if (!items || items.length === 0) {
+      for (const item of COMPREHENSIVE_PLATFORM_KNOWLEDGE) {
+        await pool.execute(
+          `INSERT INTO ai_training_knowledge (title, category, keywords, instruction_or_answer, is_active)
+           VALUES (?, ?, ?, ?, TRUE)`,
+          [item.title, item.category, item.keywords, item.instruction_or_answer]
+        );
+      }
+      const [seeded] = await pool.execute(`SELECT * FROM ai_training_knowledge ORDER BY id DESC`);
+      items = seeded || [];
+    }
 
     // Fetch custom system instruction & temperature from system_settings
     const [settings] = await pool.execute(
@@ -3530,6 +3696,65 @@ export const getAITrainingData = async (_req, res) => {
   } catch (err) {
     console.error('[adminController.getAITrainingData]', err);
     res.status(500).json({ message: 'Failed to fetch AI training data' });
+  }
+};
+
+export const seedAdvanceTrainingData = async (req, res) => {
+  try {
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS ai_training_knowledge (
+        id                      BIGSERIAL PRIMARY KEY,
+        title                   VARCHAR(255) NOT NULL,
+        category                VARCHAR(100) NOT NULL DEFAULT 'faq',
+        keywords                TEXT,
+        instruction_or_answer   TEXT NOT NULL,
+        is_active               BOOLEAN DEFAULT TRUE,
+        created_at              TIMESTAMPTZ DEFAULT NOW(),
+        updated_at              TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+
+    let addedCount = 0;
+    const [existing] = await pool.execute(`SELECT title FROM ai_training_knowledge`);
+    const existingTitles = new Set((existing || []).map((e) => (e.title || '').toLowerCase().trim()));
+
+    for (const item of COMPREHENSIVE_PLATFORM_KNOWLEDGE) {
+      if (!existingTitles.has(item.title.toLowerCase().trim())) {
+        await pool.execute(
+          `INSERT INTO ai_training_knowledge (title, category, keywords, instruction_or_answer, is_active)
+           VALUES (?, ?, ?, ?, TRUE)`,
+          [item.title, item.category, item.keywords, item.instruction_or_answer]
+        );
+        addedCount++;
+      }
+    }
+
+    // Retrain voice intent model with default and database samples
+    const [samples] = await pool.execute(
+      `SELECT text, intent FROM voice_training_samples WHERE is_active = TRUE`
+    );
+    const dataset = (samples || []).map((s) => ({ text: s.text, intent: s.intent }));
+    const trainResult = voiceModel.train(dataset.length > 0 ? dataset : DEFAULT_TRAINING_SAMPLES);
+
+    await logAudit({
+      userId: req.user?.id,
+      action: 'seed_advance_ai_training',
+      entityType: 'ai_training_knowledge',
+      details: { addedKnowledgeItems: addedCount, voiceMetrics: trainResult },
+    });
+
+    const [allKnowledge] = await pool.execute(`SELECT * FROM ai_training_knowledge ORDER BY id DESC`);
+
+    res.json({
+      message: `Advance system training synced! Seeded ${addedCount} new knowledge articles and retrained neural intent model (${Math.round(trainResult.accuracy * 100)}% accuracy).`,
+      addedCount,
+      totalKnowledge: allKnowledge?.length || 0,
+      knowledge: allKnowledge || [],
+      voiceMetrics: trainResult,
+    });
+  } catch (err) {
+    console.error('[adminController.seedAdvanceTrainingData]', err);
+    res.status(500).json({ message: 'Failed to advance train model' });
   }
 };
 
@@ -3699,35 +3924,39 @@ Live Published Events:
 ${eventsSummary}
 `;
 
-    const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+    const GEMINI_API_KEY = (await getGeminiApiKey()) || process.env.GEMINI_API_KEY || '';
     if (GEMINI_API_KEY) {
-      try {
-        const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{ role: 'user', parts: [{ text: testQuery }] }],
-              systemInstruction: { parts: [{ text: prompt }] },
-              generationConfig: { temperature: Number(temperature), maxOutputTokens: 250 },
-            }),
-            signal: AbortSignal.timeout(8000),
-          }
-        );
+      const testModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-2.0-flash-lite'];
+      for (const m of testModels) {
+        try {
+          const geminiRes = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${GEMINI_API_KEY}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                contents: [{ role: 'user', parts: [{ text: testQuery }] }],
+                systemInstruction: { parts: [{ text: prompt }] },
+                generationConfig: { temperature: Number(temperature), maxOutputTokens: 250 },
+              }),
+              signal: AbortSignal.timeout(8000),
+            }
+          );
 
-        if (geminiRes.ok) {
-          const geminiData = await geminiRes.json();
-          const reply = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (reply) {
-            return res.json({
-              reply: reply.trim(),
-              contextUsed: { knowledgeCount: items?.length || 0, eventsCount: events?.length || 0 },
-            });
+          if (geminiRes.ok) {
+            const geminiData = await geminiRes.json();
+            const reply = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (reply) {
+              return res.json({
+                reply: reply.trim(),
+                model: m,
+                contextUsed: { knowledgeCount: items?.length || 0, eventsCount: events?.length || 0 },
+              });
+            }
           }
+        } catch (geminiError) {
+          console.warn(`[testAIPrompt] ${m} attempt failed:`, geminiError.message);
         }
-      } catch (geminiError) {
-        console.warn('[testAIPrompt] Gemini API returned error, falling back to trained knowledge base:', geminiError.message);
       }
     }
 
@@ -4514,7 +4743,7 @@ export default {
   getSupportTickets, getSupportTicket, respondToSupportTicket, closeSupportTicket, resolveSupportTicket,
   sendAnnouncement, getAdminAnnouncements, getNotificationTemplates, getAdminNotifications, markAdminNotificationsRead, deleteAdminNotification, getAuditLogs, getSystemSettings, updateSystemSettings,
   getContentPages, createContentPage, updateContentPage, deleteContentPage,
-  getAITrainingData, createAIKnowledgeItem, updateAIKnowledgeItem, deleteAIKnowledgeItem, updateAISettings, testAIPrompt,
+  getAITrainingData, createAIKnowledgeItem, updateAIKnowledgeItem, deleteAIKnowledgeItem, updateAISettings, testAIPrompt, seedAdvanceTrainingData,
   getVoiceModelData, trainVoiceModel, updateVoiceModelSettings, createVoicePronunciationRule, deleteVoicePronunciationRule, createVoiceTrainingSample, deleteVoiceTrainingSample, testVoiceModel,
   getBotConversations, deleteBotConversation,
   getMobileAppConfig, updateMobileAppSettings, createMobileAppBanner, updateMobileAppBanner, deleteMobileAppBanner, getPublicMobileConfig,

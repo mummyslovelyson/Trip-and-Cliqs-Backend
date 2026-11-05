@@ -25,11 +25,18 @@ export const DEFAULT_PHONETIC_LEXICON = [
   { heard: 'see dee', replacement: 'cedis', category: 'currency' },
   { heard: 'ghc', replacement: 'GHS', category: 'currency' },
   { heard: 'gh s', replacement: 'GHS', category: 'currency' },
+  { heard: 'ghana city', replacement: 'Ghana Cedis', category: 'currency' },
+  { heard: 'ghana cities', replacement: 'Ghana Cedis', category: 'currency' },
+  { heard: 'pesewa', replacement: 'pesewas', category: 'currency' },
   { heard: 'momo', replacement: 'Mobile Money', category: 'payment' },
   { heard: 'mo mo', replacement: 'Mobile Money', category: 'payment' },
   { heard: 'mtn momo', replacement: 'MTN Mobile Money', category: 'payment' },
   { heard: 'telecel cash', replacement: 'Telecel Cash', category: 'payment' },
+  { heard: 'vodafone cash', replacement: 'Telecel Cash', category: 'payment' },
+  { heard: 'airtel tigo', replacement: 'AT Money', category: 'payment' },
+  { heard: 'at money', replacement: 'AT Money', category: 'payment' },
   { heard: 'pay stack', replacement: 'Paystack', category: 'payment' },
+  { heard: 'ussd', replacement: 'USSD prompt', category: 'payment' },
 
   // Ghanaian Locations & Venues
   { heard: 'kuma see', replacement: 'Kumasi', category: 'location' },
@@ -42,14 +49,30 @@ export const DEFAULT_PHONETIC_LEXICON = [
   { heard: 'tar kwa', replacement: 'Tarkwa', category: 'location' },
   { heard: 'east lay gon', replacement: 'East Legon', category: 'location' },
   { heard: 'is legon', replacement: 'East Legon', category: 'location' },
+  { heard: 'cantonment', replacement: 'Cantonments', category: 'location' },
+  { heard: 'airport res', replacement: 'Airport Residential', category: 'location' },
   { heard: 'black star square', replacement: 'Black Star Square', category: 'venue' },
   { heard: 'untamed empire', replacement: 'Untamed Empire', category: 'venue' },
   { heard: 'polo beach club', replacement: 'Polo Beach Club', category: 'venue' },
   { heard: 'national theatre', replacement: 'National Theatre', category: 'venue' },
   { heard: 'accra sports stadium', replacement: 'Accra Sports Stadium', category: 'venue' },
   { heard: 'baba yara', replacement: 'Baba Yara Stadium', category: 'venue' },
+  { heard: 'fantasy dome', replacement: 'Fantasy Dome', category: 'venue' },
+  { heard: 'grand arena', replacement: 'Grand Arena', category: 'venue' },
+  { heard: 'aicc', replacement: 'Accra International Conference Centre', category: 'venue' },
+  { heard: 'alliance francaise', replacement: 'Alliance Française', category: 'venue' },
+  { heard: 'silver bird', replacement: 'Silverbird', category: 'venue' },
 
-  // Festival & Cultural Terms
+  // Ghanaian Music Artists & Cultural Terms
+  { heard: 'shatta', replacement: 'Shatta Wale', category: 'artist' },
+  { heard: 'shata wale', replacement: 'Shatta Wale', category: 'artist' },
+  { heard: 'stone boy', replacement: 'Stonebwoy', category: 'artist' },
+  { heard: 'sark', replacement: 'Sarkodie', category: 'artist' },
+  { heard: 'sark odie', replacement: 'Sarkodie', category: 'artist' },
+  { heard: 'black o', replacement: 'Black Sherif', category: 'artist' },
+  { heard: 'black sheriff', replacement: 'Black Sherif', category: 'artist' },
+  { heard: 'king promise', replacement: 'King Promise', category: 'artist' },
+  { heard: 'kwami eugene', replacement: 'Kuami Eugene', category: 'artist' },
   { heard: 'a pro nation', replacement: 'Afro Nation', category: 'event' },
   { heard: 'afro nation', replacement: 'Afro Nation', category: 'event' },
   { heard: 'afro chella', replacement: 'Afrochella', category: 'event' },
@@ -57,13 +80,14 @@ export const DEFAULT_PHONETIC_LEXICON = [
   { heard: 'detty december', replacement: 'Detty December', category: 'event' },
   { heard: 'detti december', replacement: 'Detty December', category: 'event' },
   { heard: 'dirty december', replacement: 'Detty December', category: 'event' },
+  { heard: 'detty dec', replacement: 'Detty December', category: 'event' },
   { heard: 'chale wote', replacement: 'Chale Wote', category: 'event' },
   { heard: 'amapiano rave', replacement: 'Amapiano Rave', category: 'genre' },
   { heard: 'afro beat', replacement: 'Afrobeats', category: 'genre' },
   { heard: 'afrobeats', replacement: 'Afrobeats', category: 'genre' },
   { heard: 'asakaa', replacement: 'Asakaa Drill', category: 'genre' },
 
-  // Ticket Tiers
+  // Ticket Tiers & Seating
   { heard: 'vv ip', replacement: 'VVIP', category: 'tier' },
   { heard: 'v v i p', replacement: 'VVIP', category: 'tier' },
   { heard: 'very very important', replacement: 'VVIP', category: 'tier' },
@@ -73,6 +97,7 @@ export const DEFAULT_PHONETIC_LEXICON = [
   { heard: 'early bird', replacement: 'Early Bird', category: 'tier' },
   { heard: 'earlybird', replacement: 'Early Bird', category: 'tier' },
   { heard: 'table for', replacement: 'Table reservation for', category: 'tier' },
+  { heard: 'cabana', replacement: 'Cabana VIP', category: 'tier' },
 ];
 
 // ─── MULTI-CLASS VOICE INTENT TRAINING CORPUS ───
@@ -94,6 +119,9 @@ export const VOICE_INTENTS = [
   'PAYMENT_INFO',
   'ACCOUNT_MANAGEMENT',
   'ABOUT_PLATFORM',
+  'VENUE_POLICY',
+  'SQUAD_SOCIAL',
+  'EVENT_REMINDERS',
   'CUSTOMER_SUPPORT',
   'GREETING_CHITCHAT',
 ];
@@ -108,6 +136,12 @@ export const DEFAULT_TRAINING_SAMPLES = [
   { text: 'find free events happening in takoradi', intent: 'SEARCH_EVENTS' },
   { text: 'look for music festivals in december', intent: 'SEARCH_EVENTS' },
   { text: 'what events do you have right now', intent: 'SEARCH_EVENTS' },
+  { text: 'show me rave parties in osu', intent: 'SEARCH_EVENTS' },
+  { text: 'any tech conferences or seminars happening soon', intent: 'SEARCH_EVENTS' },
+  { text: 'gospel worship events in accra', intent: 'SEARCH_EVENTS' },
+  { text: 'food and drink festivals this month', intent: 'SEARCH_EVENTS' },
+  { text: 'what are the hottest parties in town', intent: 'SEARCH_EVENTS' },
+  { text: 'recommend some good shows for me and my friends', intent: 'SEARCH_EVENTS' },
 
   // BOOK_TICKETS
   { text: 'book two vvip tickets for afro nation', intent: 'BOOK_TICKETS' },
@@ -118,6 +152,9 @@ export const DEFAULT_TRAINING_SAMPLES = [
   { text: 'i want one early bird ticket', intent: 'BOOK_TICKETS' },
   { text: 'purchase two passes please', intent: 'BOOK_TICKETS' },
   { text: 'hold two vip tickets for me', intent: 'BOOK_TICKETS' },
+  { text: 'buy single admission ticket', intent: 'BOOK_TICKETS' },
+  { text: 'reserve a single ticket for black sherif live', intent: 'BOOK_TICKETS' },
+  { text: 'i need five tickets for my squad', intent: 'BOOK_TICKETS' },
 
   // CONFIRM_PAYMENT
   { text: 'yes proceed to payment', intent: 'CONFIRM_PAYMENT' },
@@ -127,6 +164,8 @@ export const DEFAULT_TRAINING_SAMPLES = [
   { text: 'continue to pay', intent: 'CONFIRM_PAYMENT' },
   { text: 'yes please charge my card', intent: 'CONFIRM_PAYMENT' },
   { text: 'go ahead with the payment', intent: 'CONFIRM_PAYMENT' },
+  { text: 'proceed with checkout', intent: 'CONFIRM_PAYMENT' },
+  { text: 'charge my mobile money wallet', intent: 'CONFIRM_PAYMENT' },
 
   // VERIFY_TRANSACTION
   { text: 'i have paid check my payment', intent: 'VERIFY_TRANSACTION' },
@@ -135,6 +174,8 @@ export const DEFAULT_TRAINING_SAMPLES = [
   { text: 'i completed the payment on my phone', intent: 'VERIFY_TRANSACTION' },
   { text: 'check if the momo went through', intent: 'VERIFY_TRANSACTION' },
   { text: 'i paid verify my order', intent: 'VERIFY_TRANSACTION' },
+  { text: 'the money was deducted check my ticket', intent: 'VERIFY_TRANSACTION' },
+  { text: 'i typed my pin on my phone verify now', intent: 'VERIFY_TRANSACTION' },
 
   // VIEW_MY_TICKETS
   { text: 'show my tickets', intent: 'VIEW_MY_TICKETS' },
@@ -143,24 +184,32 @@ export const DEFAULT_TRAINING_SAMPLES = [
   { text: 'i want to see my barcode for the gate', intent: 'VIEW_MY_TICKETS' },
   { text: 'do i have any tickets for today', intent: 'VIEW_MY_TICKETS' },
   { text: 'pull up my bookings', intent: 'VIEW_MY_TICKETS' },
+  { text: 'my digital admission pass', intent: 'VIEW_MY_TICKETS' },
+  { text: 'open my ticket wallet', intent: 'VIEW_MY_TICKETS' },
+  { text: 'display my pass for the bouncer', intent: 'VIEW_MY_TICKETS' },
 
   // SPENDING_ANALYTICS
   { text: 'how much have i spent on events this month', intent: 'SPENDING_ANALYTICS' },
   { text: 'what is my total ticket spending', intent: 'SPENDING_ANALYTICS' },
   { text: 'show my event expenses for october', intent: 'SPENDING_ANALYTICS' },
   { text: 'how many cedis have i spent so far', intent: 'SPENDING_ANALYTICS' },
+  { text: 'my monthly spending on concerts', intent: 'SPENDING_ANALYTICS' },
+  { text: 'total amount spent on tickets', intent: 'SPENDING_ANALYTICS' },
 
   // EVENT_SCHEDULE
   { text: 'when is my next event', intent: 'EVENT_SCHEDULE' },
   { text: 'what time does the concert start', intent: 'EVENT_SCHEDULE' },
   { text: 'how many days until my show', intent: 'EVENT_SCHEDULE' },
   { text: 'what is the date and venue of my booked event', intent: 'EVENT_SCHEDULE' },
+  { text: 'when is the festival happening', intent: 'EVENT_SCHEDULE' },
+  { text: 'countdown to my next booked concert', intent: 'EVENT_SCHEDULE' },
 
   // RESEND_TICKETS
   { text: 'resend my ticket to my email', intent: 'RESEND_TICKETS' },
   { text: 'send my pass to my whatsapp', intent: 'RESEND_TICKETS' },
   { text: 'sms my ticket confirmation again', intent: 'RESEND_TICKETS' },
   { text: 'i did not get the email send it again', intent: 'RESEND_TICKETS' },
+  { text: 'send barcode to my phone number', intent: 'RESEND_TICKETS' },
 
   // REFUND_DISPUTE
   { text: 'i cannot attend can i get a refund', intent: 'REFUND_DISPUTE' },
@@ -168,6 +217,8 @@ export const DEFAULT_TRAINING_SAMPLES = [
   { text: 'cancel my order and return my money', intent: 'REFUND_DISPUTE' },
   { text: 'i was charged twice for this ticket', intent: 'REFUND_DISPUTE' },
   { text: 'can i get my money back if event is cancelled', intent: 'REFUND_DISPUTE' },
+  { text: 'event was called off do i get a refund', intent: 'REFUND_DISPUTE' },
+  { text: 'automatic refund for cancelled show', intent: 'REFUND_DISPUTE' },
 
   // TRANSFER_TICKET
   { text: 'how do i transfer a ticket to a friend', intent: 'TRANSFER_TICKET' },
@@ -175,6 +226,7 @@ export const DEFAULT_TRAINING_SAMPLES = [
   { text: 'i want to gift my ticket to my brother', intent: 'TRANSFER_TICKET' },
   { text: 'transfer ticket to another person', intent: 'TRANSFER_TICKET' },
   { text: 'how does transferring tickets work', intent: 'TRANSFER_TICKET' },
+  { text: 'gift my pass to someone using their email', intent: 'TRANSFER_TICKET' },
 
   // RESALE_MARKETPLACE
   { text: 'how does ticket resale work', intent: 'RESALE_MARKETPLACE' },
@@ -182,6 +234,8 @@ export const DEFAULT_TRAINING_SAMPLES = [
   { text: 'how do i list my ticket on the marketplace', intent: 'RESALE_MARKETPLACE' },
   { text: 'is ticket resale safe and verified', intent: 'RESALE_MARKETPLACE' },
   { text: 'how do i buy a resale pass', intent: 'RESALE_MARKETPLACE' },
+  { text: 'can i sell my extra ticket', intent: 'RESALE_MARKETPLACE' },
+  { text: 'what is the price cap for resale passes', intent: 'RESALE_MARKETPLACE' },
 
   // ORGANIZER_GUIDE
   { text: 'how do i create an event', intent: 'ORGANIZER_GUIDE' },
@@ -193,6 +247,11 @@ export const DEFAULT_TRAINING_SAMPLES = [
   { text: 'how do i see my event ticket sales', intent: 'ORGANIZER_GUIDE' },
   { text: 'where is the organizer dashboard', intent: 'ORGANIZER_GUIDE' },
   { text: 'how do i manage my event admissions', intent: 'ORGANIZER_GUIDE' },
+  { text: 'publish event first before adding tickets', intent: 'ORGANIZER_GUIDE' },
+  { text: 'can i add tickets before publishing event', intent: 'ORGANIZER_GUIDE' },
+  { text: 'how do i withdraw my ticket revenue', intent: 'ORGANIZER_GUIDE' },
+  { text: 'organizer account creation and setup', intent: 'ORGANIZER_GUIDE' },
+  { text: 'export attendee list to csv', intent: 'ORGANIZER_GUIDE' },
 
   // CHECKIN_SCANNER
   { text: 'how do i scan tickets at the gate', intent: 'CHECKIN_SCANNER' },
@@ -200,6 +259,9 @@ export const DEFAULT_TRAINING_SAMPLES = [
   { text: 'how do bouncers verify attendee tickets', intent: 'CHECKIN_SCANNER' },
   { text: 'open the ticket scanner', intent: 'CHECKIN_SCANNER' },
   { text: 'how does gate entry verification work', intent: 'CHECKIN_SCANNER' },
+  { text: 'camera scanner for admitting guests', intent: 'CHECKIN_SCANNER' },
+  { text: 'prevent duplicate ticket scans at the door', intent: 'CHECKIN_SCANNER' },
+  { text: 'offline check in scanner for security', intent: 'CHECKIN_SCANNER' },
 
   // PAYMENT_INFO
   { text: 'what payment methods do you accept', intent: 'PAYMENT_INFO' },
@@ -208,6 +270,8 @@ export const DEFAULT_TRAINING_SAMPLES = [
   { text: 'do you accept visa and mastercard', intent: 'PAYMENT_INFO' },
   { text: 'is payment on paystack secure', intent: 'PAYMENT_INFO' },
   { text: 'how do i approve the ussd prompt on my phone', intent: 'PAYMENT_INFO' },
+  { text: 'how long are tickets held in checkout', intent: 'PAYMENT_INFO' },
+  { text: 'ten minute reservation hold', intent: 'PAYMENT_INFO' },
 
   // ACCOUNT_MANAGEMENT
   { text: 'where are my past orders and receipts', intent: 'ACCOUNT_MANAGEMENT' },
@@ -215,6 +279,8 @@ export const DEFAULT_TRAINING_SAMPLES = [
   { text: 'how do i edit my user profile', intent: 'ACCOUNT_MANAGEMENT' },
   { text: 'where are my saved and bookmarked events', intent: 'ACCOUNT_MANAGEMENT' },
   { text: 'how do i update my phone number or email', intent: 'ACCOUNT_MANAGEMENT' },
+  { text: 'verify my account email', intent: 'ACCOUNT_MANAGEMENT' },
+  { text: 'switch between organizer and attendee role', intent: 'ACCOUNT_MANAGEMENT' },
 
   // ABOUT_PLATFORM
   { text: 'what is tribes and cliqs', intent: 'ABOUT_PLATFORM' },
@@ -222,6 +288,28 @@ export const DEFAULT_TRAINING_SAMPLES = [
   { text: 'tell me about the tribes and cliqs platform', intent: 'ABOUT_PLATFORM' },
   { text: 'how does this platform work', intent: 'ABOUT_PLATFORM' },
   { text: 'who built tribes and cliqs', intent: 'ABOUT_PLATFORM' },
+  { text: 'what is the motto of cliq', intent: 'ABOUT_PLATFORM' },
+
+  // VENUE_POLICY
+  { text: 'what is the dress code for this event', intent: 'VENUE_POLICY' },
+  { text: 'is there parking at the venue', intent: 'VENUE_POLICY' },
+  { text: 'what is the age limit for the concert', intent: 'VENUE_POLICY' },
+  { text: 'can children attend this party', intent: 'VENUE_POLICY' },
+  { text: 'what are the security and bag rules at the gate', intent: 'VENUE_POLICY' },
+  { text: 'directions to untamed empire or polo beach', intent: 'VENUE_POLICY' },
+
+  // SQUAD_SOCIAL
+  { text: 'how do squad chats work', intent: 'SQUAD_SOCIAL' },
+  { text: 'chat with friends going to the event', intent: 'SQUAD_SOCIAL' },
+  { text: 'share event on whatsapp or instagram', intent: 'SQUAD_SOCIAL' },
+  { text: 'group coordination for concert', intent: 'SQUAD_SOCIAL' },
+  { text: 'how to invite squad members', intent: 'SQUAD_SOCIAL' },
+
+  // EVENT_REMINDERS
+  { text: 'remind me one day before the show', intent: 'EVENT_REMINDERS' },
+  { text: 'set an event reminder for me', intent: 'EVENT_REMINDERS' },
+  { text: 'schedule a reminder notification', intent: 'EVENT_REMINDERS' },
+  { text: 'send me an alert before the concert starts', intent: 'EVENT_REMINDERS' },
 
   // CUSTOMER_SUPPORT
   { text: 'i need to speak to a real person', intent: 'CUSTOMER_SUPPORT' },
@@ -229,12 +317,16 @@ export const DEFAULT_TRAINING_SAMPLES = [
   { text: 'help this is an emergency at the venue gate', intent: 'CUSTOMER_SUPPORT' },
   { text: 'your app is giving me an error', intent: 'CUSTOMER_SUPPORT' },
   { text: 'what is your customer service email', intent: 'CUSTOMER_SUPPORT' },
+  { text: 'bouncer says my ticket is invalid help me', intent: 'CUSTOMER_SUPPORT' },
 
   // GREETING_CHITCHAT
   { text: 'hello cliqs how are you', intent: 'GREETING_CHITCHAT' },
   { text: 'hey what can you help me with', intent: 'GREETING_CHITCHAT' },
   { text: 'who are you', intent: 'GREETING_CHITCHAT' },
   { text: 'good afternoon cliq assistant', intent: 'GREETING_CHITCHAT' },
+  { text: 'good morning', intent: 'GREETING_CHITCHAT' },
+  { text: 'thank you so much', intent: 'GREETING_CHITCHAT' },
+  { text: 'awesome work cliq', intent: 'GREETING_CHITCHAT' },
 ];
 
 /**
