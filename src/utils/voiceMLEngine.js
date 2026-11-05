@@ -87,6 +87,13 @@ export const VOICE_INTENTS = [
   'EVENT_SCHEDULE',
   'RESEND_TICKETS',
   'REFUND_DISPUTE',
+  'TRANSFER_TICKET',
+  'RESALE_MARKETPLACE',
+  'ORGANIZER_GUIDE',
+  'CHECKIN_SCANNER',
+  'PAYMENT_INFO',
+  'ACCOUNT_MANAGEMENT',
+  'ABOUT_PLATFORM',
   'CUSTOMER_SUPPORT',
   'GREETING_CHITCHAT',
 ];
@@ -157,16 +164,71 @@ export const DEFAULT_TRAINING_SAMPLES = [
 
   // REFUND_DISPUTE
   { text: 'i cannot attend can i get a refund', intent: 'REFUND_DISPUTE' },
-  { text: 'how do i resell my ticket', intent: 'REFUND_DISPUTE' },
+  { text: 'what is the refund policy', intent: 'REFUND_DISPUTE' },
   { text: 'cancel my order and return my money', intent: 'REFUND_DISPUTE' },
   { text: 'i was charged twice for this ticket', intent: 'REFUND_DISPUTE' },
-  { text: 'i want to transfer my ticket to my friend', intent: 'REFUND_DISPUTE' },
+  { text: 'can i get my money back if event is cancelled', intent: 'REFUND_DISPUTE' },
+
+  // TRANSFER_TICKET
+  { text: 'how do i transfer a ticket to a friend', intent: 'TRANSFER_TICKET' },
+  { text: 'can i send my pass to someone else', intent: 'TRANSFER_TICKET' },
+  { text: 'i want to gift my ticket to my brother', intent: 'TRANSFER_TICKET' },
+  { text: 'transfer ticket to another person', intent: 'TRANSFER_TICKET' },
+  { text: 'how does transferring tickets work', intent: 'TRANSFER_TICKET' },
+
+  // RESALE_MARKETPLACE
+  { text: 'how does ticket resale work', intent: 'RESALE_MARKETPLACE' },
+  { text: 'can i resell my ticket if i cannot go', intent: 'RESALE_MARKETPLACE' },
+  { text: 'how do i list my ticket on the marketplace', intent: 'RESALE_MARKETPLACE' },
+  { text: 'is ticket resale safe and verified', intent: 'RESALE_MARKETPLACE' },
+  { text: 'how do i buy a resale pass', intent: 'RESALE_MARKETPLACE' },
+
+  // ORGANIZER_GUIDE
+  { text: 'how do i create an event', intent: 'ORGANIZER_GUIDE' },
+  { text: 'how do i publish my event', intent: 'ORGANIZER_GUIDE' },
+  { text: 'how do i add ticket tiers to my event', intent: 'ORGANIZER_GUIDE' },
+  { text: 'how do i become an organizer', intent: 'ORGANIZER_GUIDE' },
+  { text: 'where do i set ticket prices for my event', intent: 'ORGANIZER_GUIDE' },
+  { text: 'how do organizer payouts work', intent: 'ORGANIZER_GUIDE' },
+  { text: 'how do i see my event ticket sales', intent: 'ORGANIZER_GUIDE' },
+  { text: 'where is the organizer dashboard', intent: 'ORGANIZER_GUIDE' },
+  { text: 'how do i manage my event admissions', intent: 'ORGANIZER_GUIDE' },
+
+  // CHECKIN_SCANNER
+  { text: 'how do i scan tickets at the gate', intent: 'CHECKIN_SCANNER' },
+  { text: 'where is the qr code scanner for check in', intent: 'CHECKIN_SCANNER' },
+  { text: 'how do bouncers verify attendee tickets', intent: 'CHECKIN_SCANNER' },
+  { text: 'open the ticket scanner', intent: 'CHECKIN_SCANNER' },
+  { text: 'how does gate entry verification work', intent: 'CHECKIN_SCANNER' },
+
+  // PAYMENT_INFO
+  { text: 'what payment methods do you accept', intent: 'PAYMENT_INFO' },
+  { text: 'can i pay with mtn mobile money', intent: 'PAYMENT_INFO' },
+  { text: 'how do i pay with telecel cash or at money', intent: 'PAYMENT_INFO' },
+  { text: 'do you accept visa and mastercard', intent: 'PAYMENT_INFO' },
+  { text: 'is payment on paystack secure', intent: 'PAYMENT_INFO' },
+  { text: 'how do i approve the ussd prompt on my phone', intent: 'PAYMENT_INFO' },
+
+  // ACCOUNT_MANAGEMENT
+  { text: 'where are my past orders and receipts', intent: 'ACCOUNT_MANAGEMENT' },
+  { text: 'how do i change my password', intent: 'ACCOUNT_MANAGEMENT' },
+  { text: 'how do i edit my user profile', intent: 'ACCOUNT_MANAGEMENT' },
+  { text: 'where are my saved and bookmarked events', intent: 'ACCOUNT_MANAGEMENT' },
+  { text: 'how do i update my phone number or email', intent: 'ACCOUNT_MANAGEMENT' },
+
+  // ABOUT_PLATFORM
+  { text: 'what is tribes and cliqs', intent: 'ABOUT_PLATFORM' },
+  { text: 'what can this app do', intent: 'ABOUT_PLATFORM' },
+  { text: 'tell me about the tribes and cliqs platform', intent: 'ABOUT_PLATFORM' },
+  { text: 'how does this platform work', intent: 'ABOUT_PLATFORM' },
+  { text: 'who built tribes and cliqs', intent: 'ABOUT_PLATFORM' },
 
   // CUSTOMER_SUPPORT
   { text: 'i need to speak to a real person', intent: 'CUSTOMER_SUPPORT' },
   { text: 'connect me with human customer support', intent: 'CUSTOMER_SUPPORT' },
   { text: 'help this is an emergency at the venue gate', intent: 'CUSTOMER_SUPPORT' },
   { text: 'your app is giving me an error', intent: 'CUSTOMER_SUPPORT' },
+  { text: 'what is your customer service email', intent: 'CUSTOMER_SUPPORT' },
 
   // GREETING_CHITCHAT
   { text: 'hello cliqs how are you', intent: 'GREETING_CHITCHAT' },

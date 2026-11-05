@@ -40,7 +40,13 @@ import { getGeminiApiKey as fetchGeminiApiKey } from '../utils/settings.js';
 export { agentTools };
 
 const getGeminiApiKey = async () => (await fetchGeminiApiKey?.()) || process.env.GEMINI_API_KEY || '';
-const GEMINI_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-flash-latest'];
+const GEMINI_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
+  'gemini-1.5-flash',
+  'gemini-2.0-flash-lite',
+  'gemini-1.5-pro',
+];
 
 /**
  * Date and parsing utilities
@@ -430,7 +436,7 @@ export async function searchEvents({
 async function fetchOrderTickets(orderId) {
   try {
     const [ticketRows] = await pool.execute(
-      `SELECT t.id, t.ticket_number, t.qr_code, t.status,
+      `SELECT DISTINCT ON (t.id) t.id, t.ticket_number, t.qr_code, t.status,
               tt.name AS ticket_type_name, COALESCE(oi.unit_price, tt.price, 0) AS price,
               e.id AS event_id, e.title AS event_title, e.venue AS event_venue,
               e.start_date, e.start_time, e.banner_image
@@ -438,11 +444,25 @@ async function fetchOrderTickets(orderId) {
        LEFT JOIN ticket_types tt ON tt.id = t.ticket_type_id
        LEFT JOIN events e ON e.id = t.event_id
        LEFT JOIN order_items oi ON oi.id = t.order_item_id
-       WHERE oi.order_id = ? OR t.order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)
+       WHERE oi.order_id = ?
        ORDER BY t.id ASC`,
-      [orderId, orderId]
+      [orderId]
     );
-    return ticketRows || [];
+
+    // If order quantity is 1, strictly limit to 1 ticket
+    let expectedQty = 1;
+    try {
+      const [oiRows] = await pool.execute('SELECT quantity FROM order_items WHERE order_id = ?', [orderId]);
+      if (oiRows && oiRows.length > 0) {
+        expectedQty = oiRows.reduce((sum, r) => sum + (Number(r.quantity) || 1), 0);
+      }
+    } catch {}
+
+    const results = ticketRows || [];
+    if (expectedQty === 1 && results.length > 1) {
+      return results.slice(0, 1);
+    }
+    return results;
   } catch {
     return [];
   }
@@ -765,7 +785,38 @@ export const handleChatMessage = async (req, res) => {
       if (apiKey) {
         try {
           const cleanBase64 = audioBase64.replace(/^data:audio\/[a-z0-9_-]+;base64,/, '');
-          const transcribeModels = ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-flash-lite-latest'];
+
+          // Normalize audio MIME type to Gemini supported formats
+          let mimeTypeToSend = 'audio/mp4';
+          const lowerMime = (audioMimeType || '').toLowerCase();
+          if (lowerMime.includes('wav')) mimeTypeToSend = 'audio/wav';
+          else if (lowerMime.includes('mp3') || lowerMime.includes('mpeg')) mimeTypeToSend = 'audio/mp3';
+          else if (lowerMime.includes('ogg')) mimeTypeToSend = 'audio/ogg';
+          else if (lowerMime.includes('aac')) mimeTypeToSend = 'audio/aac';
+          else if (lowerMime.includes('m4a') || lowerMime.includes('mp4')) mimeTypeToSend = 'audio/mp4';
+
+          const transcribeModels = [
+            'gemini-2.5-flash',
+            'gemini-2.0-flash',
+            'gemini-1.5-flash',
+            'gemini-2.0-flash-lite',
+          ];
+
+          const sttPrompt = `You are an expert speech-to-text listener for Tribes & Cliqs, the premier event ticketing platform in Ghana.
+Listen carefully to this audio voice message. The speaker may have a Ghanaian, West African, or international English accent.
+Key vocabulary and context:
+- Currency: Cedis, Ghana Cedis, GHS.
+- Cities & Areas: Accra, Kumasi, Osu, East Legon, Labadi, Takoradi, Cape Coast, Tema, Airport City, Cantonments.
+- Venues: Untamed Empire, Polo Beach Club, Black Star Square, National Theatre, Fantasy Dome, Accra Sports Stadium, Baba Yara.
+- Ticket Tiers: VIP, VVIP, Regular, Standard, Early Bird, Table, General Admission.
+- Event Types: Concerts, festivals, raves, parties, comedy, live music, Afrobeats, Amapiano, Detty December.
+- Actions: Book tickets, buy passes, find events, check active passes, transfer ticket, show QR code, payments via Mobile Money (MoMo) or Paystack.
+
+INSTRUCTIONS:
+1. Transcribe the user's speech accurately and verbatim into clear, natural English.
+2. If words are slightly muffled, infer the closest matching event, ticket, or location intent based on the context above.
+3. Output ONLY the plain transcription text. Do NOT include quotes, timestamps, markdown, or any introductory phrases like "The user said:".`;
+
           for (const model of transcribeModels) {
             try {
               const transcribeRes = await fetch(
@@ -781,11 +832,11 @@ export const handleChatMessage = async (req, res) => {
                       {
                         parts: [
                           {
-                            text: "You are the speech-to-text listener for Clqs Bot on Tribes & Cliqs. Listen carefully to this audio voice message. Transcribe the user's speech accurately into clear, plain English text. If the user mentions placing an order, buying tickets, finding events, dates, or prices, transcribe every word cleanly. Output ONLY the plain English transcription without quotes, explanations, or formatting.",
+                            text: sttPrompt,
                           },
                           {
                             inlineData: {
-                              mimeType: audioMimeType || 'audio/m4a',
+                              mimeType: mimeTypeToSend,
                               data: cleanBase64,
                             },
                           },
@@ -793,11 +844,11 @@ export const handleChatMessage = async (req, res) => {
                       },
                     ],
                     generationConfig: {
-                      temperature: 0.1,
+                      temperature: 0.0,
                       maxOutputTokens: 250,
                     },
                   }),
-                  signal: AbortSignal.timeout(9000),
+                  signal: AbortSignal.timeout(12000),
                 }
               );
 
@@ -805,9 +856,16 @@ export const handleChatMessage = async (req, res) => {
                 const trData = await transcribeRes.json();
                 const text = trData?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
                 if (text) {
-                  rawMessage = text;
+                  rawMessage = text
+                    .replace(/^["']|["']$/g, '')
+                    .replace(/^(the user (said|is saying|asked|is asking):?\s*)/i, '')
+                    .trim();
+                  console.log(`[chatController.audioTranscribe] Transcribed via ${model}: "${rawMessage}"`);
                   break;
                 }
+              } else {
+                const errData = await transcribeRes.json().catch(() => ({}));
+                console.warn(`[chatController.audioTranscribe] ${model} failed (${transcribeRes.status}):`, errData?.error?.message || errData);
               }
             } catch (mErr) {
               console.warn(`[chatController.audioTranscribe] ${model} attempt failed:`, mErr.message);
@@ -869,13 +927,6 @@ export const handleChatMessage = async (req, res) => {
           if (mode === 'voice') {
             data.reply = data.voiceReply;
           }
-          data.voiceDiagnostics = {
-            confidence: voicePrediction?.confidence,
-            predictedIntent: voicePrediction?.intent,
-            correctedTranscript: voicePhonetics?.corrected,
-            phoneticChanges: voicePhonetics?.changes || [],
-            emotion: voiceEmotion?.emotion,
-          };
         }
 
         logBotConversation({
@@ -1285,6 +1336,250 @@ export const handleChatMessage = async (req, res) => {
     }
 
     // =========================================================================
+    // 7.3. ORGANIZER SERVICES: EVENT CREATION, TICKET CONFIGURATION & PAYOUTS
+    // =========================================================================
+    const wantsOrganizerInfo =
+      lower.includes('create an event') ||
+      lower.includes('create event') ||
+      lower.includes('host an event') ||
+      lower.includes('host event') ||
+      lower.includes('publish an event') ||
+      lower.includes('publish event') ||
+      lower.includes('become an organizer') ||
+      lower.includes('become organizer') ||
+      lower.includes('organizer account') ||
+      lower.includes('add tickets') ||
+      lower.includes('add ticket') ||
+      lower.includes('ticket tier') ||
+      lower.includes('ticket tiers') ||
+      lower.includes('organizer dashboard') ||
+      lower.includes('organizer payout') ||
+      lower.includes('organizer earnings') ||
+      lower.includes('how do i host');
+
+    if (wantsOrganizerInfo) {
+      const isVoiceMode = mode === 'voice' || context.mode === 'voice' || context.isVoice;
+      const voiceReply = "To host an event on Tribes & Cliqs, create and publish your event details first. Once published, add your ticket tiers like VIP or Regular on the Tickets page. You can also track sales and withdraw payouts from your dashboard.";
+      const chatReply = `Here is how hosting and event ticketing works on **Tribes & Cliqs**:\n\n1. **Create & Publish Event First:** Enter your event details (title, dates, venue, category, and banner image) and publish your event.\n2. **Configure Ticket Tiers:** Once published, head over to **Tickets** to add your tiers (Regular, VIP, VVIP, Table) with custom prices and inventory.\n3. **Gate Check-In:** Use our high-speed camera **QR Gate Scanner** at the door to admit guests in under 1 second.\n4. **Payouts & Sales:** Monitor your ticket sales in real-time and request secure payouts directly to your Mobile Money or bank account.\n\nTap below to get started:`;
+
+      return res.json({
+        reply: isVoiceMode ? voiceReply : chatReply,
+        intent: 'ORGANIZER_GUIDE',
+        actions: [
+          { type: 'NAVIGATE', label: 'Create Event Now', path: '/organizer/create-event' },
+          { type: 'NAVIGATE', label: 'Manage Tickets', path: '/organizer/tickets' },
+          { type: 'NAVIGATE', label: 'QR Gate Scanner', path: '/organizer/check-in' },
+        ],
+        suggestions: [
+          'How do I scan tickets at the gate?',
+          'What payment methods are supported?',
+          'How do organizer payouts work?',
+        ],
+      });
+    }
+
+    // =========================================================================
+    // 7.4. GATE ENTRY & QR CODE SCANNER (CHECK-IN)
+    // =========================================================================
+    const wantsCheckinScanner =
+      lower.includes('scan ticket') ||
+      lower.includes('scan tickets') ||
+      lower.includes('qr scanner') ||
+      lower.includes('ticket scanner') ||
+      lower.includes('gate scanner') ||
+      lower.includes('check-in') ||
+      lower.includes('check in') ||
+      lower.includes('gate entry') ||
+      lower.includes('bouncers') ||
+      lower.includes('verify at the gate');
+
+    if (wantsCheckinScanner) {
+      const isVoiceMode = mode === 'voice' || context.mode === 'voice' || context.isVoice;
+      const voiceReply = "Organizers and door staff can scan digital QR passes instantly using our built-in camera scanner. It verifies ticket authenticity in real-time and prevents duplicate entries.";
+      const chatReply = `**Gate Entry & QR Check-In Scanner**:\n\n• **Instant Verification:** Organizers and security teams use our high-speed camera scanner to validate digital attendee passes in under 1 second.\n• **Anti-Fraud & Anti-Duplication:** Each ticket has a cryptographically signed QR code. Once scanned, it cannot be reused by anyone else.\n• **Live Attendee Count:** Real-time metrics show exactly how many guests have entered the venue.\n\nTap below to open the Gate Scanner:`;
+
+      return res.json({
+        reply: isVoiceMode ? voiceReply : chatReply,
+        intent: 'CHECKIN_SCANNER',
+        actions: [
+          { type: 'NAVIGATE', label: 'Open QR Gate Scanner', path: '/organizer/check-in' },
+        ],
+        suggestions: [
+          'How do I create an event?',
+          'How do I transfer a ticket?',
+          'Show my active passes',
+        ],
+      });
+    }
+
+    // =========================================================================
+    // 7.5. PAYMENT METHODS & BILLING (PAYSTACK, MOMO, CARDS)
+    // =========================================================================
+    const wantsPaymentInfo =
+      lower.includes('payment method') ||
+      lower.includes('payment methods') ||
+      lower.includes('pay with momo') ||
+      lower.includes('mobile money') ||
+      lower.includes('telecel') ||
+      lower.includes('paystack') ||
+      lower.includes('accept card') ||
+      lower.includes('accept cards') ||
+      lower.includes('how do i pay') ||
+      lower.includes('accepted payment');
+
+    if (wantsPaymentInfo) {
+      const isVoiceMode = mode === 'voice' || context.mode === 'voice' || context.isVoice;
+      const voiceReply = "We accept MTN Mobile Money, Telecel Cash, AT Money, and Visa or Mastercard in Ghana Cedis through Paystack. When paying with Mobile Money, approve the USSD prompt on your phone with your PIN.";
+      const chatReply = `**Payment Methods & Checkout on Tribes & Cliqs**:\n\nAll payments are processed securely through **Paystack** in Ghana Cedis (GHS):\n\n• **Mobile Money:** MTN MoMo, Telecel Cash, and AT Money. After placing an order, approve the USSD prompt that appears on your phone by entering your Mobile Money PIN.\n• **Debit & Credit Cards:** Visa, Mastercard, and Verve.\n• **10-Minute Ticket Reservation:** Tickets are temporarily reserved for 10 minutes so you never lose your spot while approving payment.\n• **Instant Pass Generation:** Once approved, your digital QR pass is immediately sent via email, SMS, and saved to **My Tickets**.`;
+
+      return res.json({
+        reply: isVoiceMode ? voiceReply : chatReply,
+        intent: 'PAYMENT_INFO',
+        actions: [
+          { type: 'NAVIGATE', label: 'Explore Events to Book', path: '/explore' },
+          { type: 'NAVIGATE', label: 'View My Tickets', path: '/attendee/tickets' },
+        ],
+        suggestions: [
+          'What events are happening this weekend?',
+          'What is the refund policy?',
+          'How do I transfer a ticket?',
+        ],
+      });
+    }
+
+    // =========================================================================
+    // 7.6. VERIFIED RESALE MARKETPLACE
+    // =========================================================================
+    const wantsResale =
+      lower.includes('how does resale work') ||
+      lower.includes('ticket resale') ||
+      lower.includes('resell my ticket') ||
+      lower.includes('resell ticket') ||
+      lower.includes('resale marketplace') ||
+      lower.includes('sell my ticket');
+
+    if (wantsResale) {
+      const isVoiceMode = mode === 'voice' || context.mode === 'voice' || context.isVoice;
+      const voiceReply = "Tribes & Cliqs has a verified ticket resale marketplace. If you cannot attend, list your ticket at a fair price. When bought, your old pass is cancelled, a new pass is given to the buyer, and you get paid instantly.";
+      const chatReply = `**Verified Ticket Resale Marketplace**:\n\nIf you bought a ticket and can no longer attend, you can safely resell it on Tribes & Cliqs:\n\n1. **Anti-Scalping Fair Pricing:** Resale prices are capped at original face value to protect attendees from price gouging.\n2. **100% Guaranteed Entry:** When a resale ticket is purchased, the original seller's QR pass is permanently invalidated, and a brand new, encrypted entry pass is generated for the buyer.\n3. **Instant Payout:** Funds are transferred directly to your Mobile Money or bank account once the ticket sells.\n\nOpen **My Tickets** to list your ticket for resale:`;
+
+      return res.json({
+        reply: isVoiceMode ? voiceReply : chatReply,
+        intent: 'RESALE_MARKETPLACE',
+        actions: [
+          { type: 'NAVIGATE', label: 'View My Tickets to Resell', path: '/attendee/tickets' },
+          { type: 'NAVIGATE', label: 'Browse Resale Tickets', path: '/explore?filter=resale' },
+        ],
+        suggestions: [
+          'How do I transfer a ticket instead?',
+          'What is the refund policy?',
+          'Show my active tickets',
+        ],
+      });
+    }
+
+    // =========================================================================
+    // 7.7. ACCOUNT, PAST ORDERS & USER PROFILE
+    // =========================================================================
+    const wantsAccountInfo =
+      lower.includes('past order') ||
+      lower.includes('past orders') ||
+      lower.includes('my orders') ||
+      lower.includes('my receipts') ||
+      lower.includes('order history') ||
+      lower.includes('change password') ||
+      lower.includes('edit profile') ||
+      lower.includes('my account') ||
+      lower.includes('saved events') ||
+      lower.includes('my favorites');
+
+    if (wantsAccountInfo) {
+      const isVoiceMode = mode === 'voice' || context.mode === 'voice' || context.isVoice;
+      const voiceReply = "You can view your past orders and receipts in Orders, check saved events in Saved, or update your profile details and security in the Profile tab.";
+      const chatReply = `**Account & Order Management**:\n\n• **Order History & Receipts:** View all completed and pending ticket bookings in **Orders**.\n• **Saved & Bookmarked Events:** Keep track of upcoming parties and concerts in your **Saved** list.\n• **Profile & Security:** Update your full name, phone number, email address, or change your password under **Profile**.\n\nTap below to navigate:`;
+
+      return res.json({
+        reply: isVoiceMode ? voiceReply : chatReply,
+        intent: 'ACCOUNT_MANAGEMENT',
+        actions: [
+          { type: 'NAVIGATE', label: 'View Past Orders', path: '/attendee/bookings' },
+          { type: 'NAVIGATE', label: 'Saved Events', path: '/attendee/favorites' },
+          { type: 'NAVIGATE', label: 'My Profile', path: '/profile' },
+        ],
+        suggestions: [
+          'Show my active tickets',
+          'How much have I spent this month?',
+          'What events are happening this weekend?',
+        ],
+      });
+    }
+
+    // =========================================================================
+    // 7.8. ABOUT TRIBES & CLIQS PLATFORM
+    // =========================================================================
+    const wantsAboutPlatform =
+      lower.includes('what is tribes & cliqs') ||
+      lower.includes('what is tribes and cliqs') ||
+      lower.includes('about tribes') ||
+      lower.includes('tell me about this app') ||
+      lower.includes('what can this app do') ||
+      lower.includes('who built tribes') ||
+      lower.includes('tell me about tribes');
+
+    if (wantsAboutPlatform) {
+      const isVoiceMode = mode === 'voice' || context.mode === 'voice' || context.isVoice;
+      const voiceReply = "Tribes & Cliqs is Ghana's modern event platform for discovering concerts, buying tickets with Mobile Money, verified ticket resale, and real-time gate entry.";
+      const chatReply = `**Welcome to Tribes & Cliqs!** 🇬🇭\n\nTribes & Cliqs is Ghana's next-generation event ticketing and social coordination platform:\n\n• **Discover Live Events:** Discover concerts, festivals, nightlife, comedy, and cultural celebrations in Accra, Kumasi, and beyond.\n• **Frictionless Mobile Money & Card Checkout:** Pay via MTN MoMo, Telecel Cash, AT Money, or bank cards through Paystack.\n• **Digital QR Entry Passes:** Instant encrypted QR tickets that work smoothly at the door.\n• **Organizer Tools:** Effortlessly publish events, configure ticket tiers, scan attendees at the gate, and manage payouts.\n• **Verified Resale & Transfers:** Safe anti-scalping resale marketplace and instant peer-to-peer ticket gifting.\n\nHow can I help you explore or get started today?`;
+
+      return res.json({
+        reply: isVoiceMode ? voiceReply : chatReply,
+        intent: 'ABOUT_PLATFORM',
+        actions: [
+          { type: 'NAVIGATE', label: 'Explore Events', path: '/explore' },
+          { type: 'NAVIGATE', label: 'Host an Event', path: '/organizer/create-event' },
+        ],
+        suggestions: [
+          'What events are happening this weekend?',
+          'How do I create an event?',
+          'What payment methods are accepted?',
+        ],
+      });
+    }
+
+    // =========================================================================
+    // 7.9. CUSTOMER SUPPORT & CONTACT
+    // =========================================================================
+    const wantsSupport =
+      lower.includes('customer care') ||
+      lower.includes('customer service') ||
+      lower.includes('support team') ||
+      lower.includes('contact support') ||
+      lower.includes('speak to a person') ||
+      lower.includes('speak to human') ||
+      lower.includes('help desk') ||
+      lower.includes('help with my order');
+
+    if (wantsSupport) {
+      const isVoiceMode = mode === 'voice' || context.mode === 'voice' || context.isVoice;
+      const voiceReply = "Our customer care team is available to help. You can email us at support@tribesandcliqs.com or view your tickets below if you need assistance at the gate.";
+      const chatReply = `**Tribes & Cliqs Customer Care & Support**:\n\nWe are here to assist you with any questions or urgent issues:\n\n• **Email Support:** support@tribesandcliqs.com\n• **Gate & Entry Issues:** If security has trouble scanning your ticket, open **My Tickets** to display the high-resolution QR pass and unique Ticket ID.\n• **Payment Issues:** If you were charged but haven't received your pass, click **Verify Payment** on your booking card or check your email.\n• **Organizer Inquiries:** For large festival integrations or payout questions, our organizers team is on standby.\n\nTap below to access your tickets or orders:`;
+
+      return res.json({
+        reply: isVoiceMode ? voiceReply : chatReply,
+        intent: 'CUSTOMER_SUPPORT',
+        actions: [
+          { type: 'NAVIGATE', label: 'View My Tickets', path: '/attendee/tickets' },
+          { type: 'NAVIGATE', label: 'View My Orders', path: '/attendee/bookings' },
+        ],
+        suggestions: [
+          'How do I transfer my ticket?',
+          'How does ticket resale work?',
+          'What is the refund policy?',
+        ],
+      });
+    }
+
+    // =========================================================================
     // 8. AUTONOMOUS BOOKING: SEARCH THROUGH, SELECT TICKET & PREPARE PAYMENT
     // =========================================================================
     const wantsExplicitBooking =
@@ -1656,50 +1951,111 @@ export const handleChatMessage = async (req, res) => {
       ? `IMPORTANT VOICE CONCIERGE DIRECTIVE: The user is speaking directly to you via microphone. Respond strictly in a warm, friendly, natural human conversational voice as if speaking to a friend on the phone (1 to 2 sentences max). Never say you are an AI, a bot, or a language model. Absolutely NO markdown bolding (**), asterisks (*), bullet points (•), brackets, or raw code. Say 'Ghana Cedis' instead of 'GHS', and 'VIP' or 'V.V.I.P.' instead of raw abbreviations.`
       : `Tone: Warm, efficient, polite, concise (2-3 sentences max).\nDo NOT use emojis in raw text output.`;
 
-    const systemInstruction = `You are the personal event concierge for Tribes & Cliqs.
+    const systemInstruction = `You are the master concierge and assistant for the Tribes & Cliqs platform in Ghana.
 Motto: Tell Cliq what you want, and Cliq handles the rest.
 ${voiceToneRule}
-You speak in a natural, polite human tone. Never introduce yourself as a robot or AI.
-You help users through the complete conversational event lifecycle:
-1. Identify event desires: category, city (e.g. Accra, Kumasi), dates (weekends, next Friday), budget, ticket tier (VIP, VVIP, Regular), and quantity.
-2. Search live events and check ticket inventory & availability.
-3. Make personalized recommendations.
-4. Prepare orders with line-item breakdowns and 10-minute ticket reservations.
-5. Guide the user to confirm their order and complete Paystack / Mobile Money payment.
-6. Verify transactions via the backend gateway.
-7. Issue tickets with unique QR entry passes.
-8. Handle after-sales: show tickets, calculate spending, transfer passes, request refunds, and schedule event reminders.
-Current User: ${user ? `${user.name} (${user.email})` : 'Guest User'}.
-Available Events:
+You speak in a warm, polite, conversational human tone. Never announce yourself as a robot or AI.
+
+COMPREHENSIVE TRIBES & CLIQS PLATFORM KNOWLEDGE BASE:
+1. EVENT DISCOVERY & TICKETS:
+   - Discover concerts, parties, raves, festivals, comedy shows, and cultural events across Ghana (Accra, Kumasi, Takoradi, etc.).
+   - Categories: Music, Nightlife, Festivals, Comedy, Food & Drink, Arts & Culture, Tech, Sports.
+   - Popular venues: Untamed Empire, Polo Beach Club, Black Star Square, National Theatre, Fantasy Dome, Accra Sports Stadium, Baba Yara.
+   - Ticket tiers: VIP, VVIP, Early Bird, Regular/Standard, Tables.
+   - Real-time stock, 10-minute reservation holds during checkout.
+   - Digital encrypted QR entry passes viewable offline in the "Tickets" tab and sent via email/SMS.
+2. PAYMENTS & CHECKOUT:
+   - Processed securely via Paystack in Ghana Cedis (GHS).
+   - Supported methods: MTN Mobile Money (MoMo), Telecel Cash, AT Money, and Visa/Mastercard.
+   - MoMo flow: after placing an order, approve the USSD prompt on your phone with your Mobile Money PIN.
+3. ORGANIZER SERVICES & HOSTING:
+   - Anyone can become an event organizer.
+   - 2-Step Publishing Workflow: Step 1 is to create event details (title, dates, venue, banner) and publish it. Step 2 is to configure Ticket Tiers (prices, capacities, perks) on the Tickets management page (/organizer/tickets).
+   - Gate Entry & QR Scanner (/check-in): Organizers and bouncers use the high-speed camera scanner inside the app to validate attendee QR codes at the door in under 1 second with duplicate prevention.
+   - Sales & Payouts: Track real-time ticket revenue and request withdrawals directly to Mobile Money or bank accounts.
+4. TICKET TRANSFERS & RESALE MARKETPLACE:
+   - Free peer-to-peer transfers: Revokes the original QR pass immediately and generates a brand new, secure QR pass for the recipient.
+   - Verified Secondary Resale: Official anti-scalping resale marketplace with fair-price caps. When sold, the seller receives instant payout and the buyer gets a valid entry pass.
+5. REFUNDS & POLICIES:
+   - Evaluated based on organizer policies before the event cut-off. If an event is cancelled by the organizer, automatic 100% full refunds are issued to the original payment method. Alternatively, users can list tickets on the resale marketplace.
+6. USER ACCOUNT:
+   - View past orders, booking receipts, and payment transactions in Orders (/orders or /attendee/bookings).
+   - Saved and bookmarked events in Saved (/saved).
+   - Profile settings, role switching, and account security in Profile (/profile).
+7. CUSTOMER SUPPORT:
+   - Support Email: support@tribesandcliqs.com.
+   - Immediate assistance for gate entry issues, double payments, or transfer questions.
+
+RESPONSE FORMAT:
+You MUST respond strictly with valid JSON conforming to this schema:
+{
+  "reply": "Your warm, natural, human response addressing the user's inquiry thoroughly.",
+  "intent": "SEARCH_EVENTS" | "ORGANIZER_GUIDE" | "CHECKIN_SCANNER" | "PAYMENT_INFO" | "TRANSFER_TICKET" | "RESALE_MARKETPLACE" | "ACCOUNT_MANAGEMENT" | "CUSTOMER_SUPPORT" | "GENERAL_CHAT",
+  "showEvents": true or false
+}
+IMPORTANT: Set "showEvents": true ONLY when the user is explicitly searching for, discovering, or buying event passes. For system guidance, organizer queries, payments, check-in, transfers, or platform help, set "showEvents": false so unrelated concert listings are not pushed.
+
+Current User: ${user ? `${user.name} (${user.email}, role: ${user.role || 'attendee'})` : 'Guest User'}.
+Live Available Events in Database:
 ${liveEventsSummary || 'None'}`;
 
     const contents = [{ role: 'user', parts: [{ text: processedMessage }] }];
     const geminiRes = await callGemini(contents, systemInstruction, aiContext.temperature);
 
     let replyText = '';
+    let showEvents = true;
+    let returnedIntent = 'SEARCH_EVENTS';
+
     if (geminiRes && geminiRes.reply) {
       replyText = geminiRes.reply;
+      showEvents = geminiRes.showEvents === true;
+      returnedIntent = geminiRes.intent || (showEvents ? 'SEARCH_EVENTS' : 'GENERAL_CHAT');
     } else {
+      const isDiscovery =
+        lower.includes('event') ||
+        lower.includes('concert') ||
+        lower.includes('party') ||
+        lower.includes('rave') ||
+        lower.includes('festival') ||
+        lower.includes('weekend') ||
+        lower.includes('ticket');
+      showEvents = isDiscovery;
+      returnedIntent = isDiscovery ? 'SEARCH_EVENTS' : 'GENERAL_CHAT';
       const cityLabel = reqCity ? ` in ${reqCity}` : '';
       const timeLabel = startDate && endDate ? (startDate === endDate ? ` on ${startDate}` : ' this weekend') : '';
-      replyText = mappedEventCards.length > 0
+      replyText = showEvents && mappedEventCards.length > 0
         ? `I found ${mappedEventCards.length} events${cityLabel}${timeLabel}. Here are the closest matches:`
-        : `I could not find exact events matching that right now, but check out these popular upcoming events:`;
+        : `I'm here to help you with events, tickets, hosting, transfers, payments, and everything across Tribes & Cliqs! How can I assist you right now?`;
     }
+
+    const actionsToReturn = showEvents
+      ? [{ type: 'NAVIGATE', label: 'Explore All Events', path: '/explore' }]
+      : [
+          { type: 'NAVIGATE', label: 'Explore Events', path: '/explore' },
+          { type: 'NAVIGATE', label: 'Host an Event', path: '/organizer/create-event' },
+          { type: 'NAVIGATE', label: 'My Tickets', path: '/attendee/tickets' },
+        ];
+
+    const suggestionsToReturn = showEvents
+      ? [
+          'What events are happening in Accra this weekend?',
+          'How do I create an event as an organizer?',
+          'What payment methods are supported?',
+          'Show my active tickets',
+        ]
+      : [
+          'How do I create and publish an event?',
+          'How do I scan tickets at the gate?',
+          'Can I pay with Mobile Money?',
+          'What events are happening this weekend?',
+        ];
 
     return res.json({
       reply: replyText,
-      intent: 'SEARCH_EVENTS',
-      events: mappedEventCards,
-      actions: [
-        { type: 'NAVIGATE', label: 'Explore All Events', path: '/explore' },
-      ],
-      suggestions: [
-        'Book 2 VIP tickets',
-        'What events are happening in Accra next Friday?',
-        'How much have I spent on events this month?',
-        'Show my active tickets',
-      ],
+      intent: returnedIntent,
+      events: showEvents ? mappedEventCards : [],
+      actions: actionsToReturn,
+      suggestions: suggestionsToReturn,
     });
   } catch (err) {
     console.error('[chatController.handleChatMessage]', err);

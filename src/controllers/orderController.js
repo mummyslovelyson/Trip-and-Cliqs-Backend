@@ -1578,6 +1578,35 @@ export const verifyPayment = async (req, res) => {
         },
       }));
 
+      // Strictly enforce purchased quantity: if person purchased only one, ensure exactly 1 ticket is returned
+      try {
+        const [orderItemRows] = await pool.execute(
+          'SELECT quantity FROM order_items WHERE order_id = ?',
+          [order.id]
+        );
+        const totalExpectedQty = (orderItemRows || []).reduce(
+          (sum, row) => sum + (Number(row.quantity) || 1),
+          0
+        ) || 1;
+
+        if (totalExpectedQty === 1 && tickets.length > 1) {
+          const surplusTicketIds = tickets.slice(1).map((t) => t.id).filter(Boolean);
+          if (surplusTicketIds.length > 0) {
+            try {
+              const placeholders = surplusTicketIds.map(() => '?').join(',');
+              await pool.execute(`DELETE FROM tickets WHERE id IN (${placeholders})`, surplusTicketIds);
+            } catch (pruneErr) {
+              console.warn('[orderController.verifyPayment] Prune excess notice:', pruneErr.message);
+            }
+          }
+          tickets = tickets.slice(0, 1);
+        } else if (tickets.length > totalExpectedQty) {
+          tickets = tickets.slice(0, totalExpectedQty);
+        }
+      } catch (qtyErr) {
+        console.warn('[orderController.verifyPayment] Qty verification notice:', qtyErr.message);
+      }
+
       if (tickets.length > 0) {
         eventInfo = tickets[0].event;
       } else if (order.event_id) {
@@ -1599,6 +1628,23 @@ export const verifyPayment = async (req, res) => {
       console.warn('[orderController.verifyPayment] Tickets fetch note:', ticketErr.message);
     }
 
+    // Determine total expected quantity to include on the order object
+    let orderQuantity = tickets.length || 1;
+    try {
+      const [orderItemRows] = await pool.execute(
+        'SELECT quantity FROM order_items WHERE order_id = ?',
+        [order.id]
+      );
+      if (orderItemRows && orderItemRows.length > 0) {
+        orderQuantity = orderItemRows.reduce((sum, row) => sum + (Number(row.quantity) || 1), 0);
+      }
+    } catch {}
+
+    // If order was for a single ticket, strictly guarantee exactly 1 ticket is in payload
+    if (orderQuantity === 1 && tickets.length > 1) {
+      tickets = tickets.slice(0, 1);
+    }
+
     res.json({
       message: 'Payment verified',
       status: verifyResult.data.status,
@@ -1609,6 +1655,8 @@ export const verifyPayment = async (req, res) => {
         total: Number(order.total_amount || 0),
         currency: order.currency || 'GHS',
         paymentMethod: order.payment_method,
+        totalQuantity: orderQuantity,
+        quantity: orderQuantity,
       },
       event: eventInfo,
       tickets,
