@@ -105,6 +105,7 @@ export const DEFAULT_PHONETIC_LEXICON = [
 export const VOICE_INTENTS = [
   'SEARCH_EVENTS',
   'BOOK_TICKETS',
+  'TICKET_PURCHASE_GUIDE',
   'CONFIRM_PAYMENT',
   'VERIFY_TRANSACTION',
   'VIEW_MY_TICKETS',
@@ -155,6 +156,24 @@ export const DEFAULT_TRAINING_SAMPLES = [
   { text: 'buy single admission ticket', intent: 'BOOK_TICKETS' },
   { text: 'reserve a single ticket for black sherif live', intent: 'BOOK_TICKETS' },
   { text: 'i need five tickets for my squad', intent: 'BOOK_TICKETS' },
+
+  // TICKET_PURCHASE_GUIDE
+  { text: 'how can i purchase a ticket', intent: 'TICKET_PURCHASE_GUIDE' },
+  { text: 'how do i purchase a ticket', intent: 'TICKET_PURCHASE_GUIDE' },
+  { text: 'how to purchase a ticket', intent: 'TICKET_PURCHASE_GUIDE' },
+  { text: 'how can they purchase a ticket', intent: 'TICKET_PURCHASE_GUIDE' },
+  { text: 'how can someone purchase a ticket', intent: 'TICKET_PURCHASE_GUIDE' },
+  { text: 'how do someone purchase ticket', intent: 'TICKET_PURCHASE_GUIDE' },
+  { text: 'how to buy a ticket on tribes and cliqs', intent: 'TICKET_PURCHASE_GUIDE' },
+  { text: 'how do i buy a ticket', intent: 'TICKET_PURCHASE_GUIDE' },
+  { text: 'how can i buy tickets', intent: 'TICKET_PURCHASE_GUIDE' },
+  { text: 'what is the process to purchase a ticket', intent: 'TICKET_PURCHASE_GUIDE' },
+  { text: 'what are the rules for purchasing tickets', intent: 'TICKET_PURCHASE_GUIDE' },
+  { text: 'explain the process to buy tickets', intent: 'TICKET_PURCHASE_GUIDE' },
+  { text: 'how does ticket purchasing work', intent: 'TICKET_PURCHASE_GUIDE' },
+  { text: 'steps to purchase an event pass', intent: 'TICKET_PURCHASE_GUIDE' },
+  { text: 'how do we buy tickets on here', intent: 'TICKET_PURCHASE_GUIDE' },
+  { text: 'what is the buying process for tickets', intent: 'TICKET_PURCHASE_GUIDE' },
 
   // CONFIRM_PAYMENT
   { text: 'yes proceed to payment', intent: 'CONFIRM_PAYMENT' },

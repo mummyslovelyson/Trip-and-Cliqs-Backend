@@ -6,6 +6,7 @@ import { sendNotification, notifyAdmins } from '../utils/notify.js';
 import { sendTicketTransferEmail, sendGateCheckInAlertEmail } from '../utils/email.js';
 import { sendSMS } from '../utils/sms.js';
 import { completeOrder, generateTicketsForOrder } from './orderController.js';
+import { resolveSingleFrontendUrl } from '../utils/urlHelper.js';
 
 /* ------------------------------------------------------------------ */
 /* Get ticket types for an event (public)                              */
@@ -1111,7 +1112,7 @@ export const transferTicket = async (req, res) => {
         ? `${new Date(ev.start_date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}${ev.start_time ? ` at ${ev.start_time}` : ''}`
         : 'Upcoming';
       const eventVenue = [ev.venue, ev.city].filter(Boolean).join(', ') || 'Venue TBA';
-      const frontendUrl = (process.env.FRONTEND_URL || '').split(',')[0].trim().replace(/\/+$/, '');
+      const frontendUrl = resolveSingleFrontendUrl(process.env.FRONTEND_URL, 'https://tribesandcliqsevent.vercel.app');
 
       // 1. In-app notification to recipient
       sendNotification({

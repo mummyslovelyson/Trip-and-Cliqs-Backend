@@ -1,7 +1,9 @@
+import 'dotenv/config';
 import nodemailer from 'nodemailer';
 import { getEmailConfig } from './settings.js';
+import { resolveSingleFrontendUrl, getFrontendUrl, createFrontendLink } from './urlHelper.js';
 
-const FRONTEND_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').split(',')[0].trim().replace(/\/+$/, '');
+const FRONTEND_URL = resolveSingleFrontendUrl(process.env.FRONTEND_URL, 'https://tribesandcliqsevent.vercel.app');
 
 /**
  * Direct HTTP dispatch to Resend's REST API (api.resend.com/emails).
@@ -415,7 +417,7 @@ export const sendTicketConfirmationEmail = async (to, order) => {
         return `
           <div style="background:#1C232B;border-radius:14px;border:1px solid #363F48;margin-bottom:16px;overflow:hidden;box-shadow:0 6px 18px rgba(0,0,0,0.35);">
             <div style="padding:12px 18px;background:#242B32;border-bottom:1px dashed #363F48;display:flex;justify-content:space-between;align-items:center;">
-              <span style="display:inline-block;padding:4px 10px;border-radius:6px;background:rgba(245,158,11,0.15);color:#FBBF24;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">
+              <span style="display:inline-block;padding:4px 10px;border-radius:6px;background:rgba(239,239,241,0.12);color:#EFEFF1;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">
                 ${tier}
               </span>
               <span style="font-family:monospace;color:#949599;font-size:12px;">Pass #${index + 1}</span>
@@ -424,7 +426,7 @@ export const sendTicketConfirmationEmail = async (to, order) => {
               <div style="background:#FFFFFF;padding:12px;border-radius:12px;display:inline-block;box-shadow:0 4px 14px rgba(0,0,0,0.25);">
                 <img src="${qrUrl}" alt="Entry QR Code" width="160" height="160" style="display:block;border:0;margin:0 auto;" />
               </div>
-              <p style="margin:12px 0 0 0;font-family:monospace;font-size:16px;color:#FBBF24;font-weight:bold;letter-spacing:2px;">
+              <p style="margin:12px 0 0 0;font-family:monospace;font-size:16px;color:#FFFFFF;font-weight:bold;letter-spacing:2px;">
                 ${escapeHtml(ticketNum)}
               </p>
               <p style="margin:6px 0 0 0;color:#CBD5E1;font-size:13px;">
@@ -500,7 +502,7 @@ export const sendTicketConfirmationEmail = async (to, order) => {
             <strong style="color:#FFFFFF;">Venue:</strong> ${cleanVenue}
           </p>
           <p style="margin:6px 0;color:#CBD5E1;font-size:14px;">
-            <strong style="color:#FFFFFF;">Order Reference:</strong> <code style="font-family:monospace;color:#FBBF24;font-size:14px;background:#242B32;padding:2px 6px;border-radius:4px;">${cleanRef}</code>
+            <strong style="color:#FFFFFF;">Order Reference:</strong> <code style="font-family:monospace;color:#CBD5E1;font-size:14px;background:#242B32;padding:2px 6px;border-radius:4px;border:1px solid #363F48;">${cleanRef}</code>
           </p>
           <p style="margin:6px 0;color:#CBD5E1;font-size:14px;">
             <strong style="color:#FFFFFF;">Total Paid:</strong> <strong style="color:#10B981;font-size:16px;">${cleanTotal}</strong>
@@ -577,7 +579,7 @@ export const sendGateCheckInAlertEmail = async ({
         </p>
         <div style="margin:24px 0;padding:20px;background:#1C232B;border-radius:12px;border:1px solid #363F48;">
           <p style="margin:4px 0;color:#CBD5E1;font-size:14px;"><strong>Pass Tier:</strong> ${escapeHtml(tier)}</p>
-          <p style="margin:4px 0;color:#CBD5E1;font-size:14px;"><strong>Ticket #:</strong> <code style="font-family:monospace;color:#FBBF24;">${escapeHtml(ticketNumber)}</code></p>
+          <p style="margin:4px 0;color:#CBD5E1;font-size:14px;"><strong>Ticket #:</strong> <code style="font-family:monospace;color:#CBD5E1;background:#242B32;padding:2px 6px;border-radius:4px;border:1px solid #363F48;">${escapeHtml(ticketNumber)}</code></p>
           <p style="margin:4px 0;color:#CBD5E1;font-size:14px;"><strong>Admission Time:</strong> ${timeStr}</p>
         </div>
         <p style="color:#CBD5E1;font-size:14px;text-align:center;line-height:1.6;">
@@ -623,7 +625,7 @@ export const sendAnnouncementEmail = async ({
     html: `
       <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:580px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
         <div style="text-align:center;margin-bottom:20px;">
-          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(234,179,8,0.15);color:#FBBF24;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">
+          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(239,239,241,0.12);color:#EFEFF1;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">
             ${badgeLabel}
           </span>
         </div>
@@ -699,7 +701,7 @@ export const sendOrganizerTicketSaleAlertEmail = async ({
           <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Event:</strong> ${cleanTitle}</p>
           <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Passes Sold:</strong> ${ticketCount} × ${cleanTier}</p>
           <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Buyer:</strong> ${cleanBuyer} (${cleanBuyerEmail})</p>
-          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Order Reference:</strong> <code style="font-family:monospace;color:#FBBF24;">${cleanRef}</code></p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Order Reference:</strong> <code style="font-family:monospace;color:#CBD5E1;background:#242B32;padding:2px 6px;border-radius:4px;border:1px solid #363F48;">${cleanRef}</code></p>
         </div>
 
         <div style="text-align:center;margin:28px 0;">
@@ -761,7 +763,7 @@ export const sendAdminTicketSaleAlertEmail = async ({
           <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Buyer:</strong> ${cleanBuyer} (${cleanEmail})</p>
           <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Pass Count:</strong> ${ticketCount}</p>
           <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Gross Revenue:</strong> <span style="color:#10B981;font-weight:bold;">${cleanTotal}</span></p>
-          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Payment Ref:</strong> <code style="font-family:monospace;color:#FBBF24;">${cleanRef}</code></p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Payment Ref:</strong> <code style="font-family:monospace;color:#CBD5E1;background:#242B32;padding:2px 6px;border-radius:4px;border:1px solid #363F48;">${cleanRef}</code></p>
         </div>
 
         <div style="text-align:center;margin:28px 0;">
@@ -802,7 +804,7 @@ export const sendAdminNewEventAlertEmail = async ({
     html: `
       <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:580px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
         <div style="text-align:center;margin-bottom:20px;">
-          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(234,179,8,0.15);color:#FBBF24;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">
+          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(239,239,241,0.12);color:#EFEFF1;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">
             Review Required
           </span>
         </div>
@@ -914,8 +916,8 @@ export const sendEventChangesRequestedEmail = async ({
           Hello ${cleanOrg}, an administrator reviewed <strong>"${cleanTitle}"</strong> and requested changes before it can be published.
         </p>
 
-        <div style="margin:24px 0;padding:20px;background:#1C232B;border-radius:14px;border-left:4px solid #FBBF24;border:1px solid #363F48;">
-          <p style="margin:0 0 8px 0;color:#FBBF24;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Admin Review Feedback</p>
+        <div style="margin:24px 0;padding:20px;background:#1C232B;border-radius:14px;border-left:4px solid #CBD5E1;border:1px solid #363F48;">
+          <p style="margin:0 0 8px 0;color:#EFEFF1;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Admin Review Feedback</p>
           <p style="margin:0;color:#E2E8F0;font-size:14px;line-height:1.6;white-space:pre-wrap;">${cleanFeedback}</p>
         </div>
 
@@ -952,8 +954,8 @@ export const sendEventUrgentUpdateAlertEmail = async ({
   const cleanName = escapeHtml(attendeeName);
   const cleanHeadline = escapeHtml(headline);
   const isCancelled = updateType === 'event_cancelled';
-  const badgeColor = isCancelled ? '#EF4444' : '#FBBF24';
-  const badgeBg = isCancelled ? 'rgba(239,68,68,0.15)' : 'rgba(234,179,8,0.15)';
+  const badgeColor = isCancelled ? '#EF4444' : '#CBD5E1';
+  const badgeBg = isCancelled ? 'rgba(239,68,68,0.15)' : 'rgba(239,239,241,0.12)';
   const badgeText = isCancelled ? 'Event Cancelled' : 'Urgent Schedule / Venue Notice';
   const actionLink = eventId ? `${FRONTEND_URL}/events/${eventId}` : `${FRONTEND_URL}/tickets`;
 
@@ -1177,7 +1179,7 @@ export const sendTicketTransferEmail = async ({
           <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Date:</strong> ${cleanDate}${cleanTime ? ` at ${cleanTime}` : ''}</p>
           <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Venue:</strong> ${cleanVenue}</p>
           ${seatNumber ? `<p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Seat:</strong> ${escapeHtml(seatNumber)}</p>` : ''}
-          ${ticketNumber ? `<p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Ticket Code:</strong> <code style="background:#242B32;padding:3px 6px;border-radius:4px;font-family:monospace;color:#FBBF24;">${escapeHtml(ticketNumber)}</code></p>` : ''}
+          ${ticketNumber ? `<p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Ticket Code:</strong> <code style="background:#242B32;padding:3px 6px;border-radius:4px;font-family:monospace;color:#CBD5E1;border:1px solid #363F48;">${escapeHtml(ticketNumber)}</code></p>` : ''}
 
           ${qrUrl ? `
             <div style="margin-top:20px;text-align:center;border-top:1px dashed #363F48;padding-top:18px;">
@@ -1236,7 +1238,7 @@ export const sendEventReminderEmail = async ({
             <div style="background:#FFFFFF;padding:10px;border-radius:8px;display:inline-block;">
               <img src="${qrUrl}" alt="QR Pass" width="140" height="140" style="display:block;margin:0 auto;border:0;" />
             </div>
-            <p style="margin:8px 0 0 0;font-family:monospace;font-size:14px;color:#FBBF24;font-weight:bold;">${escapeHtml(ticketNum)}</p>
+            <p style="margin:8px 0 0 0;font-family:monospace;font-size:14px;color:#FFFFFF;font-weight:bold;">${escapeHtml(ticketNum)}</p>
             <p style="margin:2px 0 0 0;color:#CBD5E1;font-size:12px;">${escapeHtml(t.tier || t.tier_name || 'Pass')}</p>
           </div>
         `;
@@ -1249,7 +1251,7 @@ export const sendEventReminderEmail = async ({
     html: `
       <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:580px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
         <div style="text-align:center;margin-bottom:20px;">
-          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(245,158,11,0.15);color:#FBBF24;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">
+          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(239,239,241,0.12);color:#EFEFF1;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">
             Event Reminder
           </span>
         </div>
@@ -1302,7 +1304,7 @@ export const sendEventInviteEmail = async ({
     html: `
       <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:580px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
         <div style="text-align:center;margin-bottom:24px;">
-          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(234,179,8,0.15);color:#FBBF24;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">Event Invitation</span>
+          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(239,239,241,0.12);color:#EFEFF1;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">Event Invitation</span>
         </div>
         <h2 style="margin-top:0;color:#FFFFFF;text-align:center;font-size:22px;">You're Invited!</h2>
         <p style="color:#A1A1AA;line-height:1.6;font-size:15px;text-align:center;">
@@ -1364,7 +1366,7 @@ export const sendSupportTicketCreatedEmail = async ({
         </p>
 
         <div style="margin:24px 0;padding:24px;background:#1C232B;border-radius:14px;border:1px solid #363F48;">
-          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Ticket Ref:</strong> <code style="font-family:monospace;color:#FBBF24;">${cleanRef}</code></p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Ticket Ref:</strong> <code style="font-family:monospace;color:#CBD5E1;background:#242B32;padding:2px 6px;border-radius:4px;border:1px solid #363F48;">${cleanRef}</code></p>
           <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Subject:</strong> ${cleanSubj}</p>
           <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Category:</strong> ${cleanCat}</p>
           <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Priority:</strong> <span style="text-transform:capitalize;">${escapeHtml(priority)}</span></p>
@@ -1408,8 +1410,8 @@ export const sendAdminNewSupportTicketEmail = async ({
   const cleanRef = escapeHtml(reference || `#${ticketId}`);
   const cleanMsg = escapeHtml(message.slice(0, 300));
   const isUrgent = priority === 'urgent' || priority === 'high';
-  const badgeColor = isUrgent ? '#EF4444' : '#FBBF24';
-  const badgeBg = isUrgent ? 'rgba(239,68,68,0.15)' : 'rgba(234,179,8,0.15)';
+  const badgeColor = isUrgent ? '#EF4444' : '#CBD5E1';
+  const badgeBg = isUrgent ? 'rgba(239,68,68,0.15)' : 'rgba(239,239,241,0.12)';
   const adminLink = `${FRONTEND_URL}/admin/support`;
 
   return sendEmail({
@@ -1428,7 +1430,7 @@ export const sendAdminNewSupportTicketEmail = async ({
         </p>
 
         <div style="margin:24px 0;padding:24px;background:#1C232B;border-radius:14px;border:1px solid #363F48;">
-          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Ticket:</strong> <code style="font-family:monospace;color:#FBBF24;">${cleanRef}</code></p>
+          <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Ticket:</strong> <code style="font-family:monospace;color:#CBD5E1;background:#242B32;padding:2px 6px;border-radius:4px;border:1px solid #363F48;">${cleanRef}</code></p>
           <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>User:</strong> ${cleanName} (${cleanEmail})</p>
           <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Category:</strong> ${escapeHtml(category)}</p>
           <p style="margin:6px 0;color:#CBD5E1;font-size:14px;"><strong>Subject:</strong> ${cleanSubj}</p>

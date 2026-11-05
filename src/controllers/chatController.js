@@ -1580,21 +1580,94 @@ INSTRUCTIONS:
     }
 
     // =========================================================================
+    // 7.10. TICKET PURCHASE PROCESS & RULES EXPLANATION
+    // =========================================================================
+    const wantsPurchaseProcessExplanation =
+      lower.includes('how can i purchase') ||
+      lower.includes('how do i purchase') ||
+      lower.includes('how to purchase') ||
+      lower.includes('how can they purchase') ||
+      lower.includes('how can someone purchase') ||
+      lower.includes('how do someone purchase') ||
+      lower.includes('how does one purchase') ||
+      lower.includes('how to buy a ticket') ||
+      lower.includes('how do i buy a ticket') ||
+      lower.includes('how can i buy a ticket') ||
+      lower.includes('how to buy ticket') ||
+      lower.includes('how do i buy tickets') ||
+      lower.includes('how can i buy tickets') ||
+      lower.includes('how do we buy') ||
+      lower.includes('how can we buy') ||
+      lower.includes('how can someone buy') ||
+      lower.includes('process to purchase') ||
+      lower.includes('process of purchasing') ||
+      lower.includes('process for purchasing') ||
+      lower.includes('process to buy') ||
+      lower.includes('process of buying') ||
+      lower.includes('steps to purchase') ||
+      lower.includes('steps to buy') ||
+      lower.includes('rules to purchase') ||
+      lower.includes('rules for purchasing') ||
+      lower.includes('rules for buying') ||
+      lower.includes('how does purchasing work') ||
+      lower.includes('how does buying a ticket work') ||
+      lower.includes('explain how to buy') ||
+      lower.includes('explain how to purchase') ||
+      lower.includes('explain the purchase process') ||
+      lower.includes('explain the buying process') ||
+      ((lower.includes('how to') || lower.includes('how do') || lower.includes('how can') || lower.includes('what is the process') || lower.includes('what are the rules')) &&
+       (lower.includes('purchase') || lower.includes('buy')) &&
+       (lower.includes('ticket') || lower.includes('tickets') || lower.includes('pass') || lower.includes('passes')));
+
+    if (wantsPurchaseProcessExplanation) {
+      const isVoiceMode = mode === 'voice' || context.mode === 'voice' || context.isVoice;
+      const voiceReply = "To purchase a ticket on Tribes & Cliqs, select an event from the Explore tab, choose your ticket tier and quantity, and proceed to checkout. Your tickets are held for ten minutes while you pay securely with Mobile Money or bank card. Once confirmed, your digital pass with an offline QR code is immediately available in My Tickets.";
+      const chatReply = `**How to Purchase Tickets on Tribes & Cliqs (Step-by-Step Guide & Rules)** 🎟️🇬🇭\n\nPurchasing tickets on Tribes & Cliqs is fast, secure, and completely cashless:\n\n1. **Find & Select Your Event:**\n   • Browse upcoming concerts, festivals, nightlife, and cultural shows under **Explore**, or ask Cliq to recommend events in Accra, Kumasi, or Takoradi.\n\n2. **Choose Ticket Tier & Quantity:**\n   • Pick your preferred ticket tier (e.g., **Regular**, **VIP**, **VVIP**, **Early Bird**, or **Table/Cabana reservations**).\n   • Select the number of passes you need.\n\n3. **10-Minute Cart Reservation Hold:**\n   • When you proceed to checkout, your tickets are temporarily reserved for **10 minutes** so no one else can purchase them while you complete your payment.\n\n4. **Secure Checkout & Payment (Paystack):**\n   • **Mobile Money (MTN MoMo, Telecel Cash, AT Money):** Enter your phone number and approve the instant USSD prompt on your phone with your Mobile Money PIN.\n   • **Debit / Credit Cards:** Visa, Mastercard, or Verve with 256-bit encryption.\n\n5. **Instant Digital Admission Pass:**\n   • Your digital ticket with an **encrypted QR entry pass** is generated instantly and saved in **My Tickets**.\n   • You also receive immediate confirmation via **Email** and **SMS**.\n   • QR codes work **100% offline** at the gate—no internet needed at the venue!\n\n6. **Key Rules & Protections:**\n   • **Single Ticket Focus:** If you buy 1 ticket, only a single focused admission pass is displayed.\n   • **Free Ticket Transfer:** Transfer passes to friends anytime via email or phone.\n   • **Verified Resale:** If you can’t attend, resell safely at face value on our verified marketplace.\n   • **Full Refund:** 100% automatic refund if an event is cancelled by the organizer.\n\nReady to get started? Tap below to explore events:`;
+
+      return res.json({
+        reply: isVoiceMode ? voiceReply : chatReply,
+        intent: 'TICKET_PURCHASE_GUIDE',
+        actions: [
+          { type: 'NAVIGATE', label: 'Explore Events to Buy', path: '/explore' },
+          { type: 'NAVIGATE', label: 'View My Tickets', path: '/attendee/tickets' },
+        ],
+        suggestions: [
+          'What events are happening in Accra this weekend?',
+          'What payment methods are supported?',
+          'How do I transfer a ticket to a friend?',
+          'How does verified ticket resale work?',
+        ],
+      });
+    }
+
+    // =========================================================================
     // 8. AUTONOMOUS BOOKING: SEARCH THROUGH, SELECT TICKET & PREPARE PAYMENT
     // =========================================================================
     const wantsExplicitBooking =
-      lower.includes('book') ||
-      lower.includes('buy ticket') ||
-      lower.includes('buy tickets') ||
-      lower.includes('reserve ticket') ||
-      lower.includes('reserve tickets') ||
-      lower.includes('purchase ticket') ||
-      lower.includes('purchase tickets') ||
-      lower.includes('purchase') ||
-      lower.includes('get ticket') ||
-      lower.includes('get tickets') ||
-      lower.includes('ticket for') ||
-      lower.includes('tickets for');
+      !wantsPurchaseProcessExplanation &&
+      (
+        lower.startsWith('book ') ||
+        lower.includes('book ticket') ||
+        lower.includes('book tickets') ||
+        lower.includes('book a ticket') ||
+        lower.includes('book two') ||
+        lower.includes('book 1') ||
+        lower.includes('book 2') ||
+        lower.includes('book 3') ||
+        lower.includes('buy ticket for') ||
+        lower.includes('buy tickets for') ||
+        lower.includes('reserve ticket for') ||
+        lower.includes('purchase ticket for') ||
+        lower.includes('purchase tickets for') ||
+        lower.includes('purchase 1') ||
+        lower.includes('purchase 2') ||
+        lower.includes('purchase two') ||
+        lower.includes('get ticket for') ||
+        lower.includes('get tickets for') ||
+        (lower.includes('book') && (lower.includes('vip') || lower.includes('vvip') || lower.includes('regular') || lower.includes('table'))) ||
+        (lower.includes('buy') && (lower.includes('vip') || lower.includes('vvip') || lower.includes('regular') || lower.includes('table'))) ||
+        (lower.includes('purchase') && (lower.includes('vip') || lower.includes('vvip') || lower.includes('regular') || lower.includes('table')))
+      );
 
     const wantsAttendance =
       lower.includes('attend') ||
@@ -2004,13 +2077,22 @@ COMPREHENSIVE TRIBES & CLIQS PLATFORM KNOWLEDGE BASE:
 9. CUSTOMER SUPPORT:
    - Support Email: support@tribesandcliqs.com.
    - Immediate assistance for gate entry issues, double payments, or transfer questions.
+10. HOW TO PURCHASE TICKETS (MANDATORY RULE):
+   - When a user asks HOW to purchase a ticket, how they can buy a ticket, or asks for the purchase rules/process, you MUST clearly explain the step-by-step process:
+     Step 1: Browse upcoming events in Explore or ask Cliq for recommendations.
+     Step 2: Choose your ticket tier (Regular, VIP, VVIP, Table) and number of passes.
+     Step 3: 10-minute temporary cart hold locks your tickets during checkout.
+     Step 4: Pay in Ghana Cedis (GHS) via Mobile Money (MTN MoMo, Telecel Cash, AT Money via USSD prompt with PIN) or Visa/Mastercard.
+     Step 5: Digital admission QR pass is immediately saved to My Tickets (works offline at the gate) and emailed/SMSed.
+     Step 6: Single-ticket purchases display a single admission ticket pass. Free ticket transfers and verified resale are available.
+   - When answering how to purchase tickets, set "intent": "TICKET_PURCHASE_GUIDE" and set "showEvents": false. Never randomly create an order or force-book a ticket when the user is simply asking how to purchase.
 ${dynamicKnowledgeText}
 
 RESPONSE FORMAT:
 You MUST respond strictly with valid JSON conforming to this schema:
 {
   "reply": "Your warm, natural, human response addressing the user's inquiry thoroughly.",
-  "intent": "SEARCH_EVENTS" | "ORGANIZER_GUIDE" | "CHECKIN_SCANNER" | "PAYMENT_INFO" | "TRANSFER_TICKET" | "RESALE_MARKETPLACE" | "VENUE_POLICY" | "SQUAD_SOCIAL" | "EVENT_REMINDERS" | "ACCOUNT_MANAGEMENT" | "CUSTOMER_SUPPORT" | "GENERAL_CHAT",
+  "intent": "SEARCH_EVENTS" | "TICKET_PURCHASE_GUIDE" | "ORGANIZER_GUIDE" | "CHECKIN_SCANNER" | "PAYMENT_INFO" | "TRANSFER_TICKET" | "RESALE_MARKETPLACE" | "VENUE_POLICY" | "SQUAD_SOCIAL" | "EVENT_REMINDERS" | "ACCOUNT_MANAGEMENT" | "CUSTOMER_SUPPORT" | "GENERAL_CHAT",
   "showEvents": true or false
 }
 IMPORTANT: Set "showEvents": true ONLY when the user is explicitly searching for, discovering, or buying event passes. For system guidance, organizer queries, payments, check-in, transfers, dress codes, or platform help, set "showEvents": false so unrelated concert listings are not pushed.
@@ -2073,6 +2155,10 @@ ${liveEventsSummary || 'None'}`;
           replyText = mappedEventCards.length > 0
             ? `I found ${mappedEventCards.length} events${cityLabel}${timeLabel}. Here are the closest matches:`
             : `I couldn't find any events matching that right now. Browse our full explore list below!`;
+        } else if (voicePred.intent === 'TICKET_PURCHASE_GUIDE') {
+          showEvents = false;
+          returnedIntent = 'TICKET_PURCHASE_GUIDE';
+          replyText = "To purchase a ticket on Tribes & Cliqs: 1. Browse events in Explore or search by city. 2. Select your ticket tier (Regular, VIP, VVIP, Table) and quantity. 3. Proceed to checkout where tickets are locked for 10 minutes. 4. Pay in Ghana Cedis via Mobile Money (approve the USSD prompt with your PIN) or Visa/Mastercard. 5. Your digital QR admission pass is immediately saved to My Tickets and sent via email/SMS. Passes work offline at the gate.";
         } else if (voicePred.intent === 'ORGANIZER_GUIDE') {
           showEvents = false;
           returnedIntent = 'ORGANIZER_GUIDE';
@@ -2123,12 +2209,14 @@ ${liveEventsSummary || 'None'}`;
 
     const suggestionsToReturn = showEvents
       ? [
+          'How do I purchase a ticket?',
           'What events are happening in Accra this weekend?',
           'How do I create an event as an organizer?',
           'What payment methods are supported?',
           'Show my active tickets',
         ]
       : [
+          'How do I purchase a ticket?',
           'How do I create and publish an event?',
           'How do I scan tickets at the gate?',
           'Can I pay with Mobile Money?',

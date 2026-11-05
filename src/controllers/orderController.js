@@ -9,6 +9,7 @@ import { sendNotification, notifyAdmins } from '../utils/notify.js';
 import { logAudit } from '../utils/audit.js';
 import textPdf from '../utils/pdf.js';
 import { REFUND_POLICY_CIRCUMSTANCES, getPolicyClause, formatPolicyCitation } from '../constants/refundPolicy.js';
+import { resolveSingleFrontendUrl } from '../utils/urlHelper.js';
 
 /**
  * Validate and price a coupon for an event.
@@ -767,7 +768,7 @@ export const getOrderInvoice = async (req, res) => {
         '',
         'Thank you for booking with Tribes & Cliqs.',
         'This receipt is an official proof of payment and ticket fulfillment.',
-        `Verification Link: ${(process.env.FRONTEND_URL || 'https://tribesandcliqs.com').split(',')[0].trim().replace(/\/+$/, '')}/verify/${order.payment_reference}`,
+        `Verification Link: ${resolveSingleFrontendUrl(process.env.FRONTEND_URL, 'https://tribesandcliqsevent.vercel.app')}/verify/${order.payment_reference}`,
       ],
     });
 

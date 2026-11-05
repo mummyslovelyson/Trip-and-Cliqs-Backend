@@ -9,6 +9,7 @@
  */
 
 import { getPaystackSecretKey } from './settings.js';
+import { resolveSingleFrontendUrl } from './urlHelper.js';
 
 const BASE_URL = 'https://api.paystack.co';
 
@@ -38,20 +39,17 @@ export const initializeTransaction = async ({
     return { status: false, error: 'Paystack secret key not configured. Please set PAYSTACK_SECRET_KEY in system settings or .env' };
   }
   try {
-    // Resolve a single, valid frontend origin (handles comma-separated FRONTEND_URL like in production)
-    const rawOrigins = (process.env.FRONTEND_URL || '').split(',').map((s) => s.trim()).filter(Boolean);
-    let resolvedFrontend = rawOrigins[0] ? rawOrigins[0].replace(/\/+$/, '') : '';
-    if (!resolvedFrontend || !resolvedFrontend.startsWith('http')) {
-      resolvedFrontend = process.env.NODE_ENV === 'production' ? 'https://tribesandcliqs.app' : 'http://localhost:5173';
-    }
+    // Resolve a single, valid frontend origin (handles comma/space-separated FRONTEND_URL in production)
+    const fallbackFrontend = process.env.NODE_ENV === 'production' ? 'https://tribesandcliqsevent.vercel.app' : 'http://localhost:5173';
+    let resolvedFrontend = resolveSingleFrontendUrl(process.env.FRONTEND_URL, fallbackFrontend);
 
     let resolvedCallbackUrl = callback_url || process.env.PAYSTACK_CALLBACK_URL;
     if (resolvedCallbackUrl) {
-      if (resolvedCallbackUrl.includes(',')) {
-        resolvedCallbackUrl = resolvedCallbackUrl.split(',')[0].trim();
-      }
+      resolvedCallbackUrl = String(resolvedCallbackUrl).trim();
       if (resolvedCallbackUrl.startsWith('/')) {
         resolvedCallbackUrl = `${resolvedFrontend}${resolvedCallbackUrl}`;
+      } else {
+        resolvedCallbackUrl = resolveSingleFrontendUrl(resolvedCallbackUrl, `${resolvedFrontend}/paystack_success`);
       }
     } else {
       resolvedCallbackUrl = `${resolvedFrontend}/paystack_success`;

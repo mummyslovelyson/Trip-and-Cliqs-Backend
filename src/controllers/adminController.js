@@ -3524,6 +3524,12 @@ export const COMPREHENSIVE_PLATFORM_KNOWLEDGE = [
     instruction_or_answer: 'Organizers can view confirmed guest registrations and export complete attendee reports to CSV or Excel from the Event Management dashboard to coordinate with gate staff, security, or event sponsors.',
   },
   {
+    title: 'How to Purchase a Ticket (Step-by-Step Process & Rules)',
+    category: 'ticketing',
+    keywords: 'how can i purchase, how to purchase, how do i buy ticket, how can they purchase, purchase process, buying rules, steps to buy, how to buy ticket, ticket purchase rules',
+    instruction_or_answer: 'To purchase a ticket on Tribes & Cliqs: 1. Find an event in Explore or ask Cliq to recommend events in Accra, Kumasi, or Takoradi. 2. Select your ticket tier (Regular, VIP, VVIP, Table) and quantity. 3. Proceed to checkout where tickets are locked for 10 minutes. 4. Pay in Ghana Cedis via MTN MoMo, Telecel Cash, AT Money (approve USSD prompt with PIN), or Visa/Mastercard. 5. Your digital QR admission pass is immediately saved to My Tickets and sent via email/SMS. Passes work offline at the gate. If you purchase 1 ticket, only a single pass is displayed.',
+  },
+  {
     title: 'Digital QR Entry Passes & Offline Wallet',
     category: 'ticketing',
     keywords: 'my tickets, qr pass, entry pass, barcode, digital pass, wallet, offline ticket',

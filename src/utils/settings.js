@@ -73,9 +73,14 @@ export const getEmailConfig = async () => {
   return { resendKey, smtpHost, smtpPort, smtpUser, smtpPass, fromEmail, fromName };
 };
 
+export const getFrontendUrlSetting = async () => {
+  const dbUrl = await getSetting('frontend_url');
+  return dbUrl || process.env.FRONTEND_URL || '';
+};
+
 export const clearSettingsCache = () => {
   cache.clear();
   lastFetch = 0;
 };
 
-export default { getSetting, getPaystackSecretKey, getPaystackPublicKey, getSmsApiKey, getSmsSenderId, getEmailConfig, clearSettingsCache };
+export default { getSetting, getPaystackSecretKey, getPaystackPublicKey, getGeminiApiKey, getSmsApiKey, getSmsSenderId, getEmailConfig, getFrontendUrlSetting, clearSettingsCache };
