@@ -242,7 +242,7 @@ export const register = async (req, res) => {
     );
 
     // Background dispatches (safe, non-blocking)
-    sendVerificationEmail(cleanEmail, registrationId, otp).catch((err) =>
+    sendVerificationEmail(cleanEmail, registrationId, otp, cleanName).catch((err) =>
       console.error('[authController.register] Verification email failed:', err.message)
     );
     if (cleanPhone) {
@@ -328,11 +328,25 @@ export const login = async (req, res) => {
     }
 
      if (user.role !== 'admin' && (user.email_verified === false || user.email_verified === 0)) {
+       const otp = crypto.randomInt(100000, 1000000).toString();
+       const verifyToken = uuidv4();
+       await createEmailVerification(user.id, otp, verifyToken).catch(() => {});
+
+       sendVerificationEmail(user.email, verifyToken, otp, user.name).catch((err) =>
+         console.error('[authController.login] Verification email failed:', err.message)
+       );
+       if (user.phone) {
+         sendVerificationSMS(user.phone, otp).catch((err) =>
+           console.error('[authController.login] SMS dispatch error:', err.message)
+         );
+       }
+
        return res.status(403).json({
-         message: 'Please verify your account before logging in. A 6-digit code was sent to your SMS and email.',
+         message: 'Please verify your account before logging in. A 6-digit verification code has been sent to your email' + (user.phone ? ' and phone.' : '.'),
          requiresVerification: true,
          email: user.email,
          phone: user.phone,
+         registrationId: verifyToken,
        });
      }
 
@@ -708,14 +722,16 @@ export const verifyEmail = async (req, res) => {
     const cleanEmail = email ? String(email).trim().toLowerCase() : '';
     const cleanPhone = phone ? String(phone).trim() : '';
     const cleanRegId = registrationId ? String(registrationId).trim() : '';
+    const cleanToken = token ? String(token).trim() : '';
 
     // --- STEP 1: Check pending_registrations (Pre-verification creation) ---
-    if (cleanOtp && (cleanRegId || cleanEmail || cleanPhone)) {
+    const searchRegId = cleanRegId || cleanToken;
+    if (searchRegId || (cleanOtp && (cleanEmail || cleanPhone))) {
       let pending = null;
-      if (cleanRegId) {
+      if (searchRegId) {
         const [rows] = await pool.execute(
           `SELECT * FROM pending_registrations WHERE registration_id = ? AND expires_at > NOW()`,
-          [cleanRegId],
+          [searchRegId],
         );
         pending = rows[0];
       }
@@ -735,8 +751,10 @@ export const verifyEmail = async (req, res) => {
       }
 
       if (pending) {
-        const expectedHash = hashToken(`pending_otp:${cleanOtp}`);
-        if (pending.otp_hash === expectedHash) {
+        const isOtpMatch = cleanOtp && pending.otp_hash === hashToken(`pending_otp:${cleanOtp}`);
+        const isTokenMatch = cleanToken && cleanToken === pending.registration_id;
+
+        if (isOtpMatch || isTokenMatch) {
           // Double check email uniqueness before final insert
           const [dupCheck] = await pool.execute('SELECT id FROM users WHERE email = ?', [pending.email]);
           if (dupCheck.length) {
@@ -968,7 +986,7 @@ export const resendVerification = async (req, res) => {
 
       // Always send to email if available
       if (destEmail && channel !== 'sms_only') {
-        sendVerificationEmail(destEmail, pending.registration_id, otp).catch((err) =>
+        sendVerificationEmail(destEmail, pending.registration_id, otp, pending.name).catch((err) =>
           console.error('[authController.resendVerification] email send failed:', err.message)
         );
       }
@@ -1006,7 +1024,7 @@ export const resendVerification = async (req, res) => {
       const destPhone = cleanPhone || user.phone;
 
       if (destEmail && channel !== 'sms_only') {
-        sendVerificationEmail(destEmail, verifyToken, otp).catch((err) =>
+        sendVerificationEmail(destEmail, verifyToken, otp, user.name).catch((err) =>
           console.error('[authController.resendVerification] email send failed:', err.message)
         );
       }

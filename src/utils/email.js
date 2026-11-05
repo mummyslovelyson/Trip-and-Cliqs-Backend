@@ -109,8 +109,8 @@ export const sendEmail = async (optsOrTo, subjectArg, htmlArg, textArg) => {
         // If domain is unverified (initial test mode on Resend), retry automatically with onboarding@resend.dev
         if (
           !sendRes.ok &&
-          sendRes.status === 403 &&
-          String(sendRes.data?.message || '').toLowerCase().includes('domain')
+          (sendRes.status === 403 || sendRes.status === 422 || sendRes.status === 400) &&
+          /domain|verify|from/i.test(String(sendRes.data?.message || sendRes.data?.error || ''))
         ) {
           console.warn(
             `[email] Domain "${from}" is not yet verified on resend.com. Retrying with test sender "onboarding@resend.dev"...`,
@@ -137,7 +137,14 @@ export const sendEmail = async (optsOrTo, subjectArg, htmlArg, textArg) => {
 
         const errMsg = sendRes.data?.message || sendRes.data?.error || `HTTP ${sendRes.status}`;
         console.error(`[email] Resend API error (${sendRes.status}):`, errMsg);
-        return { success: false, provider: 'resend', error: errMsg };
+
+        // Fall through to SMTP if configured, instead of failing immediately
+        const transport = getSmtpTransport(cfg);
+        if (transport) {
+          console.log(`[email] Resend failed; attempting fallback to SMTP transport...`);
+        } else {
+          return { success: false, provider: 'resend', error: errMsg };
+        }
       } catch (resendFetchErr) {
         console.error('[email] Resend network dispatch failed:', resendFetchErr.message);
       }
@@ -209,39 +216,100 @@ const buildGoogleMapsUrl = (venue, address, city) => {
  * Templated helpers
  * ------------------------------------------------------------------ */
 
-export const sendVerificationEmail = async (to, token, otp = null) => {
-  const link = `${FRONTEND_URL}/verify-email?token=${token}${to ? `&email=${encodeURIComponent(to)}` : ''}`;
-  const otpSection = otp
+export const sendVerificationEmail = async (toOrOpts, tokenArg = null, otpArg = null, nameArg = null) => {
+  let to, token, otp, name;
+
+  if (toOrOpts && typeof toOrOpts === 'object') {
+    to = toOrOpts.to || toOrOpts.email;
+    token = toOrOpts.token || toOrOpts.registrationId;
+    otp = toOrOpts.otp || toOrOpts.code;
+    name = toOrOpts.name;
+  } else {
+    to = toOrOpts;
+    token = tokenArg;
+    otp = otpArg;
+    name = nameArg;
+  }
+
+  // If token is a 6-digit code and otp wasn't explicitly supplied, swap them
+  if (!otp && typeof token === 'string' && /^\d{4,8}$/.test(token.trim())) {
+    otp = token.trim();
+    token = null;
+  }
+
+  const finalOtp = otp ? String(otp).trim() : null;
+  const finalToken = token || finalOtp || '';
+  const cleanTo = String(to || '').trim().toLowerCase();
+  const cleanName = escapeHtml(name || 'Friend');
+
+  const link = createFrontendLink(
+    `/verify-email?token=${encodeURIComponent(finalToken)}${cleanTo ? `&email=${encodeURIComponent(cleanTo)}` : ''}${finalOtp ? `&code=${encodeURIComponent(finalOtp)}` : ''}`
+  );
+
+  const otpDigitsHtml = finalOtp
+    ? finalOtp
+        .split('')
+        .map(
+          (d) => `
+        <span style="display:inline-block;width:42px;height:52px;line-height:52px;background:#242B32;border:1px solid #494F55;border-radius:10px;color:#FFFFFF;font-size:26px;font-weight:800;font-family:monospace;margin:0 3px;box-shadow:0 4px 10px rgba(0,0,0,0.35);vertical-align:middle;">
+          ${d}
+        </span>
+      `
+        )
+        .join('')
+    : '';
+
+  const otpSection = finalOtp
     ? `
-      <div style="margin:24px 0;padding:20px;background:#1C232B;border-radius:12px;border:1px solid #363F48;text-align:center;">
-        <p style="color:#949599;font-size:12px;margin:0 0 8px 0;text-transform:uppercase;letter-spacing:1px;font-weight:600;">Your 6-Digit Verification Code</p>
-        <div style="font-size:32px;font-weight:bold;letter-spacing:8px;color:#FFFFFF;font-family:monospace;">${otp}</div>
-        <p style="color:#64748b;font-size:12px;margin:8px 0 0 0;">Valid for 15 minutes</p>
+      <div style="margin:26px 0;padding:26px 20px;background:#1C232B;border-radius:14px;border:1px solid #363F48;text-align:center;">
+        <p style="color:#949599;font-size:12px;margin:0 0 14px 0;text-transform:uppercase;letter-spacing:1.5px;font-weight:700;">
+          Your 6-Digit Verification Code
+        </p>
+        <div style="text-align:center;margin:12px 0;">
+          ${otpDigitsHtml}
+        </div>
+        <p style="color:#CBD5E1;font-size:13px;margin:14px 0 0 0;line-height:1.5;">
+          Enter this code in the app or on the verification screen to activate your account.<br/>
+          <span style="color:#64748B;font-size:11px;">Valid for 15 minutes &bull; Do not share this code with anyone</span>
+        </p>
       </div>`
     : '';
 
+  const subject = finalOtp
+    ? `🔐 Your Verification Code is ${finalOtp} — Tribes & Cliqs`
+    : 'Verify your email — Tribes & Cliqs';
+
   return sendEmail({
-    to,
-    subject: otp ? `Your Verification Code: ${otp} — Tribes & Cliqs` : 'Verify your email — Tribes & Cliqs',
+    to: cleanTo,
+    subject,
     html: `
-      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:580px;margin:auto;background:#14191E;color:#EFEFF1;padding:32px;border-radius:16px;border:1px solid #2B333B;">
-        <div style="text-align:center;margin-bottom:20px;">
-          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(239,239,241,0.1);color:#EFEFF1;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;">Account Security</span>
+      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;max-width:580px;margin:auto;background:#14191E;color:#EFEFF1;padding:36px;border-radius:18px;border:1px solid #2B333B;line-height:1.5;">
+        <div style="text-align:center;margin-bottom:22px;">
+          <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(239,239,241,0.12);color:#EFEFF1;font-size:12px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">
+            Account Security &bull; Verification
+          </span>
         </div>
-        <h2 style="margin-top:0;color:#FFFFFF;text-align:center;font-size:22px;">Welcome to Tribes &amp; Cliqs!</h2>
-        <p style="color:#A1A1AA;line-height:1.6;font-size:15px;text-align:center;">
-          Thank you for joining. Please use the verification code below or click the button to verify your account and get started.
+        <h2 style="margin-top:0;color:#FFFFFF;text-align:center;font-size:24px;font-weight:800;">
+          Welcome to Tribes &amp; Cliqs!
+        </h2>
+        <p style="color:#A1A1AA;line-height:1.6;font-size:15px;text-align:center;margin-bottom:20px;">
+          Hi ${cleanName}, thank you for joining. Please use your 6-digit verification code below or click the button to verify your account and get started.
         </p>
+
         ${otpSection}
+
         <div style="text-align:center;margin:28px 0;">
-          <a href="${link}" style="display:inline-block;padding:12px 28px;background:#EFEFF1;color:#14191E;font-weight:700;border-radius:8px;text-decoration:none;font-size:14px;">Verify Account</a>
+          <a href="${link}" style="display:inline-block;padding:14px 32px;background:#EFEFF1;color:#14191E;font-weight:700;border-radius:10px;text-decoration:none;font-size:14px;box-shadow:0 6px 16px rgba(0,0,0,0.35);">
+            Verify Account Instantly
+          </a>
         </div>
-        <p style="color:#64748B;font-size:12px;line-height:1.5;margin-bottom:0;text-align:center;">
+
+        <p style="color:#64748B;font-size:12px;line-height:1.5;margin-bottom:0;text-align:center;border-top:1px solid #2B333B;padding-top:20px;">
           If you did not request this email, you can safely ignore it.
         </p>
       </div>`,
-    text: otp
-      ? `Welcome to Tribes & Cliqs!\n\nYour 6-digit verification code is: ${otp}\n(Valid for 15 minutes)\n\nOr click here to verify: ${link}`
+    text: finalOtp
+      ? `Welcome to Tribes & Cliqs!\n\nHi ${cleanName},\n\nYour 6-digit verification code is: ${finalOtp}\n(Valid for 15 minutes)\n\nEnter this code in the app, or verify directly with this link:\n${link}\n\nIf you did not request this code, you can ignore this email.`
       : `Welcome to Tribes & Cliqs! Verify your email: ${link}`,
   });
 };
