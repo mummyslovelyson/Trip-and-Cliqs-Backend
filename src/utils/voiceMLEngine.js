@@ -483,14 +483,19 @@ export function formatVoiceUtterance(text, options = {}) {
   spoken = spoken.replace(/\bVVIP\b/g, 'V.V.I.P.');
   spoken = spoken.replace(/\bVIP\b/g, 'V.I.P.');
 
-  // 6. Strip emojis and unusual symbols
+  // 6. Strip robotic disclaimers and bot prefixes
+  spoken = spoken.replace(/\b(As an AI|As an artificial intelligence|I am a bot|I am an AI)[,.]?\s*/gi, '');
+  spoken = spoken.replace(/\b(I am|I'm) Clqs Bot[,.]?\s*/gi, '');
+  spoken = spoken.replace(/\bClqs Bot\b/gi, 'Cliq');
+
+  // 7. Strip emojis and unusual symbols
   spoken = spoken.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F900}-\u{1F9FF}\u{1F1E0}-\u{1F1FF}]/gu, '');
   spoken = spoken.replace(/[|—─_]/g, ' ');
 
-  // 7. Normalize whitespace
+  // 8. Normalize whitespace
   spoken = spoken.replace(/\s+/g, ' ').trim();
 
-  // 8. Conciseness adaptation: Take the first 2-3 spoken sentences
+  // 9. Conciseness adaptation: Take the first 2-3 spoken sentences
   const sentences = spoken.match(/[^.!?]+[.!?]+/g) || [spoken];
   if (sentences.length > 2) {
     spoken = sentences.slice(0, 2).join(' ').trim();

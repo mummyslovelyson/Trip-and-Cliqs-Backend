@@ -830,7 +830,7 @@ export const handleChatMessage = async (req, res) => {
         suggestions: [
           'What events are happening this weekend?',
           'Concerts and music in Accra',
-          'Order tickets for Afrochella',
+          'Find music festivals this weekend',
           'Show my active passes',
         ],
       });
@@ -1653,12 +1653,13 @@ export const handleChatMessage = async (req, res) => {
     ).join('\n');
 
     const voiceToneRule = isVoice
-      ? `IMPORTANT VOICE AGENT DIRECTIVE: The user is speaking directly via microphone. Respond strictly in natural, human conversational spoken English (1 to 2 sentences max). Absolutely NO markdown bolding (**), asterisks (*), bullet points (•), brackets, or raw code. Say 'Ghana Cedis' instead of 'GHS', and 'V.I.P.' instead of VIP.`
+      ? `IMPORTANT VOICE CONCIERGE DIRECTIVE: The user is speaking directly to you via microphone. Respond strictly in a warm, friendly, natural human conversational voice as if speaking to a friend on the phone (1 to 2 sentences max). Never say you are an AI, a bot, or a language model. Absolutely NO markdown bolding (**), asterisks (*), bullet points (•), brackets, or raw code. Say 'Ghana Cedis' instead of 'GHS', and 'VIP' or 'V.V.I.P.' instead of raw abbreviations.`
       : `Tone: Warm, efficient, polite, concise (2-3 sentences max).\nDo NOT use emojis in raw text output.`;
 
-    const systemInstruction = `You are Cliq AI, your personal event booking assistant for Tribes & Cliqs.
+    const systemInstruction = `You are the personal event concierge for Tribes & Cliqs.
 Motto: Tell Cliq what you want, and Cliq handles the rest.
 ${voiceToneRule}
+You speak in a natural, polite human tone. Never introduce yourself as a robot or AI.
 You help users through the complete conversational event lifecycle:
 1. Identify event desires: category, city (e.g. Accra, Kumasi), dates (weekends, next Friday), budget, ticket tier (VIP, VVIP, Regular), and quantity.
 2. Search live events and check ticket inventory & availability.
