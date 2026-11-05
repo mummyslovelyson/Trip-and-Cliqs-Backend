@@ -237,8 +237,13 @@ if (process.env.NODE_ENV !== 'test') {
 /* ------------------------------------------------------------------ */
 if (process.env.NODE_ENV !== 'test') {
   const { runReminderJob } = await import('./utils/reminders.js');
-  runReminderJob();
-  setInterval(runReminderJob, 15 * 60 * 1000).unref();
+  const { processEventReminders } = await import('./utils/eventReminders.js');
+  runReminderJob().catch((err) => console.warn('[server.reminders] initial run warning:', err.message));
+  processEventReminders().catch((err) => console.warn('[server.eventReminders] initial run warning:', err.message));
+  setInterval(() => {
+    runReminderJob().catch((err) => console.warn('[server.reminders] cycle warning:', err.message));
+    processEventReminders().catch((err) => console.warn('[server.eventReminders] cycle warning:', err.message));
+  }, 15 * 60 * 1000).unref();
 }
 
 /* ------------------------------------------------------------------ */

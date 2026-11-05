@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import pool from '../config/db.js';
 import { sendMarketingEmail as dispatchMarketingEmail, sendAnnouncementEmail } from '../utils/email.js';
-import { sendNotification, notifyAdmins } from '../utils/notify.js';
+import { sendNotification, sendNotificationToMany, notifyAdmins } from '../utils/notify.js';
 import { logAudit } from '../utils/audit.js';
 import { validatePassword } from '../utils/password.js';
 import textPdf from '../utils/pdf.js';

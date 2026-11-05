@@ -128,6 +128,17 @@ const buildMeta = (req, family) => ({
   family,
 });
 
+/** Clean up old expired records to keep tables lean */
+const cleanExpiredVerificationRecords = async () => {
+  try {
+    await pool.execute(`DELETE FROM pending_registrations WHERE expires_at < NOW() - INTERVAL '2 hours'`);
+    await pool.execute(`DELETE FROM email_verifications WHERE expires_at < NOW() - INTERVAL '7 days'`);
+    await pool.execute(`DELETE FROM password_reset_tokens WHERE expires_at < NOW() - INTERVAL '7 days'`);
+  } catch {
+    // Non-critical background cleanup error
+  }
+};
+
 /** Helper to persist verification tokens & OTP for a user */
 const createEmailVerification = async (userId, otp, verifyToken) => {
   // Invalidate previous unused verification entries for this user
@@ -229,6 +240,7 @@ export const register = async (req, res) => {
         'DELETE FROM pending_registrations WHERE email = ? OR (phone IS NOT NULL AND phone = ?)',
         [cleanEmail, cleanPhone || ''],
       );
+      cleanExpiredVerificationRecords().catch(() => {});
     } catch {
       // ignore table or cleanup errors
     }
@@ -590,10 +602,10 @@ export const resetPassword = async (req, res) => {
     const inputHash = hashToken(resetInput);
 
     let query = `
-      SELECT prt.*, u.id AS user_id, u.email, u.phone, u.name
+      SELECT prt.*, (prt.expires_at <= NOW()) AS is_expired, u.id AS user_id, u.email, u.phone, u.name
       FROM password_reset_tokens prt
       JOIN users u ON u.id = prt.user_id
-      WHERE prt.token_hash = ? AND prt.used = FALSE AND prt.expires_at > NOW()
+      WHERE prt.token_hash = ?
     `;
     const params = [inputHash];
 
@@ -605,7 +617,16 @@ export const resetPassword = async (req, res) => {
     const [rows] = await pool.execute(query, params);
     const resetRow = rows[0];
     if (!resetRow) {
-      return res.status(400).json({ message: 'Invalid or expired 6-digit reset code. Please request a new one.' });
+      return res.status(400).json({ message: 'Invalid 6-digit reset code. Please check the code and try again.' });
+    }
+
+    if (resetRow.used) {
+      return res.status(400).json({ message: 'This password reset code has already been used. Please request a new one.', isAlreadyUsed: true });
+    }
+
+    const isExpired = resetRow.is_expired || new Date(resetRow.expires_at) <= new Date();
+    if (isExpired) {
+      return res.status(410).json({ message: 'Your 6-digit password reset code has expired (valid for 15 minutes). Please request a new one.', isExpired: true });
     }
 
     const hashed = await bcrypt.hash(password, BCRYPT_ROUNDS);
@@ -730,21 +751,21 @@ export const verifyEmail = async (req, res) => {
       let pending = null;
       if (searchRegId) {
         const [rows] = await pool.execute(
-          `SELECT * FROM pending_registrations WHERE registration_id = ? AND expires_at > NOW()`,
+          `SELECT *, (expires_at <= NOW()) AS is_expired FROM pending_registrations WHERE registration_id = ?`,
           [searchRegId],
         );
         pending = rows[0];
       }
       if (!pending && cleanEmail) {
         const [rows] = await pool.execute(
-          `SELECT * FROM pending_registrations WHERE email = ? AND expires_at > NOW()`,
+          `SELECT *, (expires_at <= NOW()) AS is_expired FROM pending_registrations WHERE email = ?`,
           [cleanEmail],
         );
         pending = rows[0];
       }
       if (!pending && cleanPhone) {
         const [rows] = await pool.execute(
-          `SELECT * FROM pending_registrations WHERE phone = ? AND expires_at > NOW()`,
+          `SELECT *, (expires_at <= NOW()) AS is_expired FROM pending_registrations WHERE phone = ?`,
           [cleanPhone],
         );
         pending = rows[0];
@@ -755,6 +776,15 @@ export const verifyEmail = async (req, res) => {
         const isTokenMatch = cleanToken && cleanToken === pending.registration_id;
 
         if (isOtpMatch || isTokenMatch) {
+          const isExpired = pending.is_expired || new Date(pending.expires_at) <= new Date();
+          if (isExpired) {
+            return res.status(410).json({
+              message: 'Your 6-digit verification code has expired (valid for 15 minutes). Please tap "Resend Code" to receive a new one.',
+              isExpired: true,
+              canResend: true,
+            });
+          }
+
           // Double check email uniqueness before final insert
           const [dupCheck] = await pool.execute('SELECT id FROM users WHERE email = ?', [pending.email]);
           if (dupCheck.length) {
@@ -852,6 +882,20 @@ export const verifyEmail = async (req, res) => {
             accessToken,
             refreshToken,
           });
+        } else if (cleanOtp) {
+          // Explicit OTP entered but didn't match the current active hash
+          const isExpired = pending.is_expired || new Date(pending.expires_at) <= new Date();
+          if (isExpired) {
+            return res.status(410).json({
+              message: 'Your 6-digit verification code has expired (valid for 15 minutes). Please tap "Resend Code" to receive a new one.',
+              isExpired: true,
+              canResend: true,
+            });
+          }
+          return res.status(400).json({
+            message: 'Invalid verification code. Please check the 6 digits and try again.',
+            isInvalid: true,
+          });
         }
       }
     }
@@ -861,10 +905,10 @@ export const verifyEmail = async (req, res) => {
     if (token) {
       const tokenHash = hashToken(token);
       const [rows] = await pool.execute(
-        `SELECT ev.*, u.email, u.name, u.role, u.status, u.is_approved
+        `SELECT ev.*, (ev.expires_at <= NOW()) AS is_expired, u.email, u.name, u.role, u.status, u.is_approved
          FROM email_verifications ev
          JOIN users u ON u.id = ev.user_id
-         WHERE ev.token_hash = ? AND ev.used = FALSE AND ev.expires_at > NOW()`,
+         WHERE ev.token_hash = ?`,
         [tokenHash],
       );
       verification = rows[0];
@@ -881,18 +925,30 @@ export const verifyEmail = async (req, res) => {
       if (user) {
         const otpHash = hashToken(`otp:${user.id}:${cleanOtp}`);
         const [rows] = await pool.execute(
-          `SELECT ev.*, u.email, u.name, u.role, u.status, u.is_approved
+          `SELECT ev.*, (ev.expires_at <= NOW()) AS is_expired, u.email, u.name, u.role, u.status, u.is_approved
            FROM email_verifications ev
            JOIN users u ON u.id = ev.user_id
-           WHERE ev.token_hash = ? AND ev.used = FALSE AND ev.expires_at > NOW()`,
+           WHERE ev.token_hash = ?`,
           [otpHash],
         );
         verification = rows[0];
       }
     }
 
-    if (!verification) {
-      return res.status(400).json({ message: 'Invalid or expired verification code' });
+    if (verification) {
+      if (verification.used) {
+        return res.status(400).json({ message: 'This verification code has already been used. Please log in or request a new code.', isAlreadyUsed: true });
+      }
+      const isExpired = verification.is_expired || new Date(verification.expires_at) <= new Date();
+      if (isExpired) {
+        return res.status(410).json({
+          message: 'Your 6-digit verification code has expired (valid for 15 minutes). Please click "Resend Code" to receive a new one.',
+          isExpired: true,
+          canResend: true,
+        });
+      }
+    } else {
+      return res.status(400).json({ message: 'Invalid verification code. Please check the 6 digits or click "Resend Code".' });
     }
 
     await pool.execute('UPDATE email_verifications SET used = TRUE WHERE user_id = ?', [verification.user_id]);
@@ -1002,7 +1058,8 @@ export const resendVerification = async (req, res) => {
         ? 'A new verification code has been sent to your email and via SMS to your phone.'
         : (destPhone ? 'A new verification code has been sent via SMS.' : 'A new verification code has been sent to your email.');
 
-      return res.json({ message: resendMsg });
+      cleanExpiredVerificationRecords().catch(() => {});
+      return res.json({ message: resendMsg, expiresInMinutes: 15 });
     }
 
     // Check existing users table
@@ -1013,6 +1070,10 @@ export const resendVerification = async (req, res) => {
     } else if (cleanPhone) {
       const [rows] = await pool.execute('SELECT id, name, email, phone, email_verified FROM users WHERE phone = ?', [cleanPhone]);
       user = rows[0];
+    }
+
+    if (user && user.email_verified) {
+      return res.json({ message: 'Your account is already verified. You can log in.', alreadyVerified: true });
     }
 
     if (user && !user.email_verified) {
@@ -1036,13 +1097,14 @@ export const resendVerification = async (req, res) => {
       }
 
       await logAudit({ userId: user.id, action: 'resend_verification', entityType: 'user', entityId: user.id, details: { channel } });
+      cleanExpiredVerificationRecords().catch(() => {});
     }
 
     const finalMsg = (cleanPhone && cleanEmail)
       ? 'A verification code has been sent to your email and via SMS to your phone.'
       : (cleanPhone ? 'A verification code has been sent via SMS.' : 'A verification code has been sent to your email.');
 
-    res.json({ message: finalMsg });
+    res.json({ message: finalMsg, expiresInMinutes: 15 });
   } catch (err) {
     console.error('[authController.resendVerification]', err);
     res.status(500).json({ message: 'Server error' });

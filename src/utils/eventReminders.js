@@ -1,6 +1,6 @@
 import pool from '../config/db.js';
 import { sendNotification, sendNotificationToMany } from './notify.js';
-import { sendEventUrgentUpdateAlertEmail } from './email.js';
+import { sendEventUrgentUpdateAlertEmail, sendEventReminderEmail } from './email.js';
 
 /**
  * Dispatch notifications to followers of artists, organizers, and categories
@@ -209,7 +209,10 @@ export const notifyReminderSubscribers = async (eventId, triggerType, { title, m
                 eventTitle,
                 updateType: triggerType,
                 headline: notifTitle,
-                details: notifMessage,
+                details: notifMessage,
+                newVenue: extraData?.newVenue || null,
+                newDate: extraData?.newDate || null,
+                newTime: extraData?.newTime || null,
                 eventId,
               }).catch(() => {});
             }
