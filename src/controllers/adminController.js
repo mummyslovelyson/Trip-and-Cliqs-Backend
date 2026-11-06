@@ -4867,7 +4867,7 @@ export const getAdminReviews = async (req, res) => {
 
     let sql = `
       SELECT r.id, r.user_id, r.event_id, r.rating, r.title, r.comment,
-             r.status, r.is_approved, r.is_published, r.is_featured,
+             r.status, r.is_approved, COALESCE(r.is_featured, FALSE) AS is_featured,
              r.approved_at, r.approved_by, r.admin_notes, r.created_at, r.updated_at,
              u.name AS user_name, u.email AS user_email, u.avatar AS user_avatar, u.role AS user_role,
              e.title AS event_title, e.id AS event_id,
