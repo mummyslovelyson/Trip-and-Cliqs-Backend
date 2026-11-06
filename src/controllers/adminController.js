@@ -4739,7 +4739,212 @@ export const getPublicMobileConfig = async (req, res) => {
   }
 };
 
+
+/* ------------------------------------------------------------------ */
+/* Admin Reviews Moderation & Homepage Publishing                     */
+/* ------------------------------------------------------------------ */
+
+export const getAdminReviews = async (req, res) => {
+  try {
+    const { status = 'all', search = '', rating = '' } = req.query;
+
+    let sql = `
+      SELECT r.id, r.user_id, r.event_id, r.rating, r.title, r.comment,
+             r.status, r.is_approved, r.is_published, r.is_featured,
+             r.approved_at, r.approved_by, r.admin_notes, r.created_at, r.updated_at,
+             u.name AS user_name, u.email AS user_email, u.avatar AS user_avatar, u.role AS user_role,
+             e.title AS event_title, e.id AS event_id,
+             (SELECT COUNT(*) FROM tickets t WHERE t.user_id = r.user_id) > 0 AS is_verified_buyer
+      FROM reviews r
+      LEFT JOIN users u ON u.id = r.user_id
+      LEFT JOIN events e ON e.id = r.event_id
+      WHERE 1=1
+    `;
+    const params = [];
+
+    if (status === 'pending') {
+      sql += ` AND (r.status = 'pending' OR (r.is_approved = FALSE AND (r.status IS NULL OR r.status != 'rejected')))`;
+    } else if (status === 'approved') {
+      sql += ` AND (r.status = 'approved' OR r.is_approved = TRUE)`;
+    } else if (status === 'rejected') {
+      sql += ` AND r.status = 'rejected'`;
+    }
+
+    if (rating && !isNaN(Number(rating))) {
+      sql += ` AND r.rating = ?`;
+      params.push(Number(rating));
+    }
+
+    if (search && String(search).trim()) {
+      const q = `%${String(search).trim()}%`;
+      sql += ` AND (u.name ILIKE ? OR u.email ILIKE ? OR r.comment ILIKE ? OR r.title ILIKE ? OR e.title ILIKE ?)`;
+      params.push(q, q, q, q, q);
+    }
+
+    sql += ` ORDER BY r.created_at DESC`;
+
+    const [rows] = await pool.execute(sql, params);
+
+    // Compute stats
+    const [statsRows] = await pool.execute(`
+      SELECT
+        COUNT(*) AS total,
+        COUNT(CASE WHEN status = 'pending' OR (is_approved = FALSE AND (status IS NULL OR status != 'rejected')) THEN 1 END) AS pending,
+        COUNT(CASE WHEN status = 'approved' OR is_approved = TRUE THEN 1 END) AS approved,
+        COUNT(CASE WHEN status = 'rejected' THEN 1 END) AS rejected,
+        COUNT(CASE WHEN is_featured = TRUE AND (status = 'approved' OR is_approved = TRUE) THEN 1 END) AS featured,
+        COALESCE(ROUND(AVG(CASE WHEN status = 'approved' OR is_approved = TRUE THEN rating END)::numeric, 1), 5.0) AS avg_rating
+      FROM reviews
+    `);
+
+    const stats = statsRows[0] || {
+      total: 0,
+      pending: 0,
+      approved: 0,
+      rejected: 0,
+      featured: 0,
+      avg_rating: 5.0,
+    };
+
+    res.json({ reviews: rows || [], stats });
+  } catch (err) {
+    console.error('[adminController.getAdminReviews]', err);
+    res.status(500).json({ message: 'Server error loading reviews' });
+  }
+};
+
+export const approveAdminReview = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { is_featured, admin_notes } = req.body || {};
+
+    const [existing] = await pool.execute('SELECT * FROM reviews WHERE id = ?', [id]);
+    if (!existing[0]) return res.status(404).json({ message: 'Review not found' });
+    const review = existing[0];
+
+    const featuredVal = typeof is_featured === 'boolean' ? is_featured : (review.is_featured ?? true);
+
+    await pool.execute(
+      `UPDATE reviews
+       SET status = 'approved',
+           is_approved = TRUE,
+           is_published = TRUE,
+           is_featured = ?,
+           approved_at = NOW(),
+           approved_by = ?,
+           admin_notes = COALESCE(?, admin_notes)
+       WHERE id = ?`,
+      [featuredVal, req.user.id, admin_notes || null, id],
+    );
+
+    // Send notification to review author
+    sendNotification({
+      userId: review.user_id,
+      title: 'Review Approved & Published!',
+      message: 'Your review has been verified by our team and is now live on the homepage.',
+      type: 'review',
+      link: '/',
+    }).catch(() => {});
+
+    await logAudit({
+      userId: req.user.id,
+      action: 'approve_review',
+      entityType: 'review',
+      entityId: id,
+      details: { rating: review.rating, is_featured: featuredVal },
+    });
+
+    res.json({ message: 'Review approved and published to homepage', id, status: 'approved' });
+  } catch (err) {
+    console.error('[adminController.approveAdminReview]', err);
+    res.status(500).json({ message: 'Server error approving review' });
+  }
+};
+
+export const rejectAdminReview = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { notes } = req.body || {};
+
+    const [existing] = await pool.execute('SELECT * FROM reviews WHERE id = ?', [id]);
+    if (!existing[0]) return res.status(404).json({ message: 'Review not found' });
+    const review = existing[0];
+
+    await pool.execute(
+      `UPDATE reviews
+       SET status = 'rejected',
+           is_approved = FALSE,
+           is_published = FALSE,
+           is_featured = FALSE,
+           admin_notes = ?
+       WHERE id = ?`,
+      [notes || 'Did not meet community publishing guidelines', id],
+    );
+
+    sendNotification({
+      userId: review.user_id,
+      title: 'Review Status Update',
+      message: notes ? `Your review was not approved: ${notes}` : 'Your review was not approved for publication on the homepage.',
+      type: 'review',
+      link: '/attendee/reviews',
+    }).catch(() => {});
+
+    await logAudit({
+      userId: req.user.id,
+      action: 'reject_review',
+      entityType: 'review',
+      entityId: id,
+      details: { notes },
+    });
+
+    res.json({ message: 'Review rejected', id, status: 'rejected' });
+  } catch (err) {
+    console.error('[adminController.rejectAdminReview]', err);
+    res.status(500).json({ message: 'Server error rejecting review' });
+  }
+};
+
+export const toggleFeatureAdminReview = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [existing] = await pool.execute('SELECT is_featured FROM reviews WHERE id = ?', [id]);
+    if (!existing[0]) return res.status(404).json({ message: 'Review not found' });
+
+    const newFeatured = req.body.is_featured !== undefined ? Boolean(req.body.is_featured) : !existing[0].is_featured;
+
+    await pool.execute('UPDATE reviews SET is_featured = ? WHERE id = ?', [newFeatured, id]);
+
+    res.json({ message: `Review ${newFeatured ? 'featured on' : 'unfeatured from'} homepage`, is_featured: newFeatured });
+  } catch (err) {
+    console.error('[adminController.toggleFeatureAdminReview]', err);
+    res.status(500).json({ message: 'Server error toggling featured review' });
+  }
+};
+
+export const deleteAdminReview = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [existing] = await pool.execute('SELECT id FROM reviews WHERE id = ?', [id]);
+    if (!existing[0]) return res.status(404).json({ message: 'Review not found' });
+
+    await pool.execute('DELETE FROM reviews WHERE id = ?', [id]);
+
+    await logAudit({
+      userId: req.user.id,
+      action: 'delete_review',
+      entityType: 'review',
+      entityId: id,
+    });
+
+    res.json({ message: 'Review deleted successfully', id });
+  } catch (err) {
+    console.error('[adminController.deleteAdminReview]', err);
+    res.status(500).json({ message: 'Server error deleting review' });
+  }
+};
+
 export default {
+  getAdminReviews, approveAdminReview, rejectAdminReview, toggleFeatureAdminReview, deleteAdminReview,
   getDashboardStats, getUsers, getUser, updateUser, suspendUser, unsuspendUser, verifyUser, deleteUser, approveOrganizer, rejectOrganizer, resetUserPassword, createAdminUser,
   getUserManagementStats, getUserActivity, getUserSessions, getUserStats, forceLogoutUser, addAdminNote, getAdminNotes, deleteAdminNote, exportUsers, bulkRoleChange, bulkDeleteUsers,
   getEvents, approveEvent, rejectEvent, requestEventChanges, featureEvent, suspendEvent, unsuspendEvent, adminDeleteEvent,

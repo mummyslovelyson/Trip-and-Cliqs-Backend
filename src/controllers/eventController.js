@@ -2017,10 +2017,59 @@ export const getPublicOrganizerProfile = async (req, res) => {
   }
 };
 
+
+/* ------------------------------------------------------------------ */
+/* Public Reviews for Homepage & Community Highlights                 */
+/* ------------------------------------------------------------------ */
+export const getPublicApprovedReviews = async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit, 10) || 12, 50);
+
+    const sql = `
+      SELECT r.id, r.user_id, r.event_id, r.rating, r.title, r.comment,
+             r.is_featured, r.created_at, r.approved_at,
+             COALESCE(u.name, 'Verified Attendee') AS user_name,
+             u.avatar AS user_avatar,
+             e.title AS event_title, e.id AS event_id, e.slug AS event_slug,
+             (SELECT COUNT(*) FROM tickets t WHERE t.user_id = r.user_id) > 0 AS is_verified_buyer
+      FROM reviews r
+      LEFT JOIN users u ON u.id = r.user_id
+      LEFT JOIN events e ON e.id = r.event_id
+      WHERE (r.status = 'approved' OR r.is_approved = TRUE)
+        AND (r.is_published IS TRUE OR r.is_published IS NULL)
+      ORDER BY r.is_featured DESC, r.rating DESC, r.created_at DESC
+      LIMIT ?
+    `;
+
+    const [rows] = await pool.execute(sql, [limit]);
+
+    // Compute aggregate rating
+    const [statRows] = await pool.execute(`
+      SELECT
+        COUNT(*) AS total_count,
+        COALESCE(ROUND(AVG(rating)::numeric, 1), 5.0) AS average_rating
+      FROM reviews
+      WHERE (status = 'approved' OR is_approved = TRUE)
+        AND (is_published IS TRUE OR is_published IS NULL)
+    `);
+
+    res.json({
+      reviews: rows || [],
+      stats: {
+        totalReviews: Number(statRows[0]?.total_count || 0),
+        averageRating: Number(statRows[0]?.average_rating || 5.0),
+      },
+    });
+  } catch (err) {
+    console.error('[eventController.getPublicApprovedReviews]', err);
+    res.status(500).json({ message: 'Server error fetching reviews', reviews: [] });
+  }
+};
+
 export default {
   getEvents, getEvent, trackEventView, trackSearchQuery, createEvent, updateEvent, deleteEvent,
   publishEvent, unpublishEvent,
   getOrganizerEvents, getFeaturedEvents, getTrendingEvents, getRecommendedEvents,
   toggleEventReminder, getEventReminderStatus, updateReminderPreferences, getUserReminders, processRemindersManualTrigger,
-  getCategories, getFeaturedOrganizers, getPublicOrganizerProfile,
+  getCategories, getFeaturedOrganizers, getPublicOrganizerProfile, getPublicApprovedReviews,
 };

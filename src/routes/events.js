@@ -3,7 +3,7 @@ import {
   getEvents, getEvent, trackEventView, trackSearchQuery, createEvent, updateEvent, deleteEvent,
   publishEvent, unpublishEvent,
   getOrganizerEvents, getFeaturedEvents, getTrendingEvents, getRecommendedEvents,
-  getCategories, getFeaturedOrganizers, getPublicOrganizerProfile,
+  getCategories, getFeaturedOrganizers, getPublicOrganizerProfile, getPublicApprovedReviews,
   toggleEventReminder, getEventReminderStatus, getUserReminders, updateReminderPreferences, processRemindersManualTrigger,
 } from '../controllers/eventController.js';
 import { authenticate, authorize, optionalAuth } from '../middleware/auth.js';
@@ -20,6 +20,7 @@ router.get('/', getEvents);
 router.get('/featured', getFeaturedEvents);
 router.get('/trending', getTrendingEvents);
 router.get('/recommended', optionalAuth, getRecommendedEvents);
+router.get('/reviews/public', getPublicApprovedReviews);
 router.get('/categories', getCategories);
 router.get('/featured-organizers', getFeaturedOrganizers);
 router.get('/organizers/:id', optionalAuth, getPublicOrganizerProfile);

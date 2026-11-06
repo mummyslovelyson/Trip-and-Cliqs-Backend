@@ -15,6 +15,7 @@ import {
   getVoiceModelData, trainVoiceModel, updateVoiceModelSettings, createVoicePronunciationRule, deleteVoicePronunciationRule, createVoiceTrainingSample, deleteVoiceTrainingSample, testVoiceModel,
   getBotConversations, deleteBotConversation,
   getMobileAppConfig, updateMobileAppSettings, createMobileAppBanner, updateMobileAppBanner, deleteMobileAppBanner,
+  getAdminReviews, approveAdminReview, rejectAdminReview, toggleFeatureAdminReview, deleteAdminReview,
 } from '../controllers/adminController.js';
 import { getEvent } from '../controllers/eventController.js';
 import { authenticate, authorize } from '../middleware/auth.js';
@@ -165,5 +166,14 @@ router.put('/mobile-app/settings', writeLimiter, updateMobileAppSettings);
 router.post('/mobile-app/banners', writeLimiter, createMobileAppBanner);
 router.put('/mobile-app/banners/:id', writeLimiter, updateMobileAppBanner);
 router.delete('/mobile-app/banners/:id', destructiveLimiter, deleteMobileAppBanner);
+
+// Reviews Moderation & Homepage Publishing
+router.get('/reviews', getAdminReviews);
+router.put('/reviews/:id/approve', writeLimiter, approveAdminReview);
+router.post('/reviews/:id/approve', writeLimiter, approveAdminReview);
+router.put('/reviews/:id/reject', writeLimiter, rejectAdminReview);
+router.post('/reviews/:id/reject', writeLimiter, rejectAdminReview);
+router.put('/reviews/:id/feature', writeLimiter, toggleFeatureAdminReview);
+router.delete('/reviews/:id', destructiveLimiter, deleteAdminReview);
 
 export default router;

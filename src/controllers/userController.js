@@ -653,73 +653,99 @@ export const getFollowingSummary = async (req, res) => {
 /* ------------------------------------------------------------------ */
 /* Reviews                                                             */
 /* ------------------------------------------------------------------ */
-export const getReviews = async (req, res) => {
-  try {
-    const eventId = req.params.eventId || req.query.eventId;
-    let sql = `SELECT r.*, u.name AS user_name, u.avatar AS user_avatar, e.title AS event_title
-               FROM reviews r
-               LEFT JOIN users u ON u.id = r.user_id
-               LEFT JOIN events e ON e.id = r.event_id`;
-    const params = [];
-    if (eventId) {
-      sql += ` WHERE r.event_id = ?`;
-      params.push(eventId);
-    } else {
-      sql += ` WHERE r.user_id = ?`;
-      params.push(req.user.id);
-    }
-    sql += ` ORDER BY r.created_at DESC`;
-    const [rows] = await pool.execute(sql, params);
-    res.json({ reviews: rows });
-  } catch (err) {
-    console.error('[userController.getReviews]', err);
-    res.status(500).json({ message: 'Server error' });
-  }
-};
-
-export const createReview = async (req, res) => {
-  try {
-    const eventId = req.params.eventId || req.body.eventId;
-    const rating = req.body.rating;
-    const comment = req.body.comment ?? req.body.review ?? null;
-
-    if (!eventId) return res.status(400).json({ message: 'eventId is required' });
-    if (!rating || rating < 1 || rating > 5) {
-      return res.status(400).json({ message: 'Rating must be between 1 and 5' });
-    }
-
-    const [eventRows] = await pool.execute('SELECT * FROM events WHERE id = ?', [eventId]);
-    if (!eventRows[0]) return res.status(404).json({ message: 'Event not found' });
-
-    const [existing] = await pool.execute(
-      'SELECT id FROM reviews WHERE user_id = ? AND event_id = ?',
-      [req.user.id, eventId],
-    );
-    if (existing.length) {
-      return res.status(400).json({ message: 'You have already reviewed this event' });
-    }
-
-    const [result] = await pool.execute(
-      `INSERT INTO reviews (user_id, event_id, rating, comment) VALUES (?, ?, ?, ?)`,
-      [req.user.id, eventId, rating, comment],
-    );
-
-    const [newRows] = await pool.execute(
-      `SELECT r.*, u.name AS user_name, e.title AS event_title
-       FROM reviews r
-       LEFT JOIN users u ON u.id = r.user_id
-       LEFT JOIN events e ON e.id = r.event_id
-       WHERE r.id = ?`,
-      [result.insertId],
-    );
-
-    res.status(201).json({ message: 'Review added', review: newRows[0] });
-  } catch (err) {
-    console.error('[userController.createReview]', err);
-    res.status(500).json({ message: 'Server error' });
-  }
-};
-
+export const getReviews = async (req, res) => {
+  try {
+    const eventId = req.params.eventId || req.query.eventId;
+    let sql = `SELECT r.*, u.name AS user_name, u.avatar AS user_avatar, e.title AS event_title,
+                      (SELECT COUNT(*) FROM tickets t WHERE t.user_id = r.user_id) > 0 AS is_verified_buyer
+               FROM reviews r
+               LEFT JOIN users u ON u.id = r.user_id
+               LEFT JOIN events e ON e.id = r.event_id`;
+    const params = [];
+    if (eventId) {
+      sql += ` WHERE r.event_id = ?`;
+      params.push(eventId);
+    } else {
+      sql += ` WHERE r.user_id = ?`;
+      params.push(req.user.id);
+    }
+    sql += ` ORDER BY r.created_at DESC`;
+    const [rows] = await pool.execute(sql, params);
+    res.json({ reviews: rows });
+  } catch (err) {
+    console.error('[userController.getReviews]', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const createReview = async (req, res) => {
+  try {
+    const rawEventId = req.params.eventId || req.body.eventId;
+    const rating = Number(req.body.rating);
+    const comment = req.body.comment ?? req.body.review ?? null;
+    const title = req.body.title ? String(req.body.title).trim() : null;
+
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({ message: 'Rating must be between 1 and 5' });
+    }
+    if (!comment || !String(comment).trim()) {
+      return res.status(400).json({ message: 'Review comment is required' });
+    }
+
+    let eventId = null;
+    let eventTitle = null;
+    if (rawEventId) {
+      const [eventRows] = await pool.execute('SELECT id, title FROM events WHERE id = ?', [rawEventId]);
+      if (eventRows[0]) {
+        eventId = eventRows[0].id;
+        eventTitle = eventRows[0].title;
+      }
+    }
+
+    if (eventId) {
+      const [existing] = await pool.execute(
+        'SELECT id FROM reviews WHERE user_id = ? AND event_id = ?',
+        [req.user.id, eventId],
+      );
+      if (existing.length) {
+        return res.status(400).json({ message: 'You have already reviewed this event' });
+      }
+    }
+
+    // Insert with status = 'pending', is_approved = FALSE, is_published = FALSE
+    const [result] = await pool.execute(
+      `INSERT INTO reviews (user_id, event_id, rating, title, comment, status, is_approved, is_published)
+       VALUES (?, ?, ?, ?, ?, 'pending', FALSE, FALSE)`,
+      [req.user.id, eventId, rating, title, String(comment).trim()],
+    );
+
+    // Notify admins of new review to approve
+    notifyAdmins({
+      title: 'New Review Submitted',
+      message: `${req.user.name || 'An attendee'} submitted a ${rating}-star review for approval: "${title || comment.slice(0, 40)}..."`,
+      type: 'review',
+      link: '/admin/reviews',
+    }).catch(() => {});
+
+    const [newRows] = await pool.execute(
+      `SELECT r.*, u.name AS user_name, u.avatar AS user_avatar, e.title AS event_title
+       FROM reviews r
+       LEFT JOIN users u ON u.id = r.user_id
+       LEFT JOIN events e ON e.id = r.event_id
+       WHERE r.id = ?`,
+      [result.insertId],
+    );
+
+    res.status(201).json({
+      message: 'Review submitted! It will be published to the homepage once approved by an administrator.',
+      review: newRows[0],
+    });
+  } catch (err) {
+    console.error('[userController.createReview]', err);
+    res.status(500).json({ message: 'Server error creating review' });
+  }
+};
+
 export const deleteReview = async (req, res) => {
   try {
     const { id } = req.params;

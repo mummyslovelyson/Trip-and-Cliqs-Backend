@@ -437,10 +437,17 @@ CREATE INDEX IF NOT EXISTS idx_rl_status ON resale_listings(status);
 CREATE TABLE IF NOT EXISTS reviews (
   id         BIGSERIAL PRIMARY KEY,
   user_id    BIGINT NOT NULL,
-  event_id   BIGINT NOT NULL,
+  event_id   BIGINT,
   rating     SMALLINT NOT NULL CHECK (rating BETWEEN 1 AND 5),
+  title      VARCHAR(255),
   comment    TEXT,
-  is_published BOOLEAN NOT NULL DEFAULT TRUE,
+  status     VARCHAR(20) NOT NULL DEFAULT 'pending',
+  is_approved BOOLEAN NOT NULL DEFAULT FALSE,
+  is_published BOOLEAN NOT NULL DEFAULT FALSE,
+  is_featured BOOLEAN NOT NULL DEFAULT FALSE,
+  approved_at TIMESTAMPTZ,
+  approved_by BIGINT,
+  admin_notes TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW(),
   CONSTRAINT fk_rev_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -448,6 +455,8 @@ CREATE TABLE IF NOT EXISTS reviews (
 );
 
 CREATE INDEX IF NOT EXISTS idx_rev_event ON reviews(event_id);
+CREATE INDEX IF NOT EXISTS idx_rev_status ON reviews(status);
+CREATE INDEX IF NOT EXISTS idx_rev_featured ON reviews(is_featured);
 
 -- ────────────────  NOTIFICATIONS  ────────────────
 CREATE TABLE IF NOT EXISTS notifications (
