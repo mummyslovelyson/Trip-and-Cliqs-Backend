@@ -1699,137 +1699,242 @@ export const resolveSupportTicket = async (req, res) => {
 /* ------------------------------------------------------------------ */
 export const sendAnnouncement = async (req, res) => {
   try {
-    const { title, message, target = 'all', target_role, channel = 'email', userId, link, actionLabel, badge } = req.body;
+    const {
+      title,
+      message,
+      target = 'all',
+      target_role,
+      channel,
+      channels,
+      userId,
+      link,
+      actionLabel,
+      badge,
+    } = req.body;
+
     if (!title?.trim() || !message?.trim()) {
       return res.status(400).json({ message: 'Title and message are required' });
     }
 
     const rawTarget = (target_role || target || 'all').toLowerCase();
-    // Normalize target for DB and logic
-    const effectiveTarget = rawTarget === 'attendees' ? 'attendee'
-      : rawTarget === 'organizers' ? 'organizer'
-      : rawTarget === 'admins' ? 'admin'
-      : rawTarget;
+    const effectiveTarget =
+      rawTarget === 'attendees' ? 'attendee' :
+      rawTarget === 'organizers' ? 'organizer' :
+      rawTarget === 'admins' ? 'admin' :
+      rawTarget;
 
-    const rawChannel = (channel || req.body.type || 'email').toLowerCase();
-    const effectiveChannel = (rawChannel === 'both' || rawChannel === 'all') ? 'both'
-      : (rawChannel === 'email') ? 'email'
-      : (rawChannel === 'sms') ? 'sms'
-      : 'in_app';
+    // Determine channels to dispatch to
+    let shouldSendInApp = false;
+    let shouldSendEmail = false;
+    let shouldSendSMS = false;
 
-    // 1. Identify target users with valid email and name
+    if (Array.isArray(channels) && channels.length > 0) {
+      const chSet = new Set(channels.map((c) => String(c).toLowerCase().replace('-', '_')));
+      shouldSendInApp = chSet.has('in_app') || chSet.has('inapp');
+      shouldSendEmail = chSet.has('email');
+      shouldSendSMS = chSet.has('sms');
+    } else {
+      const rawCh = String(channel || req.body.type || 'both').toLowerCase().replace('-', '_');
+      if (rawCh === 'all' || rawCh === 'omnichannel') {
+        shouldSendInApp = true;
+        shouldSendEmail = true;
+        shouldSendSMS = true;
+      } else if (rawCh === 'both' || rawCh === 'email_in_app' || rawCh === 'email_inapp') {
+        shouldSendInApp = true;
+        shouldSendEmail = true;
+      } else if (rawCh === 'sms_email' || rawCh === 'email_sms') {
+        shouldSendEmail = true;
+        shouldSendSMS = true;
+      } else if (rawCh === 'sms_in_app' || rawCh === 'sms_inapp') {
+        shouldSendInApp = true;
+        shouldSendSMS = true;
+      } else if (rawCh === 'email') {
+        shouldSendEmail = true;
+      } else if (rawCh === 'sms') {
+        shouldSendSMS = true;
+      } else if (rawCh === 'in_app' || rawCh === 'inapp') {
+        shouldSendInApp = true;
+      } else {
+        // Default to all 3 if not specified
+        shouldSendInApp = true;
+        shouldSendEmail = true;
+      }
+    }
+
+    if (!shouldSendInApp && !shouldSendEmail && !shouldSendSMS) {
+      return res.status(400).json({ message: 'At least one delivery channel (In-App, Email, or SMS) must be selected' });
+    }
+
+    // 1. Identify target recipients
     let targetUsers = [];
     if (effectiveTarget === 'all') {
       const [rows] = await pool.execute(`SELECT id, name, email, phone FROM users WHERE (status = 'active' OR status IS NULL)`);
-      targetUsers = rows;
-    } else if (effectiveTarget === 'attendee' || effectiveTarget === 'attendees') {
+      targetUsers = rows || [];
+    } else if (effectiveTarget === 'attendee') {
       const [rows] = await pool.execute(`SELECT id, name, email, phone FROM users WHERE (status = 'active' OR status IS NULL) AND role = 'attendee'`);
-      targetUsers = rows;
-    } else if (effectiveTarget === 'organizer' || effectiveTarget === 'organizers') {
+      targetUsers = rows || [];
+    } else if (effectiveTarget === 'organizer') {
       const [rows] = await pool.execute(`SELECT id, name, email, phone FROM users WHERE (status = 'active' OR status IS NULL) AND role = 'organizer'`);
-      targetUsers = rows;
-    } else if (effectiveTarget === 'admin' || effectiveTarget === 'admins') {
+      targetUsers = rows || [];
+    } else if (effectiveTarget === 'admin') {
       const [rows] = await pool.execute(`SELECT id, name, email, phone FROM users WHERE (status = 'active' OR status IS NULL) AND role IN ('admin', 'system_admin', 'superadmin')`);
-      targetUsers = rows;
+      targetUsers = rows || [];
     } else if (effectiveTarget === 'specific' && userId) {
-      const [rows] = await pool.execute(`SELECT id, name, email, phone FROM users WHERE id = ? OR email = ?`, [userId, userId]);
-      targetUsers = rows;
+      const [rows] = await pool.execute(
+        `SELECT id, name, email, phone FROM users WHERE id = ? OR email = ? OR phone = ?`,
+        [userId, userId, userId]
+      );
+      targetUsers = rows || [];
+    }
+
+    if (targetUsers.length === 0) {
+      return res.status(404).json({ message: 'No active users found for the selected target audience' });
     }
 
     const userIds = targetUsers.map((r) => r.id);
-    const actionUrl = link || '/attendee/tickets';
+    const actionUrl = link || '/explore';
+
+    // Store normalized channel string for database record
+    let storedChannel = 'in_app';
+    if (shouldSendInApp && shouldSendEmail && shouldSendSMS) storedChannel = 'all';
+    else if (shouldSendEmail && shouldSendInApp) storedChannel = 'both';
+    else if (shouldSendEmail && shouldSendSMS) storedChannel = 'both';
+    else if (shouldSendInApp && shouldSendSMS) storedChannel = 'both';
+    else if (shouldSendSMS) storedChannel = 'sms';
+    else if (shouldSendEmail) storedChannel = 'email';
 
     // 2. Insert announcement record into announcements table
     let announcementId = null;
     try {
       const [insRes] = await pool.execute(
-        `INSERT INTO announcements (title, message, target_role, channel, created_by, sent_count)
-         VALUES (?, ?, ?, ?, ?, 0)
+        `INSERT INTO announcements (title, message, target_role, channel, created_by, sent_count, badge, link, action_label)
+         VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
          RETURNING id, created_at`,
-        [title.trim(), message.trim(), effectiveTarget, effectiveChannel, req.user.id]
+        [
+          title.trim(),
+          message.trim(),
+          effectiveTarget,
+          storedChannel,
+          req.user.id,
+          badge || 'Platform Announcement',
+          actionUrl,
+          actionLabel || 'View Details',
+        ]
       );
       announcementId = insRes[0]?.id;
-    } catch (dbErr) {
-      // Fallback without RETURNING (if MySQL/MariaDB or schema variant)
+    } catch {
       const [insFallback] = await pool.execute(
-        `INSERT INTO announcements (title, message, target_role, channel, created_by, sent_count)
-         VALUES (?, ?, ?, ?, ?, 0)`,
-        [title.trim(), message.trim(), effectiveTarget, effectiveChannel, req.user.id]
+        `INSERT INTO announcements (title, message, target_role, channel, created_by, sent_count, badge, link, action_label)
+         VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+        [
+          title.trim(),
+          message.trim(),
+          effectiveTarget,
+          storedChannel,
+          req.user.id,
+          badge || 'Platform Announcement',
+          actionUrl,
+          actionLabel || 'View Details',
+        ]
       );
       announcementId = insFallback.insertId || null;
     }
 
-    // 3. Dispatch in-app notifications if requested
-    const shouldSendInApp = effectiveChannel === 'in_app' || effectiveChannel === 'both' || effectiveChannel === 'all';
-    if (shouldSendInApp && userIds.length > 0) {
-      await sendNotificationToMany(userIds, {
-        title: title.trim(),
-        message: message.trim(),
-        type: 'announcement',
-        link: actionUrl,
-      });
-    }
-
-    // 4. Dispatch Email alerts if requested
-    const shouldSendEmail = effectiveChannel === 'email' || effectiveChannel === 'both' || effectiveChannel === 'all';
+    let inAppSentCount = 0;
     let emailSentCount = 0;
     let emailFailedCount = 0;
+    let smsSentCount = 0;
+    let smsFailedCount = 0;
 
+    // 3. Dispatch In-App Notifications
+    if (shouldSendInApp && userIds.length > 0) {
+      try {
+        await sendNotificationToMany(userIds, {
+          title: title.trim(),
+          message: message.trim(),
+          type: 'announcement',
+          link: actionUrl,
+        });
+        inAppSentCount = userIds.length;
+      } catch (inAppErr) {
+        console.error('[sendAnnouncement] In-app notification dispatch error:', inAppErr.message);
+      }
+    }
+
+    // 4. Dispatch Email Alerts (Concurrent batch processing)
     if (shouldSendEmail && targetUsers.length > 0) {
       const emailRecipients = targetUsers.filter((u) => u.email && EMAIL_RE.test(String(u.email).trim()));
+      const BATCH_SIZE = 10;
+      for (let i = 0; i < emailRecipients.length; i += BATCH_SIZE) {
+        const chunk = emailRecipients.slice(i, i + BATCH_SIZE);
+        const results = await Promise.allSettled(
+          chunk.map((u) =>
+            sendAnnouncementEmail({
+              to: u.email.trim(),
+              recipientName: u.name || 'Tribe Member',
+              title: title.trim(),
+              message: message.trim(),
+              senderName: 'Tribes & Cliqs Admin',
+              link: actionUrl,
+              actionLabel: actionLabel || 'View Details',
+              badge: badge || 'Platform Announcement',
+            })
+          )
+        );
 
-      // Run background dispatch in controlled concurrency batches of 10
-      (async () => {
-        const BATCH_SIZE = 10;
-        for (let i = 0; i < emailRecipients.length; i += BATCH_SIZE) {
-          const chunk = emailRecipients.slice(i, i + BATCH_SIZE);
-          const results = await Promise.allSettled(
-            chunk.map((u) =>
-              sendAnnouncementEmail({
-                to: u.email.trim(),
-                recipientName: u.name || 'Tribe Member',
-                title: title.trim(),
-                message: message.trim(),
-                senderName: 'Tribes & Cliqs Admin',
-                link: actionUrl,
-                actionLabel: actionLabel || 'View Details',
-                badge: badge || 'Platform Announcement',
-              })
-            )
-          );
-
-          for (const res of results) {
-            if (res.status === 'fulfilled' && res.value) {
-              emailSentCount++;
-            } else {
-              emailFailedCount++;
-            }
+        for (const r of results) {
+          if (r.status === 'fulfilled' && r.value?.success !== false) {
+            emailSentCount++;
+          } else {
+            emailFailedCount++;
           }
         }
-
-        // Update database with true delivered metrics
-        if (announcementId) {
-          await pool.execute(
-            `UPDATE announcements SET sent_count = ?, failed_count = ? WHERE id = ?`,
-            [emailSentCount || userIds.length, emailFailedCount, announcementId]
-          ).catch(() => {});
-        }
-      })().catch((err) => console.warn('[sendAnnouncement] Background email dispatch error:', err.message));
+      }
     }
 
-    // 5. Dispatch SMS notices if requested
-    const shouldSendSMS = effectiveChannel === 'sms' || effectiveChannel === 'all';
+    // 5. Dispatch SMS Notices via SMSOnlineGH
     if (shouldSendSMS && targetUsers.length > 0) {
-      (async () => {
-        for (const u of targetUsers) {
-          if (u.phone) {
-            await sendSMS(u.phone, `[Tribes & Cliqs] ${title.trim()}: ${message.trim().slice(0, 100)}`).catch(() => {});
+      const phoneUsers = targetUsers.filter((u) => u.phone && String(u.phone).trim());
+      if (phoneUsers.length > 0) {
+        const cleanSmsText = `[Tribes & Cliqs] ${title.trim()}: ${message.trim().replace(/\r?\n+/g, ' ')}`.slice(0, 320);
+        const SMS_BATCH_SIZE = 20;
+
+        for (let i = 0; i < phoneUsers.length; i += SMS_BATCH_SIZE) {
+          const chunk = phoneUsers.slice(i, i + SMS_BATCH_SIZE);
+          const phoneNumbers = chunk.map((u) => u.phone);
+          try {
+            const smsRes = await sendSMS(phoneNumbers, cleanSmsText);
+            if (smsRes.success) {
+              smsSentCount += phoneNumbers.length;
+            } else {
+              smsFailedCount += phoneNumbers.length;
+              console.warn('[sendAnnouncement] SMS batch send notice:', smsRes.error);
+            }
+          } catch (smsErr) {
+            smsFailedCount += phoneNumbers.length;
+            console.error('[sendAnnouncement] SMS batch send error:', smsErr.message);
           }
         }
-      })().catch(() => {});
+      }
     }
 
-    // 6. Audit Log
+    // 6. Update Announcement Database Metrics
+    const totalDelivered = inAppSentCount + emailSentCount + smsSentCount;
+    const totalFailed = emailFailedCount + smsFailedCount;
+    if (announcementId) {
+      await pool.execute(
+        `UPDATE announcements
+         SET sent_count = ?,
+             failed_count = ?,
+             in_app_count = ?,
+             email_count = ?,
+             sms_count = ?
+         WHERE id = ?`,
+        [totalDelivered, totalFailed, inAppSentCount, emailSentCount, smsSentCount, announcementId]
+      ).catch(() => {});
+    }
+
+    // 7. Audit Log
     await logAudit({
       userId: req.user.id,
       action: 'send_announcement',
@@ -1838,39 +1943,51 @@ export const sendAnnouncement = async (req, res) => {
       details: {
         title,
         target: effectiveTarget,
-        channel: effectiveChannel,
+        channel: storedChannel,
         recipients: userIds.length,
-        emailTargets: shouldSendEmail ? targetUsers.filter((u) => u.email).length : 0,
+        inAppSent: inAppSentCount,
+        emailSent: emailSentCount,
+        smsSent: smsSentCount,
       },
     });
 
+    const activeChannels = [];
+    if (shouldSendInApp) activeChannels.push('In-App Notification');
+    if (shouldSendEmail) activeChannels.push('Email');
+    if (shouldSendSMS) activeChannels.push('SMS');
+
     res.status(201).json({
-      message: shouldSendEmail
-        ? `Broadcast email alert queued successfully for ${targetUsers.length} recipients`
-        : 'Announcement broadcast dispatched successfully',
+      message: `Broadcast message dispatched successfully across ${activeChannels.join(' + ')}!`,
       announcementId,
       recipients: userIds.length,
-      channel: effectiveChannel,
-      target: effectiveTarget,
+      stats: {
+        totalRecipients: userIds.length,
+        inAppSent: inAppSentCount,
+        emailSent: emailSentCount,
+        emailFailed: emailFailedCount,
+        smsSent: smsSentCount,
+        smsFailed: smsFailedCount,
+        channels: activeChannels,
+      },
       announcement: {
         id: announcementId,
         title: title.trim(),
         message: message.trim(),
         target_role: effectiveTarget,
-        channel: effectiveChannel,
-        sent_count: userIds.length,
+        channel: storedChannel,
+        sent_count: totalDelivered,
+        in_app_count: inAppSentCount,
+        email_count: emailSentCount,
+        sms_count: smsSentCount,
         created_at: new Date().toISOString(),
       },
     });
   } catch (err) {
     console.error('[adminController.sendAnnouncement]', err);
-    res.status(500).json({ message: 'Server error while dispatching broadcast' });
+    res.status(500).json({ message: 'Server error while dispatching broadcast: ' + err.message });
   }
 };
 
-/* ------------------------------------------------------------------ */
-/* Broadcast History / Announcements Query                            */
-/* ------------------------------------------------------------------ */
 export const getAdminAnnouncements = async (req, res) => {
   try {
     const { page = 1, limit = 15 } = req.query;

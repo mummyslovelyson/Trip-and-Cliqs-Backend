@@ -545,7 +545,7 @@ CREATE TABLE IF NOT EXISTS announcements (
   title        VARCHAR(220) NOT NULL,
   message      TEXT NOT NULL,
   target_role  TEXT NOT NULL DEFAULT 'all' CHECK (target_role IN ('all','attendee','organizer','admin')),
-  channel      TEXT NOT NULL DEFAULT 'in_app' CHECK (channel IN ('in_app','email','sms','push')),
+  channel      TEXT NOT NULL DEFAULT 'in_app' CHECK (channel IN ('in_app','email','sms','push','both','all','omnichannel')),
   created_by   BIGINT,
   sent_count   INT DEFAULT 0,
   created_at   TIMESTAMPTZ DEFAULT NOW(),
