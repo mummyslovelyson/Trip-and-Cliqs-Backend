@@ -1,3 +1,4 @@
+import { resolveSingleFrontendUrl } from './urlHelper.js';
 import pool from '../config/db.js';
 
 // Lazily-loaded system settings with a short TTL so admin dashboard changes
@@ -75,7 +76,7 @@ export const getEmailConfig = async () => {
 
 export const getFrontendUrlSetting = async () => {
   const dbUrl = await getSetting('frontend_url');
-  return dbUrl || process.env.FRONTEND_URL || '';
+  return resolveSingleFrontendUrl(dbUrl || process.env.FRONTEND_URL, 'https://tribesandcliqsevent.vercel.app');
 };
 
 export const clearSettingsCache = () => {

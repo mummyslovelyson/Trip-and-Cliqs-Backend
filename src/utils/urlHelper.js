@@ -29,8 +29,16 @@ export const resolveSingleFrontendUrl = (rawUrl, fallback = null) => {
     return effectiveFallback;
   }
 
+  // Pre-process: decode %20 or URL-encoded whitespace if present
+  let sanitized = rawUrl;
+  try {
+    sanitized = decodeURIComponent(rawUrl);
+  } catch {
+    sanitized = rawUrl.replace(/%20/g, ' ');
+  }
+
   // Split on whitespace, commas, semicolons, carriage returns, or newlines
-  const tokens = rawUrl
+  const tokens = sanitized
     .split(/[\s,;\r\n]+/)
     .map((token) => token.trim().replace(/^['"`<(\[]+|['"`>)\]]+$/g, '').replace(/\/+$/, ''))
     .filter(Boolean);
