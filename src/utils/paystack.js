@@ -42,6 +42,9 @@ export const initializeTransaction = async ({
     // Resolve a single, valid frontend origin (handles comma/space-separated FRONTEND_URL in production)
     const fallbackFrontend = process.env.NODE_ENV === 'production' ? 'https://tribesandcliqsevent.vercel.app' : 'http://localhost:5173';
     let resolvedFrontend = resolveSingleFrontendUrl(process.env.FRONTEND_URL, fallbackFrontend);
+    if (!resolvedFrontend || resolvedFrontend.includes('tribesandcliqs.app')) {
+      resolvedFrontend = 'https://tribesandcliqsevent.vercel.app';
+    }
 
     let resolvedCallbackUrl = callback_url || process.env.PAYSTACK_CALLBACK_URL;
     if (resolvedCallbackUrl) {
@@ -49,10 +52,15 @@ export const initializeTransaction = async ({
       if (resolvedCallbackUrl.startsWith('/')) {
         resolvedCallbackUrl = `${resolvedFrontend}${resolvedCallbackUrl}`;
       } else {
-        resolvedCallbackUrl = resolveSingleFrontendUrl(resolvedCallbackUrl, `${resolvedFrontend}/paystack_success`);
+        resolvedCallbackUrl = resolveSingleFrontendUrl(resolvedCallbackUrl, `${resolvedFrontend}/payment/callback`);
       }
     } else {
-      resolvedCallbackUrl = `${resolvedFrontend}/paystack_success`;
+      resolvedCallbackUrl = `${resolvedFrontend}/payment/callback`;
+    }
+
+    // Safety: ensure broken domain tribesandcliqs.app is never returned to user
+    if (resolvedCallbackUrl.includes('tribesandcliqs.app')) {
+      resolvedCallbackUrl = resolvedCallbackUrl.replace(/https?:\/\/([a-zA-Z0-9-]+\.)?tribesandcliqs\.app/g, 'https://tribesandcliqsevent.vercel.app');
     }
 
     // Safety fallback: ensure it is a parseable URL
@@ -60,7 +68,15 @@ export const initializeTransaction = async ({
       const u = new URL(resolvedCallbackUrl);
       resolvedCallbackUrl = u.toString();
     } catch {
-      resolvedCallbackUrl = `${resolvedFrontend}/paystack_success`;
+      resolvedCallbackUrl = `${resolvedFrontend}/payment/callback`;
+    }
+
+    // Supported channels for Ghana Cedi (GHS)
+    const validChannels = ['card', 'mobile_money'];
+    let effectiveChannels = validChannels;
+    if (Array.isArray(channels) && channels.length > 0) {
+      effectiveChannels = channels.filter((c) => validChannels.includes(c));
+      if (effectiveChannels.length === 0) effectiveChannels = validChannels;
     }
 
     const response = await fetch(`${BASE_URL}/transaction/initialize`, {
@@ -71,7 +87,7 @@ export const initializeTransaction = async ({
         amount: Math.round(amount * 100), // Paystack expects minor units (pesewas/kobo)
         reference,
         currency: currency || process.env.PAYSTACK_CURRENCY || 'GHS',
-        channels: channels || ['card', 'mobile_money', 'bank', 'ussd', 'qr', 'eft'],
+        channels: effectiveChannels,
         callback_url: resolvedCallbackUrl,
         metadata: metadata || {},
       }),

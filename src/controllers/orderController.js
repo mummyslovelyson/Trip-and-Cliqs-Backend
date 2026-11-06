@@ -237,11 +237,19 @@ export const createOrder = async (req, res) => {
       })() : null;
       const effectiveCallback = callbackUrl || (clientOrigin ? `${clientOrigin}/payment/callback` : null);
 
+      let preferredChannels = ['card', 'mobile_money'];
+      if (['mobile_money', 'momo', 'telecel', 'mtn'].includes(paymentMethod)) {
+        preferredChannels = ['mobile_money', 'card'];
+      } else if (paymentMethod === 'card') {
+        preferredChannels = ['card', 'mobile_money'];
+      }
+
       const payResult = await initializeTransaction({
         email: payerEmail,
         amount: total,
         reference,
         callback_url: effectiveCallback,
+        channels: preferredChannels,
         metadata: {
           orderId,
           eventId,
@@ -689,12 +697,20 @@ export const initiateOrderPayment = async (req, res) => {
     })() : null;
     const effectiveCallback = callbackUrl || (clientOrigin ? `${clientOrigin}/payment/callback` : null);
 
+    let preferredChannels = ['card', 'mobile_money'];
+    if (['mobile_money', 'momo', 'telecel', 'mtn'].includes(order.payment_method)) {
+      preferredChannels = ['mobile_money', 'card'];
+    } else if (order.payment_method === 'card') {
+      preferredChannels = ['card', 'mobile_money'];
+    }
+
     const [userRows] = await pool.execute('SELECT email FROM users WHERE id = ?', [order.user_id]);
     const payResult = await initializeTransaction({
       email: userRows[0]?.email,
       amount: Number(order.total_amount),
       reference: order.payment_reference,
       callback_url: effectiveCallback,
+      channels: preferredChannels,
       metadata: { orderId: order.id, eventId: order.event_id, userId: order.user_id },
     });
     if (!payResult.status) {
@@ -1498,15 +1514,25 @@ export const verifyPayment = async (req, res) => {
     const order = rows[0];
     if (!order) return res.status(404).json({ message: 'Order not found for that reference' });
 
-    if (verifyResult.data.status === 'success') {
+    if (verifyResult.data.status === 'success' || order.payment_status === 'completed') {
       if (order.payment_status !== 'completed') {
         await completeOrder(order.id, reference);
       }
     } else {
+      let eventTitle = null;
+      try {
+        const [evRows] = await pool.execute('SELECT title FROM events WHERE id = ?', [order.event_id]);
+        eventTitle = evRows[0]?.title || null;
+      } catch {}
+
       return res.status(400).json({
         message: verifyResult.data.gateway_response || 'Payment not completed',
         status: verifyResult.data.status,
+        gatewayResponse: verifyResult.data.gateway_response,
         orderId: order.id,
+        eventId: order.event_id,
+        eventTitle,
+        reference,
       });
     }
 
